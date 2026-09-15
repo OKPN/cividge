@@ -1,50 +1,70 @@
 # Cividge
 
-ローカル変換、Cloudflare R2、Filebase/IPFS、Cloudflare Edge を組み合わせた、個人向けメディアアップローダー兼配信管理アプリです。画像変換はブラウザ内で完結し、R2 または Filebase へ直接アップロードします。
+**A data-sovereign uploader for ComfyUI and Civitai users.** Cividge is for creators who want to keep control of their media, URLs, and storage credentials while aiming to keep an origin alive for as long as practical with free-tier infrastructure.
+
+It converts media locally in the browser, uploads directly to your own Cloudflare R2 or Filebase bucket, and places a small Cloudflare edge control plane in front of the object. There is no central Cividge upload server.
 
 ![Cividge architecture](docs/assets/cividge-architecture.png)
 
-## できること
+## Why Cividge
 
-- ブラウザ内での画像変換（WebP / JPEG / JPEG XL）とメタデータ確認
-- Cloudflare R2 または Filebase (IPFS) への S3 API 直接アップロード
-- `配信ドメイン/ファイル名` 形式の共有 URL、別名 URL、配信ドメインごとの管理
-- Cloudflare Edge / Workers KV による URL 解決、期限、パスワード保護、OGP、Range 配信
-- Filebase の同一 CID を再アップロードせず、別名 URL として登録
-- Filebase FIFO 容量解放と、任意の Kubo ノードへの Pin 保全
-- Windows の「送る」および外部投稿 API（任意）
+AI creators need more than a temporary file host: they need stable links for Civitai posts, image boards, prompts, workflows, and personal archives. Cividge separates the parts that should remain yours:
 
-## 構成
+- **Browser:** local conversion and direct S3 API upload.
+- **Storage:** a Cloudflare R2 bucket or Filebase IPFS bucket in your own account.
+- **Delivery:** readable URLs in the form `delivery-domain/file-name`.
+- **Control plane:** Workers KV records aliases, expiry, password gates, and delivery metadata.
+- **Preservation:** Filebase/IPFS and an optional Kubo node can keep content reachable after Filebase capacity is released.
 
-| 層 | 役割 |
+This is not a promise of permanent storage. It is a practical, user-controlled design that avoids dependence on one application server and makes the storage lifecycle explicit.
+
+## Features
+
+- Browser-side WebP, JPEG, and JPEG XL conversion, plus metadata and workflow inspection.
+- Direct S3-compatible upload to Cloudflare R2 or Filebase IPFS.
+- Per-storage delivery domains, aliases, rename-safe links, and `delivery-domain/file-name` URLs.
+- Cloudflare edge delivery with KV-backed resolution, expiry, password gates, Open Graph responses, byte ranges, and cache control.
+- Local Filebase CID detection: duplicate bytes become an alias instead of another upload.
+- Separate FIFO capacity controls for R2 and Filebase.
+- Optional Kubo pin preservation before Filebase releases an object.
+- Video Open Graph thumbnails that follow aliases and are deleted with their parent origin object.
+- Optional Windows **Send To** integration and external upload API.
+- `X-Image-Width` and `X-Image-Height` response headers for newly uploaded images.
+
+## Architecture
+
+| Layer | Responsibility |
 | --- | --- |
-| Cividge Pages | ブラウザ UI、ローカル変換、R2 / Filebase への直接アップロード |
-| KV 配信・管理 Worker | URL と実体キー/CIDの台帳、別名、期限、パスワード、配信処理 |
-| Cloudflare Edge | キャッシュ、OGP 応答、配信時の負荷軽減 |
-| Cloudflare R2 | 通常のオブジェクトストレージ |
-| Filebase / IPFS | CID ベースの IPFS 保存 |
-| Kubo（任意） | Filebase 解放前の CID を自 PC / サーバーにも Pin する保全ノード |
+| Cividge Pages | Browser UI, local conversion, direct R2 / Filebase upload |
+| KV delivery and management Worker | Registry for URLs, object keys/CIDs, aliases, expiry, passwords, and delivery |
+| Cloudflare Edge | Caching, Open Graph responses, and traffic absorption |
+| Cloudflare R2 | Conventional object storage |
+| Filebase / IPFS | CID-based IPFS storage and retrieval |
+| Kubo (optional) | A self-managed node that pins CIDs before Filebase capacity release |
 
-Kubo は CID 実体を保持する保全ノードです。Kubo RPC は Pin 操作用であり、単独で公開配信の第1オリジンになるものではありません。
+Kubo is a preservation layer. Its RPC endpoint is used for pin operations; configuring Kubo alone does not make it the public primary origin for every request. Keep important media in another backup as well.
 
-## 導入の全体手順
+## Prerequisites
 
-このアプリは、フロントエンドの `cividge` と配信・台帳 Worker の `cividge-kv-worker` を組み合わせて使います。
+- Node.js 18 or later
+- A Cloudflare account
+- Wrangler (`npx wrangler` is sufficient)
+- A Cloudflare R2 bucket and/or a Filebase IPFS bucket
 
-1. Cloudflare で Workers KV Namespace を1つ作る
-2. `cividge-kv-worker` にその Namespace を紐付け、秘密情報を設定してデプロイする
-3. `cividge` に同じ Namespace を紐付け、Cloudflare Pages へデプロイする
-4. Pages を開き、最初に KV Worker、次に R2 または Filebase を接続する
-5. R2 を使う場合はバケット CORS を設定する
+## Setup overview
 
-## 前提条件
+The frontend repository (`cividge`) and the delivery/registry Worker repository (`cividge-kv-worker`) work together.
 
-- Node.js 18 以降
-- Cloudflare アカウント
-- Wrangler CLI（`npx wrangler` で利用可能）
-- 利用する保存先: Cloudflare R2 または Filebase IPFS Bucket
+1. Create one Cloudflare Workers KV namespace.
+2. Deploy `cividge-kv-worker` with that namespace and a private admin token.
+3. Deploy `cividge` to Cloudflare Pages using the same namespace binding.
+4. In Cividge, connect the KV Worker first, then connect R2 and/or Filebase.
+5. Register separate delivery domains for R2 and Filebase.
+6. Configure R2 CORS when using browser-to-R2 uploads.
 
-## 1. KV 配信・管理 Worker をデプロイする
+> Do not register the same delivery domain for both R2 and Filebase. URLs are `delivery-domain/file-name`; sharing a domain makes same-name objects ambiguous.
+
+## 1. Deploy the KV delivery and management Worker
 
 ```bash
 git clone https://github.com/OKPN/cividge-kv-worker.git
@@ -52,7 +72,7 @@ cd cividge-kv-worker
 npx wrangler login
 ```
 
-Cloudflare Dashboard または Wrangler で Workers KV Namespace を作成し、その ID を `wrangler.toml` の `IPFS_KV` binding に設定します。
+Create a Workers KV namespace in Cloudflare, then bind it as `IPFS_KV` in `wrangler.toml`:
 
 ```toml
 [[kv_namespaces]]
@@ -60,32 +80,32 @@ binding = "IPFS_KV"
 id = "<your-kv-namespace-id>"
 ```
 
-次に管理用トークンを設定して Worker をデプロイします。トークンは十分に長いランダム値を使い、リポジトリへ保存しないでください。
+Set a long, random admin token and deploy. Never commit this token.
 
 ```bash
 npx wrangler secret put ADMIN_API_TOKEN
 npx wrangler deploy
 ```
 
-表示された `https://<worker>.<account>.workers.dev` を控えます。これが Cividge の KV 配信・管理 Worker URL です。
+Save the resulting `https://<worker>.<account>.workers.dev` URL. It is the Cividge KV delivery and management Worker URL.
 
-### 外部投稿 API を使う場合だけ
+### Optional: external upload API
 
-Windows の「送る」や curl 投稿を使う場合は、管理トークンとは別に投稿専用トークンを設定します。
+For Windows **Send To** or curl uploads, use a separate upload-only token:
 
 ```bash
 npx wrangler secret put UPLOAD_TOKEN
 ```
 
-Worker 経由で Filebase 投稿も行う場合のみ、Filebase の bucket-scoped IPFS RPC API key を追加します。
+If the Worker itself uploads to Filebase, also provide a bucket-scoped Filebase IPFS RPC API key:
 
 ```bash
 npx wrangler secret put FILEBASE_IPFS_API_KEY
 ```
 
-`UPLOAD_TOKEN` は外部投稿クライアント専用です。`ADMIN_API_TOKEN` を BAT や curl に流用しないでください。
+Do not reuse `ADMIN_API_TOKEN` in batch files or external upload clients.
 
-## 2. Cividge を Cloudflare Pages へデプロイする
+## 2. Deploy Cividge to Cloudflare Pages
 
 ```bash
 git clone https://github.com/OKPN/cividge.git
@@ -94,7 +114,7 @@ npm install
 npx wrangler login
 ```
 
-Worker と**同じ** Workers KV Namespace ID を、このリポジトリの `wrangler.toml` に設定します。
+Bind the **same** Workers KV namespace in this repository's `wrangler.toml`:
 
 ```toml
 [[kv_namespaces]]
@@ -102,49 +122,45 @@ binding = "IPFS_KV"
 id = "<your-kv-namespace-id>"
 ```
 
-ビルドして Pages へデプロイします。
+Build and deploy:
 
 ```bash
 npm run build
 npx wrangler pages deploy dist --project-name=my-cividge
 ```
 
-表示された `https://my-cividge.pages.dev` がフロントエンド URL です。以後、この URL を R2 CORS の許可 Origin に使います。
+The resulting `https://my-cividge.pages.dev` URL is your frontend URL. Use it as an allowed origin in R2 CORS; it is not necessarily a delivery domain.
 
-ローカル確認だけなら、ビルド後に次を使えます。
+For a local production-like check:
 
 ```bash
 npm run preview
 ```
 
-## 3. アプリで初期接続する
+## 3. Connect services in Cividge
 
-Pages を開くと、設定は次の順番で表示されます。
+Open your Pages deployment and configure services in this order:
 
-1. **KV 配信・管理 Worker**: Worker URL と `ADMIN_API_TOKEN` を入力して接続テスト
-2. **Cloudflare R2** または **Filebase (IPFS)**: 保存先の認証情報を入力して接続
-3. 各保存先に専用の配信ドメインを登録
+1. **KV Delivery & Management Worker** — enter its URL and `ADMIN_API_TOKEN`, then connect.
+2. **Cloudflare R2** and/or **Filebase (IPFS)** — enter each storage provider's credentials and connect.
+3. Register one or more dedicated delivery domains for each provider.
 
-初期配信先には Worker URL を使えます。任意で Pages URL や独自ドメインを追加できます。
+The Worker URL works as the first delivery domain. You can later add a dedicated Pages URL or custom domain.
 
-> R2 と Filebase に同じ配信ドメインを登録しないでください。URL が `配信ドメイン/ファイル名` であるため、同名ファイルの保存先を区別できなくなります。
+## Cloudflare R2
 
-## Cloudflare R2 の設定
-
-Cloudflare Dashboard で R2 Bucket と S3 API Token を作成し、以下を Cividge の **Cloudflare R2** 設定へ入力します。
+Create an R2 bucket and an S3 API token, then enter:
 
 - Cloudflare Account ID
-- R2 Bucket Name
+- R2 bucket name
 - Access Key ID
 - Secret Access Key
 
-### R2 CORS は必須
+### R2 CORS is required for browser uploads
 
-このアプリはブラウザから R2 S3 API を直接呼ぶため、R2 Bucket の CORS Policy にフロントエンド URL を許可する必要があります。
+Cividge calls R2's S3 API directly from the browser. In Cloudflare Dashboard, open **R2 → your bucket → Settings → CORS Policy → Edit**, then paste the policy generated by Cividge's **Copy CORS policy** button.
 
-Cloudflare Dashboard → R2 → 対象 Bucket → **Settings** → **CORS Policy** → Edit で、アプリ内の「CORS 設定をコピー」から取得した内容を貼り付けます。
-
-基本形は次のとおりです。`https://my-cividge.pages.dev` は実際にアプリを開く URL に置き換えてください。これは配信ドメインではありません。
+Allow the URL where the frontend is opened, such as `https://my-cividge.pages.dev`; do not use the media delivery domain as the CORS origin.
 
 ```json
 [
@@ -162,44 +178,58 @@ Cloudflare Dashboard → R2 → 対象 Bucket → **Settings** → **CORS Policy
 ]
 ```
 
-## Filebase / IPFS の設定
+## Filebase / IPFS
 
-Filebase で IPFS Bucket と S3 Access Key / Secret Key を作成し、**Filebase (IPFS) / Kubo** 設定へ入力します。
+Create an IPFS bucket and S3 access keys in Filebase, then enter:
 
-- Filebase Bucket Name
+- Filebase bucket name
 - Filebase Access Key
 - Filebase Secret Key
-- Filebase 専用配信ドメイン
+- A Filebase-only delivery domain
 
-接続後に **⚙️ CORS自動設定** を一度実行してください。ブラウザから CID を取得するための必要な CORS 設定を Bucket に適用します。
+After connecting, run **Configure CORS** once so the bucket permits the required browser-side CID lookup.
 
-Filebase では同一 CID の再アップロードを避けます。同じ実体を別名で投稿した場合は、実体を増やさず、新しい名前の URL を既存 CID へ紐付けます。
+When Cividge sees a Filebase object with the same CID, it does not upload the bytes again. It creates a new alias URL pointing to the existing object instead.
 
-## 任意: Kubo を保全ノードとして使う
+### Create a Filebase delivery URL
 
-Kubo をインストール・起動し、通常は `http://127.0.0.1:5001` を Cividge の Kubo RPC URL に設定します。接続テストに成功してから「Filebase容量解放時にKuboへ自動Pin留め」を有効にしてください。
+Use a Pages project separate from R2. From this repository:
 
-- Filebase FIFO は、Kubo 自動 Pin が有効で Kubo に接続できない場合、安全のため実体を解放しません。
-- Kubo の保存先と空き容量を確認してください。重要なデータは別バックアップや Pin サービスにも残してください。
-- Kubo API を `0.0.0.0:5001`、ルーターのポート開放、一般公開リバースプロキシで公開しないでください。
-- 外出先から操作する必要がある場合は、Tailscale Serve などで Tailnet 内だけに公開した HTTPS endpoint を使います。
+```bash
+npx wrangler login
+npm run build
+npx wrangler pages deploy dist --project-name=my-filebase-delivery
+```
 
-## 配信・期限・削除の挙動
+Add the resulting `https://my-filebase-delivery.pages.dev` through the Filebase delivery-domain **＋** button. A custom domain can be used instead when configured on Cloudflare.
 
-- 共有 URL は CID を含めず、`配信ドメイン/ファイル名` を使います。
-- 動画の OGP 用 `.thumb.webp` は派生データとして保存され、一覧には出ません。動画実体を削除したときだけ一緒に削除されます。
-- リネームや同一 CID の別名 URLでも、動画 OGP は元サムネイルを参照します。
-- 有効期限は Cron で一括削除しません。期限後の最初のアクセス時にその URL を 404 化します。同じ CID の別名 URL が残る間は、実体の Pin を維持します。
-- Filebase FIFO は実体を解放して URL を IPFS 配信へ移します。R2 FIFO は古い R2 オブジェクトと対応リンクを削除します。
+## Optional: use Kubo as a preservation node
 
-## セキュリティ上の注意
+Install and start Kubo, then normally set its RPC URL to `http://127.0.0.1:5001`. Enable automatic Kubo pinning only after the connection test succeeds.
 
-- R2 / Filebase S3 認証情報はブラウザの localStorage に保存されます。自分で管理する端末・信頼できる Pages URL だけで使ってください。
-- `ADMIN_API_TOKEN` は台帳を読み書きできる管理権限です。共有 Worker や共有トークンを他者へ配布しないでください。
-- パスワード保護は Cividge の配信 URL を保護しますが、IPFS CID を知る相手の IPFS ゲートウェイ経由アクセスまでは秘匿しません。強い秘匿が必要なファイルには、将来のクライアント暗号化モードが必要です。
-- 投稿用 `UPLOAD_TOKEN` は管理トークンと分け、BAT ファイルを他人へ渡さないでください。
+- When automatic Kubo pinning is enabled but Kubo is unavailable, Filebase FIFO safely pauses rather than releasing objects without preservation.
+- Check Kubo's storage path and available space. Keep important data in another backup or pinning service.
+- Do not expose the Kubo API through `0.0.0.0:5001`, router port forwarding, or a public reverse proxy.
+- For remote use, prefer a Tailnet-only HTTPS endpoint such as Tailscale Serve instead of opening ports to the internet.
 
-## 開発
+## Delivery, expiry, and deletion behavior
+
+- Public links use `delivery-domain/file-name`, not CID URLs.
+- Video `.thumb.webp` objects are generated for Open Graph cards, hidden from the main list, and removed only when their parent video origin is removed.
+- Video thumbnail references follow aliases and renamed links.
+- Expiry does not use a Cron sweep. On the first request after expiry, Cividge turns that link into a 404. A CID remains pinned while another alias to the same CID remains active.
+- Filebase FIFO releases the Filebase pin while preserving the URL for IPFS delivery. R2 FIFO deletes the old R2 object and its associated links.
+- For newly uploaded images, delivery responses include `X-Image-Width` and `X-Image-Height` so clients can choose whether to preload a direct image.
+
+## Security model and limits
+
+- R2/Filebase S3 credentials are stored in the browser's `localStorage`. Use only a device and a Pages URL you trust.
+- `ADMIN_API_TOKEN` can modify the registry. Never share a Worker or token intended for your private registry.
+- Password protection protects Cividge delivery URLs. It does **not** make a known IPFS CID secret from an IPFS gateway. Strong confidentiality requires client-side encryption, which is not currently part of Cividge.
+- Keep `UPLOAD_TOKEN` separate from the admin token and do not distribute upload batch files casually.
+- This project improves resilience; it is not a substitute for backups or a promise of permanent availability.
+
+## Development
 
 ```bash
 npm install
@@ -207,9 +237,9 @@ npm run build
 npm run preview
 ```
 
-## 関連リポジトリ
+## Related repository
 
-- [cividge-kv-worker](https://github.com/OKPN/cividge-kv-worker): 配信・台帳・キャッシュ管理 Worker
+- [cividge-kv-worker](https://github.com/OKPN/cividge-kv-worker) — KV registry, delivery, and cache management Worker
 
 ## License
 
