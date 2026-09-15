@@ -182,20 +182,21 @@
                 </label>
               </div>
 
-              <!-- 🌐 アップロード直前クイック配信ドメイン切替 -->
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding: 6px 10px; background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px;">
-                <span style="font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; white-space: nowrap;">
-                  <span>🌐 配信ドメイン:</span>
-                </span>
-                <select id="quickDomainSelect" style="flex: 1; min-width: 0; height: 28px; font-size: 11.5px; background-color: #121316; color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 0 6px; outline: none; cursor: pointer;">
-                  <option value="">-- ドメインを選択 --</option>
-                </select>
-              </div>
-
-              <div class="action-buttons-group" style="padding: 0; margin-top: 4px;">
-                <div style="display: flex; gap: 8px; width: 100%;">
-                  <button class="primary-button upload-primary-cta" id="convertUploadR2Button" type="button" disabled data-i18n="btnUploadR2" style="flex: 1; margin: 0; background: linear-gradient(135deg, #ea580c, #c2410c); border-color: #f97316;" title="変換した画像をCloudflare R2へ一括保存">⚡ R2へ保存</button>
-                  <button class="primary-button upload-primary-cta" id="convertUploadFilebaseButton" type="button" disabled data-i18n="btnUploadFilebase" style="flex: 1; margin: 0; background: linear-gradient(135deg, #0284c7, #0369a1); border-color: #38bdf8;" title="変換した画像をFilebase (IPFS)へ一括保存">🪐 Filebaseへ保存</button>
+              <!-- 保存先ごとに配信ドメインと実行ボタンを固定で対応付ける -->
+              <div class="upload-destination-grid" style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 8px;">
+                <div style="min-width: 0; padding: 8px; background: rgba(234, 88, 12, 0.07); border: 1px solid rgba(249, 115, 22, 0.28); border-radius: 7px;">
+                  <label for="quickDomainSelect" style="display: block; margin: 0 0 5px; font-size: 11px; color: #fdba74;">🌐 R2 配信ドメイン</label>
+                  <select id="quickDomainSelect" style="width: 100%; min-width: 0; height: 30px; font-size: 11.5px; background-color: #121316; color: #fdba74; border: 1px solid rgba(249, 115, 22, 0.4); border-radius: 4px; padding: 0 6px; outline: none; cursor: pointer;">
+                    <option value="">-- R2 ドメインを選択 --</option>
+                  </select>
+                  <button class="primary-button upload-primary-cta" id="convertUploadR2Button" type="button" disabled data-i18n="btnUploadR2" style="width: 100%; height: 34px; margin: 7px 0 0; background: linear-gradient(135deg, #ea580c, #c2410c); border-color: #f97316;" title="変換した画像をCloudflare R2へ一括保存">⚡ R2へ保存</button>
+                </div>
+                <div style="min-width: 0; padding: 8px; background: rgba(2, 132, 199, 0.07); border: 1px solid rgba(56, 189, 248, 0.28); border-radius: 7px;">
+                  <label for="quickFilebaseDomainSelect" style="display: block; margin: 0 0 5px; font-size: 11px; color: #7dd3fc;">🌐 Filebase 配信ドメイン</label>
+                  <select id="quickFilebaseDomainSelect" style="width: 100%; min-width: 0; height: 30px; font-size: 11.5px; background-color: #121316; color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 4px; padding: 0 6px; outline: none; cursor: pointer;">
+                    <option value="">-- Filebase ドメインを選択 --</option>
+                  </select>
+                  <button class="primary-button upload-primary-cta" id="convertUploadFilebaseButton" type="button" disabled data-i18n="btnUploadFilebase" style="width: 100%; height: 34px; margin: 7px 0 0; background: linear-gradient(135deg, #0284c7, #0369a1); border-color: #38bdf8;" title="変換した画像をFilebase (IPFS)へ一括保存">🪐 Filebaseへ保存</button>
                 </div>
               </div>
             </div>
@@ -206,11 +207,11 @@
                 <summary data-i18n="cfTitle">☁️ クラウドストレージ接続設定</summary>
                 <div class="settings-content" style="padding: 14px 0 4px; display: flex; flex-direction: column; gap: 12px;">
 
-                  <!-- STEP 1: 画像公開・配信URL設定 (複数登録・プルダウン切替) -->
+                  <!-- 配信ドメイン管理（R2 / Filebase は独立） -->
                   <div class="setup-step-box" style="padding: 12px; border: 1px solid rgba(255, 122, 26, 0.4); border-radius: 8px; background: rgba(255, 122, 26, 0.05);">
                     <div style="font-size: 13px; font-weight: bold; color: var(--accent); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px;">
                       <div style="display: flex; align-items: center; gap: 6px;">
-                        <span>1️⃣ 画像の公開・配信 URL を設定</span>
+                        <span>1️⃣ R2 の公開・配信 URL を設定</span>
                         <span style="font-size: 11px; color: var(--danger); font-weight: normal;">* 必須</span>
                       </div>
                     </div>
@@ -231,7 +232,7 @@
                       </div>
 
                       <span style="font-size: 11px; color: var(--muted); margin-top: 2px;">
-                        ※ 初期値の Worker URL、pages.dev URL、独自ドメイン、R2 dev URL を何件でも追加・削除できます。<br>
+                        ※ R2 用の Worker URL、pages.dev URL、独自ドメイン、R2 dev URL を何件でも追加・削除できます。<br>
                         選択された URL が画像コピーやパレットの配信ベース URL に使用されます。
                       </span>
                       <details class="delivery-domain-guide">
@@ -244,6 +245,31 @@
                           <li>表示された <code>https://my-content-cache.pages.dev</code> を「＋」から追加します。</li>
                         </ol>
                       </details>
+                    </div>
+                  </div>
+
+                  <div class="setup-step-box" style="padding: 12px; border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; background: rgba(56, 189, 248, 0.05);">
+                    <div style="font-size: 13px; font-weight: bold; color: #38bdf8; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                      <span>2️⃣ Filebase の公開・配信 URL を設定</span>
+                      <span style="font-size: 11px; color: var(--danger); font-weight: normal;">* 必須</span>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                      <div style="display: flex; gap: 6px; align-items: center; width: 100%;">
+                        <select id="filebaseDomainSelect" style="flex: 1; min-width: 0; height: 38px; background-color: #1a1c23; color: #f8fafc; color-scheme: dark; border: 1px solid var(--border); border-radius: 6px; padding: 0 10px; font-size: 12px; outline: none; cursor: pointer;">
+                          <option value="">-- Filebase 配信ドメインを選択 (未設定) --</option>
+                        </select>
+                        <button type="button" class="ghost-button" id="filebaseDomainAddBtn" title="新しい Filebase 配信 URL を追加" style="height: 38px; width: 38px; min-width: 38px; flex-shrink: 0; padding: 0; font-size: 16px; font-weight: bold; display: inline-flex; align-items: center; justify-content: center;">＋</button>
+                        <button type="button" class="ghost-button danger-button" id="filebaseDomainDeleteBtn" title="選択中の Filebase 配信ドメインを削除" style="height: 38px; width: 38px; min-width: 38px; flex-shrink: 0; padding: 0; font-size: 14px; display: inline-flex; align-items: center; justify-content: center;">🗑️</button>
+                      </div>
+                      <div id="filebaseDomainAddForm" style="display: none; margin-top: 4px; gap: 6px; align-items: center;">
+                        <input id="filebaseDomainNewInput" type="text" inputmode="url" placeholder="例: content-cache.pages.dev または ipfs.example.com" style="flex: 1; height: 34px; font-size: 12px;" spellcheck="false" autocomplete="off">
+                        <button type="button" class="primary-button" id="filebaseDomainNewSaveBtn" style="height: 34px; font-size: 11px; padding: 0 12px; margin: 0;">追加</button>
+                        <button type="button" class="ghost-button" id="filebaseDomainNewCancelBtn" style="height: 34px; font-size: 11px; padding: 0 8px;">✕</button>
+                      </div>
+                      <span style="font-size: 11px; color: var(--muted); margin-top: 2px;">
+                        ※ Filebase / IPFS 用の Worker URL、pages.dev URL、独自ドメインを何件でも追加・削除できます。<br>
+                        選択された URL が Filebase への新規投稿の配信ベース URL に使用されます。
+                      </span>
                     </div>
                   </div>
 
@@ -280,7 +306,7 @@
                     <!-- 🪐 Filebase (IPFS) セクション -->
                     <div>
                       <div style="font-size: 13px; font-weight: bold; color: #38bdf8; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
-                        <span>🪐 Filebase (IPFS)</span>
+                        <span>🪐 Filebase</span>
                         <div style="display: flex; gap: 8px; align-items: center;">
                           <button class="ghost-button" id="filebaseCorsButton" type="button" style="font-size: 10.5px; padding: 2px 8px; height: 24px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="FilebaseバケットにIPFS CID公開用CORS設定をワンクリック適用">⚙️ CORS自動設定</button>
                           <a href="https://console.filebase.com/" target="_blank" rel="noopener noreferrer" style="font-size: 11px; color: #94a3b8; text-decoration: none;">Filebase ↗</a>
@@ -387,7 +413,7 @@
                   <label class="field" style="margin: 0;">
                     <span style="font-size: 11px; color: var(--muted);">📦 投稿先クラウドストレージ:</span>
                     <select id="uploadStorageSelect" style="font-size: 11.5px; height: 32px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; border-radius: 6px; padding: 0 8px; outline: none; cursor: pointer;">
-                      <option value="filebase" selected>Filebase (IPFS)</option>
+                      <option value="filebase" selected>Filebase</option>
                       <option value="r2">Cloudflare R2</option>
                     </select>
                   </label>
@@ -400,8 +426,13 @@
                     <span style="font-size: 11px;" data-i18n="uploadApiUrl">投稿API エンドポイント URL</span>
                     <input id="dedicatedUploadApiUrl" type="text" readonly style="font-family: monospace; font-size: 11px; background: #111215; height: 32px;" value="">
                   </label>
+                  <label class="field" style="margin: 0;">
+                    <span style="font-size: 11px; color: var(--muted);">🔑 投稿専用 API トークン</span>
+                    <input id="uploadApiToken" type="password" placeholder="Worker の UPLOAD_TOKEN を入力" style="font-family: monospace; font-size: 11px; height: 32px;" spellcheck="false" autocomplete="off">
+                    <span style="font-size: 10px; color: var(--muted); line-height: 1.3;">※ 管理用トークンではなく、外部投稿だけを許可する <code>UPLOAD_TOKEN</code> を使います。BAT にはこのトークンが保存されるため、他人へ渡さないでください。</span>
+                  </label>
                   <div id="uploadTokenNotice" style="display: none; font-size: 11px; color: #f59e0b; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; padding: 6px 10px; line-height: 1.4;">
-                    ⚠️ <strong>管理APIトークンが必要です:</strong> 外部APIからの投稿および設定ファイル出力を行うには、上の「⚡ バックエンド設定」内の<strong>「管理APIトークン」</strong>を入力してください。
+                    ⚠️ <strong>投稿専用 API トークンが必要です:</strong> Worker に設定した <code>UPLOAD_TOKEN</code> を入力すると、URLコピー・curl例・Windows「送る」登録を利用できます。
                   </div>
                   <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                     <button class="ghost-button" id="copyUploadApiUrlBtn" type="button" style="font-size: 11px; padding: 4px 8px; min-height: 30px;" data-i18n="btnCopyUrl">📋 URLをコピー</button>
@@ -462,7 +493,7 @@
           <div class="panel-heading" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
             <div class="storage-tab-group" style="display: flex; gap: 6px; align-items: center;">
               <button type="button" class="tab-button active" id="storageTabR2" style="font-size: 13px; font-weight: 700; padding: 6px 14px; border-radius: 6px; border: 1px solid #f97316; background: rgba(249, 115, 22, 0.15); color: #fb923c; cursor: pointer; transition: all 0.15s ease;">⚡ Cloudflare R2</button>
-              <button type="button" class="tab-button" id="storageTabFilebase" style="font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); color: var(--muted); cursor: pointer; transition: all 0.15s ease;">🪐 Filebase (IPFS)</button>
+              <button type="button" class="tab-button" id="storageTabFilebase" style="font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); color: var(--muted); cursor: pointer; transition: all 0.15s ease;">🪐 Filebase</button>
             </div>
             <div class="storage-usage" id="storageUsage" style="display: flex; flex-direction: column; gap: 4px; flex: 1; margin: 0 16px;">
               <div class="storage-info-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
@@ -479,13 +510,9 @@
               <progress id="storageUsageBar" value="0" max="100" style="width: 100%; height: 8px; border-radius: 4px; overflow: hidden; accent-color: var(--accent);"></progress>
             </div>
             <div class="r2-heading-actions" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-              <label id="autoCleanupLabel" style="display: none; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none;" title="R2アクセス時に7日以上経過したファイルを自動的に削除します">
-                <input type="checkbox" id="autoCleanupCheckbox" style="width: 16px; height: 16px; cursor: pointer;">
-                <span>🧹 7日経過したファイルを自動削除</span>
-              </label>
-              <label id="autoFifoLabel" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none;" title="Filebase(IPFS)の容量上限に近づいたとき、最も古いオリジン実体を自動で容量解放（アンピン）して空きを確保します（URLは維持）">
+              <label id="autoFifoLabel" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none;" title="選択中ストレージの容量上限に近づいたとき、古い実体から自動で容量を解放します">
                 <input type="checkbox" id="autoFifoCheckbox" style="width: 16px; height: 16px; cursor: pointer;">
-                <span>📦 自動容量解放 (FIFO)</span>
+                <span data-i18n="autoFifoLabel">📦 自動容量解放 (FIFO)</span>
               </label>
               <button class="ghost-button danger-button" id="deleteSelectedR2FilesButton" type="button" style="display: none; min-height: 34px; padding: 0 10px; font-size: 11.5px;" data-i18n="btnBatchDelete">選択削除</button>
               

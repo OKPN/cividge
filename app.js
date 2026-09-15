@@ -125,13 +125,13 @@ const i18nDict = {
     btnPromptCopy: "文章をコピーする",
     r2Heading: "⚡ Cloudflare R2 ストレージ内のファイル",
     limitLabel: "上限:",
+    autoFifoLabel: "📦 自動容量解放 (FIFO)",
     btnReload: "更新",
     btnBatchDelete: "選択削除",
     copyUrl: "コピー",
     copyPrompt: "プロンプトコピー",
     copyAllPrompts: "📝 プロンプト一括コピー",
     civitaiPrompt: "📝 プロンプト",
-    devCopyUrl: "devコピー",
     deleteNow: "削除",
     copied: "コピー完了!",
     failed: "失敗",
@@ -294,13 +294,13 @@ const i18nDict = {
     btnPromptCopy: "Copy Post Text",
     r2Heading: "⚡ Files in Cloudflare R2 Storage",
     limitLabel: "Limit:",
+    autoFifoLabel: "📦 Automatic capacity release (FIFO)",
     btnReload: "Reload",
     btnBatchDelete: "Delete Selected",
     copyUrl: "Copy",
     copyPrompt: "Copy Prompt",
     copyAllPrompts: "📝 Copy All Prompts",
     civitaiPrompt: "📝 Prompt",
-    devCopyUrl: "devCopy",
     deleteNow: "Delete",
     copied: "Copied!",
     failed: "Failed",
@@ -426,6 +426,7 @@ const convertDownloadButton = document.querySelector("#convertDownloadButton");
 const convertUploadR2Button = document.querySelector("#convertUploadR2Button");
 const convertUploadFilebaseButton = document.querySelector("#convertUploadFilebaseButton");
 const quickDomainSelect = document.querySelector("#quickDomainSelect");
+const quickFilebaseDomainSelect = document.querySelector("#quickFilebaseDomainSelect");
 const clearButton = document.querySelector("#clearButton");
 
 // ☁️ Cloudflare R2 接続設定フォーム要素
@@ -442,6 +443,13 @@ const r2DomainNewSaveBtn = document.querySelector("#r2DomainNewSaveBtn");
 const r2DomainNewCancelBtn = document.querySelector("#r2DomainNewCancelBtn");
 const r2PublicDomain = document.querySelector("#r2PublicDomain"); // 後方互換
 const r2DevDomain = document.querySelector("#r2DevDomain"); // 後方互換
+const filebaseDomainSelect = document.querySelector("#filebaseDomainSelect");
+const filebaseDomainAddBtn = document.querySelector("#filebaseDomainAddBtn");
+const filebaseDomainDeleteBtn = document.querySelector("#filebaseDomainDeleteBtn");
+const filebaseDomainAddForm = document.querySelector("#filebaseDomainAddForm");
+const filebaseDomainNewInput = document.querySelector("#filebaseDomainNewInput");
+const filebaseDomainNewSaveBtn = document.querySelector("#filebaseDomainNewSaveBtn");
+const filebaseDomainNewCancelBtn = document.querySelector("#filebaseDomainNewCancelBtn");
 
 // 🪐 Filebase 接続設定フォーム要素
 const filebaseBucket = document.querySelector("#filebaseBucket");
@@ -514,8 +522,6 @@ const storageUsageText = document.querySelector("#storageUsageText");
 const storageUsageBar = document.querySelector("#storageUsageBar");
 const autoFifoCheckbox = document.querySelector("#autoFifoCheckbox");
 const autoFifoLabel = document.querySelector("#autoFifoLabel");
-const autoCleanupCheckbox = document.querySelector("#autoCleanupCheckbox");
-const autoCleanupLabel = document.querySelector("#autoCleanupLabel");
 
 // テキスト作成支援要素
 const templateSelect = document.querySelector("#templateSelect");
@@ -570,6 +576,7 @@ function applyLanguage(lang) {
 
   updateR2Status();
   updateStorageUsageUI();
+  if (storageCachedContents.length > 0) renderCurrentStoragePage();
   loadTemplates(templateSelect ? templateSelect.value : "");
   render();
 }
@@ -587,7 +594,7 @@ function isR2Configured() {
   const bucketName = (localStorage.getItem("r2BucketName") || r2BucketName?.value || "").trim();
   const accessKeyId = (localStorage.getItem("r2AccessKeyId") || r2AccessKeyId?.value || "").trim();
   const secretAccessKey = (localStorage.getItem("r2SecretAccessKey") || r2SecretAccessKey?.value || "").trim();
-  const domain = getSelectedR2Domain();
+  const domain = getSelectedR2Domain("r2");
   return Boolean(accountId && bucketName && accessKeyId && secretAccessKey && domain);
 }
 
@@ -595,7 +602,7 @@ function isFilebaseConfigured() {
   const bucketName = (localStorage.getItem("filebaseBucket") || filebaseBucket?.value || "").trim();
   const accessKeyId = (localStorage.getItem("filebaseApiKey") || filebaseApiKey?.value || "").trim();
   const secretAccessKey = (localStorage.getItem("filebaseSecretKey") || filebaseSecretKey?.value || "").trim();
-  const domain = getSelectedR2Domain();
+  const domain = getSelectedR2Domain("filebase");
   return Boolean(bucketName && accessKeyId && secretAccessKey && domain);
 }
 
@@ -847,6 +854,14 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
           ttlMap[key] = { ttl, expiresAt: payload.expiresAt };
           localStorage.setItem("fileTtlMap", JSON.stringify(ttlMap));
         } catch (e) {}
+      } else if (expiresAt && Number(expiresAt) > 0) {
+        // 保存先の状態更新時は継続時間を復元できない場合がある。絶対期限を優先する。
+        payload.expiresAt = Number(expiresAt);
+        try {
+          const ttlMap = JSON.parse(localStorage.getItem("fileTtlMap") || "{}");
+          ttlMap[key] = { ttl: 0, expiresAt: payload.expiresAt };
+          localStorage.setItem("fileTtlMap", JSON.stringify(ttlMap));
+        } catch (e) {}
       } else {
         // ⏳ 0 または無期限化: KV側にも明示的に解除を指示
         payload.ttl = 0;
@@ -1092,43 +1107,62 @@ async function fetchKvFiles() {
 
 // --- 🌐 R2 公開・配信ドメイン管理 ---
 
-function getR2DomainList() {
+function normalizeDeliveryProvider(provider) {
+  return provider === "filebase" ? "filebase" : "r2";
+}
+
+function getR2DomainList(provider = activeStorageTab) {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  const listKey = storageProvider === "filebase" ? "filebaseDomainList" : "r2DomainList";
   let list = [];
   try {
-    list = JSON.parse(localStorage.getItem("r2DomainList") || "[]");
+    list = JSON.parse(localStorage.getItem(listKey) || "[]");
   } catch (e) {
     list = [];
+  }
+  // 既存の共通リストは初回だけ各ストレージ用に複製して互換移行する。
+  if (storageProvider === "filebase" && list.length === 0 && !localStorage.getItem(listKey)) {
+    try {
+      list = JSON.parse(localStorage.getItem("r2DomainList") || "[]");
+      localStorage.setItem(listKey, JSON.stringify(list));
+    } catch (e) {}
   }
   // cividge.pages.dev（トップ専用）は配信ドメインから除外
   list = list.filter(d => !d.includes("cividge.pages.dev"));
 
   // 後方互換性：旧 r2PublicDomain / r2DevDomain からの移行（未登録時のみ）
-  const legacyPub = (localStorage.getItem("r2PublicDomain") || "").trim();
-  const legacyDev = (localStorage.getItem("r2DevDomain") || "").trim();
-  if (legacyPub && !legacyPub.includes("cividge.pages.dev") && !list.includes(legacyPub)) list.push(legacyPub);
-  if (legacyDev && !legacyDev.includes("cividge.pages.dev") && !list.includes(legacyDev)) list.push(legacyDev);
+  if (storageProvider === "r2") {
+    const legacyPub = (localStorage.getItem("r2PublicDomain") || "").trim();
+    const legacyDev = (localStorage.getItem("r2DevDomain") || "").trim();
+    if (legacyPub && !legacyPub.includes("cividge.pages.dev") && !list.includes(legacyPub)) list.push(legacyPub);
+    if (legacyDev && !legacyDev.includes("cividge.pages.dev") && !list.includes(legacyDev)) list.push(legacyDev);
+  }
 
   // 重複排除 & 空白除去
   return [...new Set(list.map(d => d.trim().replace(/\/$/, "")).filter(Boolean))];
 }
 
-function saveR2DomainList(list) {
-  localStorage.setItem("r2DomainList", JSON.stringify(list));
+function saveR2DomainList(list, provider = activeStorageTab) {
+  const key = normalizeDeliveryProvider(provider) === "filebase" ? "filebaseDomainList" : "r2DomainList";
+  localStorage.setItem(key, JSON.stringify(list));
 }
 
-function getSelectedR2Domain() {
-  const list = getR2DomainList();
-  const saved = (localStorage.getItem("r2SelectedDomain") || "").trim().replace(/\/$/, "");
+function getSelectedR2Domain(provider = activeStorageTab) {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  const list = getR2DomainList(storageProvider);
+  const selectedKey = storageProvider === "filebase" ? "filebaseSelectedDomain" : "r2SelectedDomain";
+  const saved = (localStorage.getItem(selectedKey) || "").trim().replace(/\/$/, "");
   if (saved && list.includes(saved)) {
     return saved;
   }
   return list.length > 0 ? list[0] : "";
 }
 
-function setSelectedR2Domain(domain) {
+function setSelectedR2Domain(domain, provider = activeStorageTab) {
+  const storageProvider = normalizeDeliveryProvider(provider);
   const clean = (domain || "").trim().replace(/\/$/, "");
-  localStorage.setItem("r2SelectedDomain", clean);
-  localStorage.setItem("r2PublicDomain", clean); // 後方互換
+  localStorage.setItem(storageProvider === "filebase" ? "filebaseSelectedDomain" : "r2SelectedDomain", clean);
+  if (storageProvider === "r2") localStorage.setItem("r2PublicDomain", clean); // 後方互換
 }
 
 // 🌐 既存のURLのオリジン（ドメイン部分）を指定のドメインに差し替える
@@ -1223,7 +1257,8 @@ async function findFilebaseObjectByCid(s3, bucketName, targetCid) {
 function getSelectedDeliveryUrl(result) {
   if (!result?.name) return "";
 
-  const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : ""))
+  const provider = result?.uploadedProvider === "filebase" ? "filebase" : "r2";
+  const baseDomain = (getSelectedR2Domain(provider) || (typeof window !== "undefined" ? window.location.origin : ""))
     .replace(/\/$/, "");
   return baseDomain ? `${baseDomain}/${encodeURIComponent(result.name)}` : "";
 }
@@ -1298,6 +1333,8 @@ function createCardDomainBadgeHtml(currentUrl, extraClass = "") {
 
 // ⏳ 各ファイルカード用の有効期限プルダウンHTML生成（初期状態: 0 = 削除しない）
 function createCardTtlSelectHtml(expiresAt = null, extraClass = "") {
+  const labels = getStorageListLabels();
+  const isEnglish = getAppLanguage() === "en";
   // 現在の残り秒数を計算
   let activeValue = "0";
   if (expiresAt && Number(expiresAt) > Date.now()) {
@@ -1311,12 +1348,12 @@ function createCardTtlSelectHtml(expiresAt = null, extraClass = "") {
   }
 
   const options = [
-    { val: "0", label: "⏳ 削除しない（無期限）" },
-    { val: "3600", label: "⏳ 1時間後に削除" },
-    { val: "43200", label: "⏳ 12時間後に削除" },
-    { val: "86400", label: "⏳ 24時間後に削除" },
-    { val: "259200", label: "⏳ 3日後に削除" },
-    { val: "604800", label: "⏳ 7日後に削除" },
+    { val: "0", label: labels.neverDelete },
+    { val: "3600", label: isEnglish ? "⏳ Delete after 1 hour" : "⏳ 1時間後に削除" },
+    { val: "43200", label: isEnglish ? "⏳ Delete after 12 hours" : "⏳ 12時間後に削除" },
+    { val: "86400", label: isEnglish ? "⏳ Delete after 24 hours" : "⏳ 24時間後に削除" },
+    { val: "259200", label: isEnglish ? "⏳ Delete after 3 days" : "⏳ 3日後に削除" },
+    { val: "604800", label: isEnglish ? "⏳ Delete after 7 days" : "⏳ 7日後に削除" },
   ];
 
   let optionsHtml = "";
@@ -1326,27 +1363,29 @@ function createCardTtlSelectHtml(expiresAt = null, extraClass = "") {
   });
 
   return `
-    <select class="card-ttl-switcher ${extraClass}" title="ファイルの自動削除期限を設定・変更する" style="height: 28px; font-size: 11px; max-width: 135px; background: rgba(0,0,0,0.4); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 4px; padding: 0 4px; outline: none; cursor: pointer;">
+    <select class="card-ttl-switcher ${extraClass}" title="${isEnglish ? "Set automatic deletion time" : "ファイルの自動削除期限を設定・変更する"}" style="height: 28px; font-size: 11px; max-width: 135px; background: rgba(0,0,0,0.4); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 4px; padding: 0 4px; outline: none; cursor: pointer;">
       ${optionsHtml}
     </select>
   `;
 }
 
 function renderR2DomainSelect() {
-  const list = getR2DomainList();
-  const current = getSelectedR2Domain();
+  const r2Domains = getR2DomainList("r2");
+  const filebaseDomains = getR2DomainList("filebase");
+  const selectedR2Domain = getSelectedR2Domain("r2");
+  const selectedFilebaseDomain = getSelectedR2Domain("filebase");
 
-  const populateSelect = (selectElem, emptyText) => {
+  const populateSelect = (selectElem, domains, selectedDomain, emptyText) => {
     if (!selectElem) return;
     selectElem.innerHTML = "";
-    if (list.length === 0) {
+    if (domains.length === 0) {
       const opt = document.createElement("option");
       opt.value = "";
       opt.textContent = emptyText;
       selectElem.append(opt);
       return;
     }
-    list.forEach(domain => {
+    domains.forEach(domain => {
       const opt = document.createElement("option");
       opt.value = domain;
       let icon = "🌐 ";
@@ -1356,17 +1395,20 @@ function renderR2DomainSelect() {
         icon = "📦 ";
       }
       opt.textContent = `${icon}${domain}`;
-      if (domain === current) opt.selected = true;
+      if (domain === selectedDomain) opt.selected = true;
       selectElem.append(opt);
     });
   };
 
-  populateSelect(r2DomainSelect, "-- 配信ドメインが未登録です (＋から追加) --");
-  populateSelect(quickDomainSelect, "-- 配信ドメインを選択 --");
+  populateSelect(r2DomainSelect, r2Domains, selectedR2Domain, "-- R2 配信ドメインが未登録です (＋から追加) --");
+  populateSelect(filebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, "-- Filebase 配信ドメインが未登録です (＋から追加) --");
+  populateSelect(quickDomainSelect, r2Domains, selectedR2Domain, "-- R2 ドメインを選択 --");
+  populateSelect(quickFilebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, "-- Filebase ドメインを選択 --");
 
   if (r2DomainDeleteBtn) {
-    r2DomainDeleteBtn.disabled = list.length === 0;
+    r2DomainDeleteBtn.disabled = r2Domains.length === 0;
   }
+  if (filebaseDomainDeleteBtn) filebaseDomainDeleteBtn.disabled = filebaseDomains.length === 0;
 }
 
 // --- R2 / Filebase 設定状態の更新 ---
@@ -1877,15 +1919,7 @@ function loadSettings() {
 
   syncStorageLimitControl();
 
-  const savedR2AutoCleanup = localStorage.getItem("r2AutoCleanup");
-  if (savedR2AutoCleanup !== null && autoCleanupCheckbox) {
-    autoCleanupCheckbox.checked = savedR2AutoCleanup === "true";
-  }
-
-  const savedAutoFifo = localStorage.getItem("autoFifo");
-  if (autoFifoCheckbox) {
-    autoFifoCheckbox.checked = savedAutoFifo !== "false"; // デフォルトでON
-  }
+  syncAutoFifoControl();
 
   // 🏠 Kubo設定ロード
   const savedKuboUrl = localStorage.getItem("kuboRpcUrl") || "http://127.0.0.1:5001";
@@ -2001,8 +2035,10 @@ function buildAppExportPayload() {
   const civitaiUserList = getCivitaiUserList();
   const domainList = getR2DomainList();
   const selectedDomain = getSelectedR2Domain();
+  const filebaseDomainList = getR2DomainList("filebase");
+  const selectedFilebaseDomain = getSelectedR2Domain("filebase");
 
-  const payload = { v: 3 };
+  const payload = { v: 4 };
   if (accountId) payload.a = accountId;
   if (bucketName) payload.b = bucketName;
   if (accessKeyId) payload.k = accessKeyId;
@@ -2011,6 +2047,8 @@ function buildAppExportPayload() {
   if (devDomain) payload.d = devDomain;
   if (domainList.length > 0) payload.dl = domainList;
   if (selectedDomain) payload.ds = selectedDomain;
+  if (filebaseDomainList.length > 0) payload.fdl = filebaseDomainList;
+  if (selectedFilebaseDomain) payload.fds = selectedFilebaseDomain;
 
   if (fbBucket) payload.fb = fbBucket;
   if (fbKeyId) payload.fk = fbKeyId;
@@ -2062,6 +2100,11 @@ function applyAppImportPayload(payload) {
     saveR2DomainList(payload.dl);
     if (payload.ds) setSelectedR2Domain(payload.ds);
     renderR2DomainSelect();
+    hasRestoredAny = true;
+  }
+  if (Array.isArray(payload.fdl) && payload.fdl.length > 0) {
+    saveR2DomainList(payload.fdl, "filebase");
+    if (payload.fds) setSelectedR2Domain(payload.fds, "filebase");
     hasRestoredAny = true;
   }
 
@@ -2368,46 +2411,51 @@ kvWorkerUrl?.addEventListener("input", saveR2SettingsAuto);
 adminApiToken?.addEventListener("input", saveR2SettingsAuto);
 
 // 🌐 ドメイン選択変更リスナー
-const handleDomainSelectionChange = (newDomain) => {
-  setSelectedR2Domain(newDomain);
-  if (r2DomainSelect && r2DomainSelect.value !== newDomain) {
+const handleDomainSelectionChange = (newDomain, provider = activeStorageTab) => {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  setSelectedR2Domain(newDomain, storageProvider);
+  if (storageProvider === normalizeDeliveryProvider(activeStorageTab) && r2DomainSelect && r2DomainSelect.value !== newDomain) {
     r2DomainSelect.value = newDomain;
   }
-  if (quickDomainSelect && quickDomainSelect.value !== newDomain) {
+  if (storageProvider === "r2" && quickDomainSelect && quickDomainSelect.value !== newDomain) {
     quickDomainSelect.value = newDomain;
+  }
+  if (storageProvider === "filebase" && quickFilebaseDomainSelect && quickFilebaseDomainSelect.value !== newDomain) {
+    quickFilebaseDomainSelect.value = newDomain;
   }
   updateR2Status();
   render();
-  fetchAndRenderR2Files();
+  if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
 };
 
 r2DomainSelect?.addEventListener("change", (e) => {
-  handleDomainSelectionChange(e.target.value);
+  handleDomainSelectionChange(e.target.value, "r2");
+});
+
+filebaseDomainSelect?.addEventListener("change", (e) => {
+  handleDomainSelectionChange(e.target.value, "filebase");
 });
 
 quickDomainSelect?.addEventListener("change", (e) => {
-  handleDomainSelectionChange(e.target.value);
+  handleDomainSelectionChange(e.target.value, "r2");
 });
 
-// 🌐 ドメイン追加フォーム表示
-r2DomainAddBtn?.addEventListener("click", () => {
-  if (r2DomainAddForm) {
-    r2DomainAddForm.style.display = "flex";
-    if (r2DomainNewInput) {
-      r2DomainNewInput.value = "";
-      r2DomainNewInput.focus();
-    }
+quickFilebaseDomainSelect?.addEventListener("change", (e) => {
+  handleDomainSelectionChange(e.target.value, "filebase");
+});
+
+function showDomainAddForm(form, input) {
+  if (!form) return;
+  form.style.display = "flex";
+  if (input) {
+    input.value = "";
+    input.focus();
   }
-});
+}
 
-// 🌐 ドメイン追加フォームキャンセル
-r2DomainNewCancelBtn?.addEventListener("click", () => {
-  if (r2DomainAddForm) r2DomainAddForm.style.display = "none";
-});
-
-// 🌐 ドメイン新規追加処理
-function handleAddNewDomain() {
-  const raw = r2DomainNewInput?.value?.trim() || "";
+function handleAddNewDomain(provider, input, form) {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  const raw = input?.value?.trim() || "";
   if (!raw) return;
 
   let formatted = raw.replace(/\/$/, "");
@@ -2415,49 +2463,48 @@ function handleAddNewDomain() {
     formatted = "https://" + formatted;
   }
 
-  const list = getR2DomainList();
+  const list = getR2DomainList(storageProvider);
   if (!list.includes(formatted)) {
     list.push(formatted);
-    saveR2DomainList(list);
+    saveR2DomainList(list, storageProvider);
   }
-  setSelectedR2Domain(formatted);
+  setSelectedR2Domain(formatted, storageProvider);
   renderR2DomainSelect();
   updateR2Status();
   render();
-  fetchAndRenderR2Files();
-
-  if (r2DomainAddForm) r2DomainAddForm.style.display = "none";
+  if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
+  if (form) form.style.display = "none";
 }
 
-r2DomainNewSaveBtn?.addEventListener("click", handleAddNewDomain);
-r2DomainNewInput?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    handleAddNewDomain();
-  } else if (e.key === "Escape") {
-    if (r2DomainAddForm) r2DomainAddForm.style.display = "none";
-  }
-});
+function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, saveBtn, cancelBtn, label) {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  addBtn?.addEventListener("click", () => showDomainAddForm(form, input));
+  cancelBtn?.addEventListener("click", () => { if (form) form.style.display = "none"; });
+  saveBtn?.addEventListener("click", () => handleAddNewDomain(storageProvider, input, form));
+  input?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleAddNewDomain(storageProvider, input, form);
+    } else if (e.key === "Escape" && form) {
+      form.style.display = "none";
+    }
+  });
+  deleteBtn?.addEventListener("click", () => {
+    const current = getSelectedR2Domain(storageProvider);
+    if (!current) return;
+    if (!confirm(`選択中の${label}配信ドメイン「${current}」を削除しますか？`)) return;
+    const nextList = getR2DomainList(storageProvider).filter(d => d !== current);
+    saveR2DomainList(nextList, storageProvider);
+    setSelectedR2Domain(nextList[0] || "", storageProvider);
+    renderR2DomainSelect();
+    updateR2Status();
+    render();
+    if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
+  });
+}
 
-// 🌐 ドメイン削除リスナー
-r2DomainDeleteBtn?.addEventListener("click", () => {
-  const current = getSelectedR2Domain();
-  if (!current) return;
-
-  if (!confirm(`選択中の配信ドメイン「${current}」を削除しますか？`)) return;
-
-  const list = getR2DomainList();
-  const nextList = list.filter(d => d !== current);
-  saveR2DomainList(nextList);
-
-  const nextSelected = nextList.length > 0 ? nextList[0] : "";
-  setSelectedR2Domain(nextSelected);
-
-  renderR2DomainSelect();
-  updateR2Status();
-  render();
-  fetchAndRenderR2Files();
-});
+bindDomainManager("r2", r2DomainSelect, r2DomainAddBtn, r2DomainDeleteBtn, r2DomainAddForm, r2DomainNewInput, r2DomainNewSaveBtn, r2DomainNewCancelBtn, "R2 ");
+bindDomainManager("filebase", filebaseDomainSelect, filebaseDomainAddBtn, filebaseDomainDeleteBtn, filebaseDomainAddForm, filebaseDomainNewInput, filebaseDomainNewSaveBtn, filebaseDomainNewCancelBtn, "Filebase ");
 
 cfSaveButton?.addEventListener("click", () => {
   saveR2SettingsAuto();
@@ -2474,6 +2521,8 @@ cfClearButton?.addEventListener("click", () => {
   localStorage.removeItem("r2SelectedDomain");
   localStorage.removeItem("r2PublicDomain");
   localStorage.removeItem("r2DevDomain");
+  localStorage.removeItem("filebaseDomainList");
+  localStorage.removeItem("filebaseSelectedDomain");
 
   localStorage.removeItem("filebaseBucket");
   localStorage.removeItem("filebaseApiKey");
@@ -2828,12 +2877,9 @@ storageLimitRange?.addEventListener("input", () => {
   updateStorageUsageUI();
 });
 
-autoCleanupCheckbox?.addEventListener("change", () => {
-  localStorage.setItem("r2AutoCleanup", String(autoCleanupCheckbox.checked));
-});
-
 autoFifoCheckbox?.addEventListener("change", () => {
-  localStorage.setItem("autoFifo", String(autoFifoCheckbox.checked));
+  const key = activeStorageTab === "filebase" ? "autoFifo" : "r2AutoFifo";
+  localStorage.setItem(key, String(autoFifoCheckbox.checked));
 });
 
 function updateStorageUsageUI() {
@@ -2848,7 +2894,7 @@ function updateStorageUsageUI() {
   if (storageUsageBar) storageUsageBar.value = clampedPercentage;
   
   if (storageUsageText) {
-    storageUsageText.textContent = `使用量: ${formatBytes(totalSize)} / ${limitGb} GB (${clampedPercentage}%)`;
+    storageUsageText.textContent = `${getAppLanguage() === "en" ? "Usage" : "使用量"}: ${formatBytes(totalSize)} / ${limitGb} GB (${clampedPercentage}%)`;
     
     if (totalSize > limitBytes) {
       storageUsageText.classList.add("storage-warning");
@@ -4888,6 +4934,60 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
   }
 }
 
+// ⚡ R2 FIFO: R2 側は IPFS のような「URLを残したアンピン」ができないため、
+// 上限到達時に古い実体と対応する台帳リンクをまとめて削除する。
+async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
+  if (localStorage.getItem("r2AutoFifo") !== "true" || !s3 || !bucketName) return;
+
+  const limitMb = Number(localStorage.getItem("r2StorageLimit") || localStorage.getItem("storageLimit") || "10000");
+  const limitBytes = limitMb * 1024 * 1024;
+  try {
+    const contents = [];
+    let continuationToken;
+    do {
+      const page = await s3.send(new ListObjectsV2Command({
+        Bucket: bucketName,
+        MaxKeys: 1000,
+        ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+      }));
+      contents.push(...(page.Contents || []));
+      continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    let totalBytes = contents.reduce((sum, item) => sum + (item.Size || 0), 0);
+    if (totalBytes + requiredBytes <= limitBytes * 0.85) return;
+
+    const candidates = contents
+      .filter(item => !item.Key?.startsWith("pinned_"))
+      .sort((a, b) => new Date(a.LastModified || 0) - new Date(b.LastModified || 0));
+    const keysToDelete = [];
+    for (const item of candidates) {
+      keysToDelete.push(item.Key);
+      totalBytes -= item.Size || 0;
+      if (totalBytes + requiredBytes <= limitBytes * 0.70) break;
+    }
+    if (keysToDelete.length === 0) return;
+
+    await s3.send(new DeleteObjectsCommand({
+      Bucket: bucketName,
+      Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
+    }));
+
+    // 台帳に別名がある場合も、実体消去後の死んだリンクを残さない。
+    const kvFiles = await fetchKvFiles();
+    const linksToDelete = new Set();
+    for (const item of kvFiles) {
+      const linkedS3Key = item.metadata?.s3Key || item.metadata?.k_s3 || item.name;
+      if (keysToDelete.includes(linkedS3Key)) linksToDelete.add(item.name);
+    }
+    for (const key of linksToDelete) await deleteKvCid(key);
+
+    console.log(`⚡ R2 FIFO 自動削除: ${keysToDelete.length}件 / ${formatBytes(requiredBytes)} の空きを確保`);
+  } catch (err) {
+    console.warn("R2 FIFO ensureStorageCapacity error:", err);
+  }
+}
+
 // --- S3 アップロード処理 (R2 / Filebase 独立対応) ---
 async function uploadImage(result, targetProvider = "r2", customPassword = null) {
   if (!result || !result.blob) return false;
@@ -4998,7 +5098,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
             throw new Error("同一CIDのファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
           }
 
-          const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
+          const baseDomain = (getSelectedR2Domain("filebase") || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
           result.isUploaded = true;
           result.uploadedProvider = "filebase";
           result.storageKey = duplicate.key;
@@ -5041,6 +5141,8 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
     // 🪐 Filebase (IPFS): 容量上限に近づいている場合、最も古い実体を自動アンピン (FIFO)
     if (isFilebase) {
       await ensureStorageCapacityFilebase(s3, bucketName, uploadBytes.length);
+    } else {
+      await ensureStorageCapacityR2(s3, bucketName, uploadBytes.length);
     }
 
     const s3Metadata = {
@@ -5102,7 +5204,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
     result.ttl = ttlSeconds;
     result.expiresAt = expiresAt;
 
-    const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
+    const baseDomain = (getSelectedR2Domain(targetProvider) || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
 
     if (isFilebase) {
       if (ipfsCid && isValidIpfsCid(ipfsCid)) {
@@ -5299,6 +5401,29 @@ convertDownloadButton?.addEventListener("click", async () => {
 });
 
 // --- R2 / Filebase ストレージ一覧 & タブ管理 ---
+function getStorageListLabels() {
+  if (getAppLanguage() !== "en") {
+    return {
+      all: "全", items: "件", updated: "更新日:", expires: "期限切れ", remaining: "残り",
+      day: "日", hour: "時間", protected: "パスワード保護", passphrase: "合言葉:",
+      filebaseStored: "☁️ Filebase: 保持中", filebaseRemoved: "☁️ Filebase: 未保持",
+      kuboOff: "🏠 Kubo: 未設定", kuboStored: "🏠 Kubo: 保持中", kuboMissing: "🏠 Kubo: 未保持",
+      ipfsDrifting: "🌊 IPFS: 漂流中", delete: "削除", rename: "ファイル名を変更",
+      nodeCheck: "🌐 ノード確認 ↗", workflow: "🧬 ワークフローあり", connectionError: "通信エラー:",
+      neverDelete: "⏳ 削除しない（無期限）", deleteAfter: "後に削除",
+    };
+  }
+  return {
+    all: "All", items: "items", updated: "Updated:", expires: "Expired", remaining: "Remaining",
+    day: "d", hour: "h", protected: "Password protected", passphrase: "Passphrase:",
+    filebaseStored: "☁️ Filebase: Stored", filebaseRemoved: "☁️ Filebase: Unpinned",
+    kuboOff: "🏠 Kubo: Disabled", kuboStored: "🏠 Kubo: Pinned", kuboMissing: "🏠 Kubo: Not pinned",
+    ipfsDrifting: "🌊 IPFS: Drifting", delete: "Delete", rename: "Rename file",
+    nodeCheck: "🌐 Check nodes ↗", workflow: "🧬 Workflow found", connectionError: "Connection error:",
+    neverDelete: "⏳ Keep forever", deleteAfter: "delete after",
+  };
+}
+
 function updateStorageTabsUi() {
   if (storageTabR2 && storageTabFilebase) {
     if (activeStorageTab === "filebase") {
@@ -5312,8 +5437,6 @@ function updateStorageTabsUi() {
       storageTabR2.style.color = "var(--muted)";
       storageTabR2.style.fontWeight = "600";
 
-      if (autoFifoLabel) autoFifoLabel.style.display = "inline-flex";
-      if (autoCleanupLabel) autoCleanupLabel.style.display = "none";
     } else {
       storageTabR2.style.border = "1px solid #f97316";
       storageTabR2.style.background = "rgba(249, 115, 22, 0.15)";
@@ -5325,20 +5448,37 @@ function updateStorageTabsUi() {
       storageTabFilebase.style.color = "var(--muted)";
       storageTabFilebase.style.fontWeight = "600";
 
-      if (autoFifoLabel) autoFifoLabel.style.display = "none";
-      if (autoCleanupLabel) autoCleanupLabel.style.display = "inline-flex";
     }
   }
+  syncAutoFifoControl();
+}
+
+function syncAutoFifoControl() {
+  if (!autoFifoCheckbox || !autoFifoLabel) return;
+  const isFilebase = activeStorageTab === "filebase";
+  // 既存の Filebase FIFO は互換のため既定ON、R2 は明示的にONにするまでOFF。
+  const enabled = isFilebase
+    ? localStorage.getItem("autoFifo") !== "false"
+    : localStorage.getItem("r2AutoFifo") === "true";
+  autoFifoCheckbox.checked = enabled;
+  const labelText = isFilebase ? "📦 Filebase 自動容量解放 (FIFO)" : "📦 R2 自動容量解放 (FIFO)";
+  const titleText = isFilebase
+    ? "Filebase の容量上限に近づいたとき、古い実体をアンピンして空きを確保します（URLは維持）"
+    : "R2 の容量上限に近づいたとき、古いファイルを削除して空きを確保します";
+  autoFifoLabel.title = titleText;
+  const text = autoFifoLabel.querySelector("span");
+  if (text) text.textContent = labelText;
 }
 
 // 📄 ストレージ一覧 ページネーション描画 & UI更新
 function updateStoragePaginationUI(totalItems) {
   if (!r2PaginationControls || !r2PageInfo || !r2PrevPageBtn || !r2NextPageBtn) return;
+  const labels = getStorageListLabels();
 
   if (storagePerPage <= 0) {
     // 「すべて」表示
     storageCurrentPage = 1;
-    r2PageInfo.textContent = `全 ${totalItems} 件`;
+    r2PageInfo.textContent = getAppLanguage() === "en" ? `${labels.all} ${totalItems} ${labels.items}` : `${labels.all} ${totalItems} ${labels.items}`;
     r2PrevPageBtn.disabled = true;
     r2NextPageBtn.disabled = true;
     return;
@@ -5352,7 +5492,7 @@ function updateStoragePaginationUI(totalItems) {
     storageCurrentPage = 1;
   }
 
-  r2PageInfo.textContent = `${storageCurrentPage} / ${totalPages} (${totalItems}件)`;
+  r2PageInfo.textContent = `${storageCurrentPage} / ${totalPages} (${totalItems}${getAppLanguage() === "en" ? ` ${labels.items}` : labels.items})`;
   r2PrevPageBtn.disabled = storageCurrentPage <= 1;
   r2NextPageBtn.disabled = storageCurrentPage >= totalPages;
 
@@ -5392,6 +5532,7 @@ storageTabR2?.addEventListener("click", () => {
   storageCurrentPage = 1;
   updateStorageTabsUi();
   syncStorageLimitControl();
+  renderR2DomainSelect("r2");
   fetchAndRenderR2Files();
 });
 
@@ -5401,6 +5542,7 @@ storageTabFilebase?.addEventListener("click", () => {
   storageCurrentPage = 1;
   updateStorageTabsUi();
   syncStorageLimitControl();
+  renderR2DomainSelect("filebase");
   fetchAndRenderR2Files();
 });
 
@@ -5861,72 +6003,16 @@ async function fetchAndRenderR2Files() {
       });
     }
 
-    // ⏳ 時限アップロードのファジー自動削除（期限切れファイルをバックグラウンドで自動抹消）
+    // ⏳ 期限切れのカードは一覧上では非表示にする。
+    // 実際のリンク削除・最後の CID の pin 解放は配信 Worker が期限後の最初のアクセス時に行う。
+    // 一覧を開くだけで KV/S3 を書き換えないため、Cron も管理画面の常時起動も不要。
     if (contents.length > 0) {
       const nowMs = Date.now();
       const expiredItems = contents.filter(item => item.expiresAt && nowMs > Number(item.expiresAt));
       if (expiredItems.length > 0) {
-        console.log("⏳ 期限切れファイルを検知 (" + expiredItems.length + "件) -> 自動リンク抹消開始", expiredItems.map(i => i.Key));
-        (async () => {
-          for (const expItem of expiredItems) {
-            const expItemKey = expItem.rawKey || expItem.Key;
-            try {
-              await deleteKvCid(expItemKey);
-
-              // 🛡️ 他の有効なカードが同じ S3 実体を共有しているか確認
-              const otherActive = contents.some(other => {
-                if (other === expItem) return false;
-                const otherKey = other.rawKey || other.Key;
-                if (otherKey === expItemKey) return false;
-                if (other.expiresAt && nowMs > Number(other.expiresAt)) return false; // 期限切れ同士は除外
-                if (expItem.s3Key && other.s3Key && expItem.s3Key === other.s3Key) return true;
-                if (expItem.cid && other.cid && expItem.cid === other.cid) return true;
-                return false;
-              });
-
-              // 他に共有している有効なエイリアスカードが無い場合のみ S3 実体を削除
-              if (!otherActive && expItem.isFromS3 && s3 && bucketName && (expItem.s3Key || expItem.Key)) {
-                const delCmd = new DeleteObjectCommand({
-                  Bucket: bucketName,
-                  Key: expItem.s3Key || expItem.Key,
-                });
-                await s3.send(delCmd);
-              }
-            } catch (delErr) {
-              console.warn("Auto-expiry cleanup failed for " + expItemKey + ":", delErr);
-            }
-          }
-        })();
-        // 即座に一覧の見た目からも期限切れファイルを除外
+        console.log("⏳ 期限切れファイルを一覧から非表示にしました（配信URLへの次回アクセス時に回収）", expiredItems.map(i => i.Key));
         const expiredKeySet = new Set(expiredItems.map(i => i.rawKey || i.Key));
         contents = contents.filter(i => !expiredKeySet.has(i.rawKey || i.Key));
-      }
-    }
-
-    // ⚡ Cloudflare R2 専用: 自動クリーンアップチェック (7日以上経過したファイルを削除)
-    const isR2AutoCleanup = localStorage.getItem("r2AutoCleanup") === "true";
-    if (!isFilebase && isR2AutoCleanup && contents.length > 0) {
-      const now = new Date();
-      const oldKeys = contents.filter(item => {
-        if (!item.LastModified) return false;
-        if (item.Key?.startsWith("pinned_")) return false; // 📌永続化プレフィックスは保護
-        const diffDays = (now - new Date(item.LastModified)) / (1000 * 60 * 60 * 24);
-        return diffDays >= 7;
-      }).map(item => ({ Key: item.s3Key || item.Key }));
-
-      if (oldKeys.length > 0) {
-        try {
-          const delCommand = new DeleteObjectsCommand({
-            Bucket: bucketName,
-            Delete: { Objects: oldKeys },
-          });
-          await s3.send(delCommand);
-          const oldKeySet = new Set(oldKeys.map(k => k.Key));
-          contents = contents.filter(i => !oldKeySet.has(i.Key));
-          console.log(`⚡ R2 7日経過ファイル自動クリーンアップ完了: ${oldKeys.length}件削除`);
-        } catch (delErr) {
-          console.warn("R2 auto cleanup delete error:", delErr);
-        }
       }
     }
 
@@ -6029,7 +6115,7 @@ async function fetchAndRenderR2Files() {
     }
   } catch (error) {
     console.error("Storage fetch error:", error);
-    r2FileList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger); display: block; text-align: center;">通信エラー: ${escapeHtml(error.message)}</span>`;
+    r2FileList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)}</span>`;
   }
 }
 
@@ -6041,6 +6127,7 @@ function renderCurrentStoragePage() {
   const isFilebase = activeStorageTab === "filebase";
   const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
   const totalItems = storageCachedContents.length;
+  const labels = getStorageListLabels();
 
   updateStoragePaginationUI(totalItems);
 
@@ -6086,25 +6173,24 @@ function renderCurrentStoragePage() {
 
     // 公開・コピー用URLはストレージ種別やCIDの有無にかかわらず常に配信ドメイン + ファイル名。
     const publicUrl = `${fileDomain}/${encodeURIComponent(item.Key)}`;
-    const devUrl = isFilebase ? null : getDevUrl(item.Key);
 
     const hasPassword = Boolean(item.password || item.metadata?.passwordHash || item.metadata?.password);
     const plainPwd = item.password || item.metadata?.password;
     const pwdBadgeHtml = hasPassword
-      ? `<span class="password-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;" title="閲覧パスワードが設定されています">🔒 ${plainPwd ? `合言葉: ${escapeHtml(plainPwd)}` : "パスワード保護"}</span>`
+      ? `<span class="password-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;" title="${escapeHtml(labels.protected)}">🔒 ${plainPwd ? `${labels.passphrase} ${escapeHtml(plainPwd)}` : labels.protected}</span>`
       : "";
 
     let ttlBadgeHtml = "";
     if (item.expiresAt) {
       const msRemaining = Number(item.expiresAt) - Date.now();
       if (msRemaining <= 0) {
-        ttlBadgeHtml = '<span style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;" title="有効期限が切れています">⚠️ 期限切れ</span>';
+        ttlBadgeHtml = `<span style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;" title="${escapeHtml(labels.expires)}">⚠️ ${escapeHtml(labels.expires)}</span>`;
       } else {
         const hoursRemaining = Math.max(1, Math.ceil(msRemaining / (1000 * 3600)));
         const days = Math.floor(hoursRemaining / 24);
         const remHours = hoursRemaining % 24;
-        const timeText = days > 0 ? `${days}日${remHours > 0 ? " " + remHours + "時間" : ""}` : `${hoursRemaining}時間`;
-        ttlBadgeHtml = `<span class="ttl-countdown-badge" style="background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;" title="設定された期限が過ぎると自動消滅します">⏳ 残り ${timeText}</span>`;
+        const timeText = days > 0 ? `${days}${labels.day}${remHours > 0 ? " " + remHours + labels.hour : ""}` : `${hoursRemaining}${labels.hour}`;
+        ttlBadgeHtml = `<span class="ttl-countdown-badge" style="background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">⏳ ${escapeHtml(labels.remaining)} ${timeText}</span>`;
       }
     }
 
@@ -6136,22 +6222,22 @@ function renderCurrentStoragePage() {
       const isKuboPinned = item.metadata?.kuboStatus === "pinned";
 
       const fbBadgeHtml = isFromS3
-        ? `<button type="button" class="unpin-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;" title="Filebaseに保存中（クリックでアンピン）">☁️ Filebase: 保持中</button>`
-        : `<span style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500;" title="Filebaseから削除（アンピン）済み">☁️ Filebase: 未保持</span>`;
+        ? `<button type="button" class="unpin-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.filebaseStored}</button>`
+        : `<span style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500;">${labels.filebaseRemoved}</span>`;
 
       let kuboBadgeHtml = "";
       if (!isKuboAutoPin) {
-        kuboBadgeHtml = `<span class="kubo-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.08); color: #64748b; border: 1px dashed rgba(148,163,184,0.25); font-weight: 500; cursor: not-allowed; display: inline-flex; align-items: center; gap: 3px;" title="自宅Kubo機能は無効（設定で有効化可能）">🏠 Kubo: 未設定</span>`;
+        kuboBadgeHtml = `<span class="kubo-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.08); color: #64748b; border: 1px dashed rgba(148,163,184,0.25); font-weight: 500; cursor: not-allowed; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboOff}</span>`;
       } else if (isKuboPinned) {
-        kuboBadgeHtml = `<button type="button" class="kubo-unpin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;" title="🏠 自宅Kuboに保護中（クリックでPin解除）">🏠 Kubo: 保持中</button>`;
+        kuboBadgeHtml = `<button type="button" class="kubo-unpin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboStored}</button>`;
       } else if (itemCid) {
-        kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; display: inline-flex; align-items: center; gap: 3px;" title="自宅Kubo未保持（クリックで自宅KuboへPin留め）">🏠 Kubo: 未保持</button>`;
+        kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboMissing}</button>`;
       }
 
       let driftingBadgeHtml = "";
       const hasKuboRecord = isKuboPinned || item.metadata?.kuboStatus === "pinned" || item.kuboStatus === "pinned";
       if (!isFromS3 && !hasKuboRecord) {
-        driftingBadgeHtml = `<span class="drifting-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;" title="どの固定ノードにもPin留めされていません。">🌊 IPFS: 漂流中</span>`;
+        driftingBadgeHtml = `<span class="drifting-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.ipfsDrifting}</span>`;
       }
 
       storageTierHtml = `
@@ -6168,7 +6254,7 @@ function renderCurrentStoragePage() {
         ${r2CardTtlSelect}
         ${r2CardDomainBadge}
         ${!hasPassword ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Civitai の投稿画面を開く">🎨 Civitai</button>` : ""}
-        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${isFromS3 ? '1' : '0'}" title="ファイルを削除し、KVマッピング・ストレージ実体を抹消します（自宅Kuboも自動回収・GC）">削除</button>
+        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${isFromS3 ? '1' : '0'}">${labels.delete}</button>
       `;
     } else {
       const r2CardDomainBadge = createCardDomainBadgeHtml(publicUrl, "r2-file-domain-badge");
@@ -6177,13 +6263,12 @@ function renderCurrentStoragePage() {
         ${r2CardTtlSelect}
         ${r2CardDomainBadge}
         ${!hasPassword ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Civitai の投稿画面を開く">🎨 Civitai</button>` : ""}
-        ${devUrl ? `<button type="button" class="ghost-button copy-r2-dev-url-btn" data-url="${escapeHtml(devUrl)}">${escapeHtml(dict.devCopyUrl)}</button>` : ""}
         <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-origin="1">${escapeHtml(dict.deleteNow)}</button>
       `;
     }
 
     const renameBtnHtml = isFilebase
-      ? `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || "")}" title="ファイル名を変更" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15s; line-height: 1;">✏️</button>`
+      ? `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || "")}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15s; line-height: 1;">✏️</button>`
       : "";
 
     let cidBadgeHtml = "";
@@ -6193,7 +6278,7 @@ function renderCurrentStoragePage() {
       cidBadgeHtml = `
         <div style="display: inline-flex; align-items: center; gap: 3px;">
           <button type="button" class="copy-cid-btn" data-cid="${escapeHtml(itemCid)}" style="cursor: pointer; font-size: 10px; font-family: monospace; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="IPFS CID: ${escapeHtml(itemCid)} (クリックでコピー)">📦 ${escapeHtml(shortCid)} 📋</button>
-          <a href="${escapeHtml(indexerUrl)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;" title="CID.contact でノード確認">🌐 ノード確認 ↗</a>
+          <a href="${escapeHtml(indexerUrl)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;">${labels.nodeCheck}</a>
         </div>
       `;
     }
@@ -6214,7 +6299,7 @@ function renderCurrentStoragePage() {
           <span class="r2-wf-badge-placeholder" data-key="${escapeHtml(itemKey)}"></span>
         </div>
         <div class="item-meta" style="color: var(--muted); margin-top: 5px; font-size: 11px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-          <span>更新日: ${escapeHtml(dateStr)}</span>
+          <span>${escapeHtml(labels.updated)} ${escapeHtml(dateStr)}</span>
           ${storageTierHtml}
         </div>
       </div>
@@ -6229,7 +6314,7 @@ function renderCurrentStoragePage() {
       if (hasWf) {
         const placeholder = article.querySelector('.r2-wf-badge-placeholder');
         if (placeholder) {
-          placeholder.innerHTML = '<span class="meta-badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 600;" title="ComfyUIワークフローまたはプロンプトが含まれています。">🧬 ワークフローあり</span>';
+          placeholder.innerHTML = `<span class="meta-badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 600;">${labels.workflow}</span>`;
         }
       }
     });
@@ -6469,10 +6554,14 @@ r2FileList?.addEventListener("click", async (e) => {
 
     const article = btn.closest(".result-item");
     const originalS3Key = btn.dataset.s3key || article?.dataset?.s3key || oldKey;
+    // oldKey は KV の内部キーで、ドメイン別レコードでは
+    // "hostname:filename.ext" になる。編集欄には公開ファイル名だけを使う。
+    const displayName = btn.dataset.displayname || article?.dataset?.displayname ||
+      (oldKey.includes(":") ? oldKey.split(":").slice(1).join(":") : oldKey);
 
-    const lastDotIndex = oldKey.lastIndexOf(".");
-    const baseName = lastDotIndex > 0 ? oldKey.substring(0, lastDotIndex) : oldKey;
-    const ext = lastDotIndex > 0 ? oldKey.substring(lastDotIndex) : "";
+    const lastDotIndex = displayName.lastIndexOf(".");
+    const baseName = lastDotIndex > 0 ? displayName.substring(0, lastDotIndex) : displayName;
+    const ext = lastDotIndex > 0 ? displayName.substring(lastDotIndex) : "";
 
     const originalHtml = row.innerHTML;
 
@@ -6616,12 +6705,6 @@ r2FileList?.addEventListener("click", async (e) => {
       }
     });
 
-    return;
-  }
-
-  if (target.classList.contains("copy-r2-dev-url-btn")) {
-    const url = target.dataset.url;
-    await copyToClipboard(url, target);
     return;
   }
 
@@ -7830,15 +7913,17 @@ civitaiGalleryList?.addEventListener("click", async (event) => {
 const uploadStorageSelect = document.querySelector("#uploadStorageSelect");
 const uploadReturnDomainSelect = document.querySelector("#uploadReturnDomainSelect");
 const dedicatedUploadApiUrlInput = document.querySelector("#dedicatedUploadApiUrl");
+const uploadApiTokenInput = document.querySelector("#uploadApiToken");
 const uploadTokenNotice = document.querySelector("#uploadTokenNotice");
 const copyUploadApiUrlBtn = document.querySelector("#copyUploadApiUrlBtn");
 const copyCurlCmdBtn = document.querySelector("#copyCurlCmdBtn");
 const downloadSendToBatBtn = document.querySelector("#downloadSendToBatBtn");
 
-// 投げる API エンドポイント（Workers アドレス固定）
+// 外部投稿は、利用者自身が設定した Worker だけを対象にする。
 function getDedicatedUploadEndpoint() {
   const customWorkerUrl = getCustomKvWorkerUrl();
-  const baseDomain = (customWorkerUrl || "https://cividge-kv-worker.okpn.workers.dev").replace(/\/$/, "");
+  if (!customWorkerUrl) return "";
+  const baseDomain = customWorkerUrl.replace(/\/api\/ipfs-kv\/?$/, "").replace(/\/$/, "");
   return `${baseDomain}/api/upload`;
 }
 
@@ -7847,11 +7932,16 @@ function getSelectedUploadStorage() {
   return uploadStorageSelect?.value || "filebase";
 }
 
+// 外部投稿は管理 API トークンを流用せず、投稿専用の UPLOAD_TOKEN を使う。
+function getUploadApiToken() {
+  return (uploadApiTokenInput?.value || localStorage.getItem("uploadApiToken") || "").trim();
+}
+
 // 外部投稿用プルダウンの選択肢を更新
 function populateUploadReturnDomainSelect() {
   if (!uploadReturnDomainSelect) return;
   const currentVal = uploadReturnDomainSelect.value;
-  const domains = getR2DomainList(); // 登録済みドメイン一覧
+  const domains = getR2DomainList(getSelectedUploadStorage());
 
   uploadReturnDomainSelect.innerHTML = "";
   domains.forEach(d => {
@@ -7873,15 +7963,16 @@ function getSelectedUploadReturnDomain() {
   if (uploadReturnDomainSelect && uploadReturnDomainSelect.value) {
     return uploadReturnDomainSelect.value.trim().replace(/\/$/, "");
   }
-  return (getSelectedR2Domain() || "").replace(/\/$/, "");
+  return (getSelectedR2Domain(getSelectedUploadStorage()) || "").replace(/\/$/, "");
 }
 
-// 外部投稿用のフルURL構築（?storage=... & ?domain=... & ?token=...）
+// 外部投稿用 URL。秘密情報はクエリへ含めず Authorization ヘッダーだけで渡す。
 function getDedicatedUploadFullUrl() {
   const endpoint = getDedicatedUploadEndpoint();
   const selectedDomain = getSelectedUploadReturnDomain();
   const selectedStorage = getSelectedUploadStorage();
-  const token = getAdminApiToken();
+
+  if (!endpoint) return "";
 
   const url = new URL(endpoint);
   if (selectedStorage) {
@@ -7890,38 +7981,50 @@ function getDedicatedUploadFullUrl() {
   if (selectedDomain) {
     url.searchParams.set("domain", selectedDomain);
   }
-  if (token) {
-    url.searchParams.set("token", token);
-  }
   return url.toString();
 }
 
 // UIの同期・トークン未設定ガード
 function updateDedicatedUploadApiUI() {
   if (!dedicatedUploadApiUrlInput) return;
-  const token = getAdminApiToken();
+  const token = getUploadApiToken();
   const hasToken = Boolean(token);
+  const hasEndpoint = Boolean(getDedicatedUploadEndpoint());
 
   dedicatedUploadApiUrlInput.value = getDedicatedUploadFullUrl();
 
   if (uploadTokenNotice) {
-    uploadTokenNotice.style.display = hasToken ? "none" : "block";
+    uploadTokenNotice.style.display = hasToken && hasEndpoint ? "none" : "block";
+    uploadTokenNotice.innerHTML = !hasEndpoint
+      ? "⚠️ <strong>KV Worker URL が必要です:</strong> 「クラウドストレージ接続設定」で、自分の KV Worker URL を保存してください。"
+      : "⚠️ <strong>投稿専用 API トークンが必要です:</strong> Worker に設定した <code>UPLOAD_TOKEN</code> を入力すると、URLコピー・curl例・Windows「送る」登録を利用できます。";
   }
 
-  // ボタンの非活性化は行わず、未設定時はクリック時に分かりやすく案内
-  if (copyUploadApiUrlBtn) copyUploadApiUrlBtn.disabled = false;
-  if (copyCurlCmdBtn) copyCurlCmdBtn.disabled = false;
-  if (downloadSendToBatBtn) downloadSendToBatBtn.disabled = false;
+  const isReady = hasToken && hasEndpoint;
+  if (copyUploadApiUrlBtn) copyUploadApiUrlBtn.disabled = !isReady;
+  if (copyCurlCmdBtn) copyCurlCmdBtn.disabled = !isReady;
+  if (downloadSendToBatBtn) downloadSendToBatBtn.disabled = !isReady;
 }
 
-uploadStorageSelect?.addEventListener("change", updateDedicatedUploadApiUI);
+uploadStorageSelect?.addEventListener("change", () => {
+  populateUploadReturnDomainSelect();
+  updateDedicatedUploadApiUI();
+});
 uploadReturnDomainSelect?.addEventListener("change", updateDedicatedUploadApiUI);
 r2DomainSelect?.addEventListener("change", () => {
   populateUploadReturnDomainSelect();
   updateDedicatedUploadApiUI();
 });
-adminApiToken?.addEventListener("input", updateDedicatedUploadApiUI);
 kvWorkerUrl?.addEventListener("input", updateDedicatedUploadApiUI);
+if (uploadApiTokenInput) {
+  uploadApiTokenInput.value = localStorage.getItem("uploadApiToken") || "";
+  uploadApiTokenInput.addEventListener("input", () => {
+    const token = uploadApiTokenInput.value.trim();
+    if (token) localStorage.setItem("uploadApiToken", token);
+    else localStorage.removeItem("uploadApiToken");
+    updateDedicatedUploadApiUI();
+  });
+}
 
 setTimeout(() => {
   populateUploadReturnDomainSelect();
@@ -7929,9 +8032,9 @@ setTimeout(() => {
 }, 250);
 
 copyUploadApiUrlBtn?.addEventListener("click", async () => {
-  const token = getAdminApiToken();
+  const token = getUploadApiToken();
   if (!token) {
-    alert("⚠️ 管理APIトークンが未入力です。\n「☁️ クラウドストレージ接続設定」内の「KV API トークン」を入力してください。");
+    alert("⚠️ 投稿専用 API トークンが未入力です。\nWorker に設定した UPLOAD_TOKEN を入力してください。");
     return;
   }
   const fullUrl = getDedicatedUploadFullUrl();
@@ -7939,9 +8042,9 @@ copyUploadApiUrlBtn?.addEventListener("click", async () => {
 });
 
 copyCurlCmdBtn?.addEventListener("click", async () => {
-  const token = getAdminApiToken();
+  const token = getUploadApiToken();
   if (!token) {
-    alert("⚠️ 管理APIトークンが未入力です。\n「☁️ クラウドストレージ接続設定」内の「KV API トークン」を入力してください。");
+    alert("⚠️ 投稿専用 API トークンが未入力です。\nWorker に設定した UPLOAD_TOKEN を入力してください。");
     return;
   }
   const endpoint = getDedicatedUploadEndpoint();
@@ -7964,15 +8067,10 @@ copyCurlCmdBtn?.addEventListener("click", async () => {
 });
 
 downloadSendToBatBtn?.addEventListener("click", () => {
-  let token = getAdminApiToken();
+  const token = getUploadApiToken();
   if (!token) {
-    const input = prompt("管理APIトークンが未設定です。トークンを入力してください（未入力のままダウンロードも可能です）:");
-    if (input !== null && input.trim()) {
-      token = input.trim();
-      localStorage.setItem("adminApiToken", token);
-      if (adminApiToken) adminApiToken.value = token;
-      updateDedicatedUploadApiUI();
-    }
+    alert("⚠️ 投稿専用 API トークンが未入力です。Worker の UPLOAD_TOKEN を入力してから登録してください。");
+    return;
   }
 
   const endpoint = getDedicatedUploadEndpoint();

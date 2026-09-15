@@ -1296,3 +1296,9 @@ input[type="range"] {
   padding-top: 16px;
 }
 
+@media (max-width: 640px) {
+  .upload-destination-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
