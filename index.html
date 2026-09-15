@@ -185,16 +185,16 @@
               <!-- 保存先ごとに配信ドメインと実行ボタンを固定で対応付ける -->
               <div class="upload-destination-grid" style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 8px;">
                 <div style="min-width: 0; padding: 8px; background: rgba(234, 88, 12, 0.07); border: 1px solid rgba(249, 115, 22, 0.28); border-radius: 7px;">
-                  <label for="quickDomainSelect" style="display: block; margin: 0 0 5px; font-size: 11px; color: #fdba74;">🌐 R2 配信ドメイン</label>
+                  <label for="quickDomainSelect" style="display: block; margin: 0 0 5px; font-size: 11px; color: #fdba74;" data-i18n="quickR2DomainLabel">🌐 R2 配信ドメイン</label>
                   <select id="quickDomainSelect" style="width: 100%; min-width: 0; height: 30px; font-size: 11.5px; background-color: #121316; color: #fdba74; border: 1px solid rgba(249, 115, 22, 0.4); border-radius: 4px; padding: 0 6px; outline: none; cursor: pointer;">
-                    <option value="">-- R2 ドメインを選択 --</option>
+                    <option value="" data-i18n="r2DomainPlaceholder">-- R2 ドメインを選択 --</option>
                   </select>
                   <button class="primary-button upload-primary-cta" id="convertUploadR2Button" type="button" disabled data-i18n="btnUploadR2" style="width: 100%; height: 34px; margin: 7px 0 0; background: linear-gradient(135deg, #ea580c, #c2410c); border-color: #f97316;" title="変換した画像をCloudflare R2へ一括保存">⚡ R2へ保存</button>
                 </div>
                 <div style="min-width: 0; padding: 8px; background: rgba(2, 132, 199, 0.07); border: 1px solid rgba(56, 189, 248, 0.28); border-radius: 7px;">
-                  <label for="quickFilebaseDomainSelect" style="display: block; margin: 0 0 5px; font-size: 11px; color: #7dd3fc;">🌐 Filebase 配信ドメイン</label>
+                  <label for="quickFilebaseDomainSelect" style="display: block; margin: 0 0 5px; font-size: 11px; color: #7dd3fc;" data-i18n="quickFilebaseDomainLabel">🌐 Filebase 配信ドメイン</label>
                   <select id="quickFilebaseDomainSelect" style="width: 100%; min-width: 0; height: 30px; font-size: 11.5px; background-color: #121316; color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 4px; padding: 0 6px; outline: none; cursor: pointer;">
-                    <option value="">-- Filebase ドメインを選択 --</option>
+                    <option value="" data-i18n="filebaseDomainPlaceholder">-- Filebase ドメインを選択 --</option>
                   </select>
                   <button class="primary-button upload-primary-cta" id="convertUploadFilebaseButton" type="button" disabled data-i18n="btnUploadFilebase" style="width: 100%; height: 34px; margin: 7px 0 0; background: linear-gradient(135deg, #0284c7, #0369a1); border-color: #38bdf8;" title="変換した画像をFilebase (IPFS)へ一括保存">🪐 Filebaseへ保存</button>
                 </div>
@@ -203,16 +203,36 @@
 
             <!-- 安全な Cloudflare R2 / Filebase 接続情報アコーディオン -->
             <div style="padding: 0 18px 18px;">
-              <details class="settings-accordion cf-settings-accordion" id="cfSettingsAccordion">
-                <summary data-i18n="cfTitle">☁️ クラウドストレージ接続設定</summary>
+              <div id="cfSettingsContainer">
                 <div class="settings-content" style="padding: 14px 0 4px; display: flex; flex-direction: column; gap: 12px;">
 
+                  <details class="settings-accordion cf-settings-accordion" id="kvSettingsAccordion" open>
+                    <summary data-i18n="kvAccordionTitle">📚 KV 配信・管理 Worker</summary>
+                    <div id="kvSettingsContent" class="settings-content" style="padding: 12px 0 4px; display: flex; flex-direction: column; gap: 12px;">
+                      <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="kvAccordionDesc">R2 / Filebase 共通の短縮 URL、別名リンク、有効期限、パスワード保護を管理する台帳です。</p>
+                    </div>
+                  </details>
+
+                  <details class="settings-accordion cf-settings-accordion" id="r2SettingsAccordion">
+                    <summary>⚡ Cloudflare R2</summary>
+                    <div id="r2SettingsContent" class="settings-content" style="padding: 12px 0 4px; display: flex; flex-direction: column; gap: 12px;">
+                      <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="r2AccordionDesc">R2 の接続情報、R2 専用の配信ドメイン、CORS と容量解放を設定します。</p>
+                    </div>
+                  </details>
+
+                  <details class="settings-accordion cf-settings-accordion" id="filebaseSettingsAccordion">
+                    <summary>🪐 Filebase (IPFS) / 🏠 Kubo</summary>
+                    <div id="filebaseSettingsContent" class="settings-content" style="padding: 12px 0 4px; display: flex; flex-direction: column; gap: 12px;">
+                      <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="filebaseAccordionDesc">Filebase の CID・IPFS 保存、Filebase 専用配信ドメイン、任意の Kubo 保全ノードを設定します。</p>
+                    </div>
+                  </details>
+
                   <!-- 配信ドメイン管理（R2 / Filebase は独立） -->
-                  <div class="setup-step-box" style="padding: 12px; border: 1px solid rgba(255, 122, 26, 0.4); border-radius: 8px; background: rgba(255, 122, 26, 0.05);">
+                  <div id="r2DeliverySettingsGroup" class="setup-step-box" style="padding: 12px; border: 1px solid rgba(255, 122, 26, 0.4); border-radius: 8px; background: rgba(255, 122, 26, 0.05);">
                     <div style="font-size: 13px; font-weight: bold; color: var(--accent); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px;">
                       <div style="display: flex; align-items: center; gap: 6px;">
-                        <span>1️⃣ R2 の公開・配信 URL を設定</span>
-                        <span style="font-size: 11px; color: var(--danger); font-weight: normal;">* 必須</span>
+                        <span data-i18n="r2DeliveryTitle">1️⃣ R2 の公開・配信 URL を設定</span>
+                        <span style="font-size: 11px; color: var(--danger); font-weight: normal;" data-i18n="requiredText">* 必須</span>
                       </div>
                     </div>
                     <div style="display: flex; flex-direction: column; gap: 6px;">
@@ -231,27 +251,18 @@
                         <button type="button" class="ghost-button" id="r2DomainNewCancelBtn" style="height: 34px; font-size: 11px; padding: 0 8px;">✕</button>
                       </div>
 
-                      <span style="font-size: 11px; color: var(--muted); margin-top: 2px;">
-                        ※ R2 用の Worker URL、pages.dev URL、独自ドメイン、R2 dev URL を何件でも追加・削除できます。<br>
-                        選択された URL が画像コピーやパレットの配信ベース URL に使用されます。
-                      </span>
+                      <span style="font-size: 11px; color: var(--muted); margin-top: 2px;" data-i18n="deliveryDomainHintR2">※ R2 用の Worker URL、pages.dev URL、独自ドメイン、R2 dev URL を何件でも追加・削除できます。選択された URL が画像コピーやパレットの配信ベース URL に使用されます。</span>
                       <details class="delivery-domain-guide">
-                        <summary>配信 URL の作り方・変更方法</summary>
-                        <p>最初は KV Worker の <code>https://…workers.dev</code> をそのまま使えます。独自の URL が必要な場合だけ、Pages をデプロイするか Worker に独自ドメインを追加します。</p>
-                        <ol>
-                          <li><code>npx wrangler login</code></li>
-                          <li>リポジトリのルートで <code>npm run build</code></li>
-                          <li><code>npx wrangler pages deploy dist --project-name=my-content-cache</code></li>
-                          <li>表示された <code>https://my-content-cache.pages.dev</code> を「＋」から追加します。</li>
-                        </ol>
+                        <summary data-i18n="deliveryGuideSummary">配信 URL の作り方・変更方法</summary>
+                        <div data-i18n="r2DeliveryGuide" data-i18n-html="true">最初は KV Worker の <code>https://…workers.dev</code> をそのまま使えます。独自の URL が必要な場合だけ、Pages をデプロイするか Worker に独自ドメインを追加します。</div>
                       </details>
                     </div>
                   </div>
 
-                  <div class="setup-step-box" style="padding: 12px; border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; background: rgba(56, 189, 248, 0.05);">
+                  <div id="filebaseDeliverySettingsGroup" class="setup-step-box" style="padding: 12px; border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; background: rgba(56, 189, 248, 0.05);">
                     <div style="font-size: 13px; font-weight: bold; color: #38bdf8; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-                      <span>2️⃣ Filebase の公開・配信 URL を設定</span>
-                      <span style="font-size: 11px; color: var(--danger); font-weight: normal;">* 必須</span>
+                      <span data-i18n="filebaseDeliveryTitle">2️⃣ Filebase の公開・配信 URL を設定</span>
+                      <span style="font-size: 11px; color: var(--danger); font-weight: normal;" data-i18n="requiredText">* 必須</span>
                     </div>
                     <div style="display: flex; flex-direction: column; gap: 6px;">
                       <div style="display: flex; gap: 6px; align-items: center; width: 100%;">
@@ -266,10 +277,11 @@
                         <button type="button" class="primary-button" id="filebaseDomainNewSaveBtn" style="height: 34px; font-size: 11px; padding: 0 12px; margin: 0;">追加</button>
                         <button type="button" class="ghost-button" id="filebaseDomainNewCancelBtn" style="height: 34px; font-size: 11px; padding: 0 8px;">✕</button>
                       </div>
-                      <span style="font-size: 11px; color: var(--muted); margin-top: 2px;">
-                        ※ Filebase / IPFS 用の Worker URL、pages.dev URL、独自ドメインを何件でも追加・削除できます。<br>
-                        選択された URL が Filebase への新規投稿の配信ベース URL に使用されます。
-                      </span>
+                      <span style="font-size: 11px; color: var(--muted); margin-top: 2px;" data-i18n="deliveryDomainHintFilebase">※ Filebase / IPFS 用の Worker URL、pages.dev URL、独自ドメインを何件でも追加・削除できます。選択された URL が Filebase への新規投稿の配信ベース URL に使用されます。</span>
+                      <details class="delivery-domain-guide">
+                        <summary data-i18n="deliveryGuideSummary">配信 URL の作り方・変更方法</summary>
+                        <div data-i18n="filebaseDeliveryGuide" data-i18n-html="true">Filebase 用には R2 と<strong>異なる</strong>配信ドメインを使います。新しい Pages プロジェクトを作成し、この Cividge の配信コードをデプロイしてください。</div>
+                      </details>
                     </div>
                   </div>
 
@@ -277,7 +289,7 @@
                   <div id="r2KeysStepContainer" class="setup-step-box" style="padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-strong); display: flex; flex-direction: column; gap: 14px;">
                     
                     <!-- ⚡ Cloudflare R2 セクション -->
-                    <div style="border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+                    <div id="r2CredentialsSettingsGroup" style="border-bottom: 1px solid var(--border); padding-bottom: 12px;">
                       <div style="font-size: 13px; font-weight: bold; color: #fb923c; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
                         <span>⚡ Cloudflare R2 接続情報 (S3 API)</span>
                         <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer" style="font-size: 11px; color: #94a3b8; text-decoration: none;">Cloudflare ↗</a>
@@ -301,81 +313,98 @@
                           <input id="r2SecretAccessKey" type="text" style="-webkit-text-security: disc;" placeholder="例: 99f87654..." spellcheck="false" autocomplete="off">
                         </label>
                       </div>
+                      <details style="margin-top: 10px; padding: 8px 9px; border: 1px solid rgba(249, 115, 22, 0.28); border-radius: 6px; color: var(--muted); font-size: 10.5px; line-height: 1.5;">
+                        <summary style="cursor: pointer; color: #fdba74; font-weight: 600;" data-i18n="r2CorsSummary">R2 バケットの CORS 設定（ブラウザから接続するため必須）</summary>
+                        <p style="margin: 7px 0 0;" data-i18n="r2CorsHelp">R2 → 対象バケット → Settings → CORS Policy → Edit に、フロントエンド URL を許可するポリシーを貼り付けます。配信ドメインではなく、このアプリを開く URL を指定します。</p>
+                        <pre id="r2CorsPolicyPreview" style="margin: 7px 0 0; padding: 8px; overflow: auto; border-radius: 5px; background: rgba(0,0,0,.35); font-size: 10px; white-space: pre-wrap;"></pre>
+                        <button type="button" class="ghost-button" id="r2CorsPolicyCopyBtn" style="margin-top: 7px; font-size: 10.5px;" data-i18n="r2CorsCopy">📋 CORS 設定をコピー</button>
+                      </details>
                     </div>
 
                     <!-- 🪐 Filebase (IPFS) セクション -->
-                    <div>
+                    <div id="filebaseCredentialsSettingsGroup">
                       <div style="font-size: 13px; font-weight: bold; color: #38bdf8; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
                         <span>🪐 Filebase</span>
                         <div style="display: flex; gap: 8px; align-items: center;">
-                          <button class="ghost-button" id="filebaseCorsButton" type="button" style="font-size: 10.5px; padding: 2px 8px; height: 24px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="FilebaseバケットにIPFS CID公開用CORS設定をワンクリック適用">⚙️ CORS自動設定</button>
+                          <button class="ghost-button" id="filebaseCorsButton" type="button" style="font-size: 10.5px; padding: 2px 8px; height: 24px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="FilebaseバケットにIPFS CID公開用CORS設定をワンクリック適用" data-i18n="filebaseCorsAuto">⚙️ CORS自動設定</button>
                           <a href="https://console.filebase.com/" target="_blank" rel="noopener noreferrer" style="font-size: 11px; color: #94a3b8; text-decoration: none;">Filebase ↗</a>
                         </div>
                       </div>
                       <div style="display: flex; flex-direction: column; gap: 8px;">
                         <label class="field">
-                          <span><span>Filebase バケット名 (IPFS Bucket)</span></span>
+                          <span><span data-i18n="filebaseBucketLabel">Filebase バケット名 (IPFS Bucket)</span></span>
                           <input id="filebaseBucket" type="text" placeholder="例: my-ipfs-bucket" spellcheck="false" autocomplete="off">
                         </label>
                         <label class="field">
-                          <span><span>Filebase Key (Access Key)</span></span>
+                          <span><span data-i18n="filebaseAccessKeyLabel">Filebase Key (Access Key)</span></span>
                           <input id="filebaseApiKey" type="text" placeholder="例: E39D98762..." spellcheck="false" autocomplete="off">
                         </label>
                         <label class="field">
-                          <span><span>Filebase Secret Key</span></span>
+                          <span><span data-i18n="filebaseSecretKeyLabel">Filebase Secret Key</span></span>
                           <input id="filebaseSecretKey" type="text" style="-webkit-text-security: disc;" placeholder="例: WkH18302..." spellcheck="false" autocomplete="off">
                         </label>
                       </div>
                     </div>
 
                     <!-- 🏠 自宅 Kubo (IPFSノード永続保存) セクション -->
-                    <div style="border-top: 1px solid var(--border); padding-top: 12px;">
+                    <div id="kuboSettingsGroup" style="border-top: 1px solid var(--border); padding-top: 12px;">
                       <div style="font-size: 13px; font-weight: bold; color: #a78bfa; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
-                        <span>🏠 自宅 Kubo (IPFS長期保存 Provider)</span>
+                        <span data-i18n="kuboTitle">🏠 自宅 Kubo (IPFS長期保存 Provider)</span>
                         <div style="display: flex; gap: 6px; align-items: center;">
-                          <button class="ghost-button" id="kuboTestButton" type="button" style="font-size: 10.5px; padding: 2px 8px; height: 24px; color: #a78bfa; border-color: rgba(167, 139, 250, 0.4);" title="Kubo RPCへの接続を確認します">🔌 接続テスト</button>
+                          <button class="ghost-button" id="kuboTestButton" type="button" style="font-size: 10.5px; padding: 2px 8px; height: 24px; color: #a78bfa; border-color: rgba(167, 139, 250, 0.4);" title="Kubo RPCへの接続を確認します" data-i18n="kuboTest">🔌 接続テスト</button>
                           <a id="kuboWebUiLink" href="http://localhost:5001/webui" target="_blank" rel="noopener noreferrer" style="font-size: 11px; color: #94a3b8; text-decoration: none;">WebUI ↗</a>
                         </div>
                       </div>
                       <div style="display: flex; flex-direction: column; gap: 8px;">
                         <label class="field">
                           <span style="display: flex; justify-content: space-between; align-items: center;">
-                            <span>Kubo RPC エンドポイント URL</span>
-                            <span id="kuboStatusIndicator" style="font-size: 11px; color: var(--muted);">⚪ 未確認</span>
+                            <span data-i18n="kuboRpcLabel">Kubo RPC エンドポイント URL</span>
+                            <span id="kuboStatusIndicator" style="font-size: 11px; color: var(--muted);" data-i18n="kuboUnknown">⚪ 未確認</span>
                           </span>
                           <input id="kuboRpcUrl" type="text" placeholder="例: http://127.0.0.1:5001 または Tailscale URL" spellcheck="false" autocomplete="off">
-                          <span style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">
+                          <span style="font-size: 10.5px; color: var(--muted); margin-top: 2px;" data-i18n="kuboEndpointHelp">
                             ※ 自宅PCでは <code>http://127.0.0.1:5001</code>、外部/HTTPS時は Tailscale 等のエンドポイントを指定
                           </span>
                         </label>
                         <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px;">
                           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11.5px; color: #e2e8f0;">
                             <input type="checkbox" id="kuboAutoPinCheck" checked style="width: 14px; height: 14px; accent-color: #a78bfa; cursor: pointer;">
-                            <span>Filebase容量解放時にKuboへ自動Pin留め</span>
+                            <span data-i18n="kuboAutoPin">Filebase容量解放時にKuboへ自動Pin留め</span>
                           </label>
                         </div>
+                        <details style="margin-top: 4px; padding: 8px 9px; border: 1px solid rgba(167, 139, 250, 0.25); border-radius: 6px; color: var(--muted); font-size: 10.5px; line-height: 1.55;">
+                          <summary style="cursor: pointer; color: #c4b5fd; font-weight: 600;" data-i18n="kuboGuideSummary">推奨運用・外出先から接続する場合（任意）</summary>
+                          <div data-i18n="kuboGuideBody" data-i18n-html="true">
+                            <p style="margin: 7px 0 0;"><strong style="color: #ddd6fe;">これは何をする機能？</strong><br>自分の PC / サーバーを IPFS ノードとして使い、Filebase の容量解放前に CID を Pin して残します。Kubo が正常に稼働し Pin データを保持している間は、その CID の実体を自分でも保全できます。これは保存の保全層であり、唯一のバックアップにはしないでください。</p>
+                            <p style="margin: 7px 0 0;"><strong style="color: #ddd6fe;">最小セットアップ</strong><br>1. Kubo をインストールして起動する。 2. この欄は自宅では <code>http://127.0.0.1:5001</code> のままにする。 3. <strong>🔌 接続テスト</strong>に成功してから「Filebase容量解放時にKuboへ自動Pin留め」を有効にする。Kubo がオフラインなら、Cividge は Filebase FIFO を安全のため停止します。</p>
+                            <p style="margin: 7px 0 0;"><strong style="color: #ddd6fe;">配信とキャッシュ</strong><br>Cividge の配信 URL はエッジキャッシュを使うため、キャッシュ済みのアクセスは Filebase や IPFS ノードへの負荷を抑えます。ただし、初回アクセスやキャッシュ失効時には上流へのアクセスが必要です。Kubo RPC は Pin 操作用であり、これだけで常時配信の第1オリジンになるものではありません。</p>
+                            <p style="margin: 7px 0 0;"><strong style="color: #ddd6fe;">保管の考え方</strong><br>自動 Pin の対象は Cividge が容量解放する Filebase の CID です。任意の CID を無制限に Pin する用途にはせず、Kubo の保存先と空き容量を定期的に確認してください。PC 故障・削除に備え、重要データは別のバックアップや Pin サービスにも残します。</p>
+                            <p style="margin: 7px 0 0;"><strong style="color: #ddd6fe;">安全な接続</strong><br>API は通常 <code>127.0.0.1:5001</code> に限定し、インターネットへ直接公開しないでください。外出先や別ネットワークから Pin 操作をしたい場合は、ポート開放ではなく <strong>Tailscale Serve</strong> などで Tailnet 内だけに公開した HTTPS エンドポイントを使えます。その URL を上の RPC エンドポイントに設定します。<strong>0.0.0.0:5001</strong>、一般公開のリバースプロキシ、ルーターのポート開放は使用しないでください。</p>
+                          </div>
+                        </details>
                       </div>
                     </div>
 
                     <!-- 🛡️ 管理者専用設定 (KV台帳接続トークン) セクション -->
                     <!-- 🛡️ KV台帳連携設定 (短縮URL・パスワード・責任分離) セクション -->
-                    <div style="border-top: 1px solid var(--border); padding-top: 12px;">
+                    <div id="kvWorkerSettingsGroup" style="border-top: 1px solid var(--border); padding-top: 12px;">
                       <div style="font-size: 13px; font-weight: bold; color: #f59e0b; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
-                        <span>📚 KV 台帳連携 (短縮URL・パスワード・BYOC)</span>
+                        <span data-i18n="kvWorkerTitle">📚 KV 台帳連携 (短縮URL・パスワード・BYOC)</span>
+                        <a href="https://github.com/OKPN/cividge-kv-worker" target="_blank" rel="noopener noreferrer" data-i18n="kvWorkerRepo" style="font-size: 10.5px; color: #fbbf24; text-decoration: none; margin-left: auto;">cividge-kv-worker リポジトリ ↗</a>
                         <span id="adminTokenStatus" style="font-size: 11px; color: var(--muted);">⚪ 一般ユーザーモード</span>
                       </div>
                       <div style="display: flex; flex-direction: column; gap: 8px;">
                         <label class="field">
-                          <span><span>KV 台帳 API エンドポイント URL</span></span>
+                          <span><span data-i18n="kvApiEndpointLabel">KV 台帳 API エンドポイント URL</span></span>
                           <input id="kvWorkerUrl" type="text" placeholder="空欄時: 自サイト(/api/ipfs-kv) または 自身のWorker URL" spellcheck="false" autocomplete="off">
-                          <span style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">
+                          <span style="font-size: 10.5px; color: var(--muted); margin-top: 2px;" data-i18n="kvApiEndpointHelp">
                             ※ 各自の Cloudflare Worker を指定可能。未入力時は自サイトの <code>/api/ipfs-kv</code> を試行します。
                           </span>
                         </label>
                         <label class="field">
-                          <span><span>KV API トークン (API Token)</span></span>
+                          <span><span data-i18n="kvApiTokenLabel">KV API トークン (API Token)</span></span>
                           <input id="adminApiToken" type="password" placeholder="未入力かつ自ホスト未認証の場合はCID直接リンクで動作" spellcheck="false" autocomplete="off">
-                          <span style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">
+                          <span style="font-size: 10.5px; color: var(--muted); margin-top: 2px;" data-i18n="kvApiTokenHelp">
                             ※ トークン未設定時は中央KVを汚さず、安全な IPFS CID 直リン（/i/CID/name）として動作します。
                           </span>
                         </label>
@@ -383,13 +412,13 @@
                     </div>
 
                   </div>
-                  <div style="display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+                  <div id="cloudSettingsActions" style="display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
                     <button class="primary-button" id="cfSaveButton" type="button" style="flex: 1; min-width: 90px;" data-i18n="btnSave">保存する</button>
                     <button class="ghost-button danger-button" id="cfClearButton" type="button" data-i18n="btnClear">クリア</button>
                   </div>
                   <div id="cfStatus" style="font-size: 12px; min-height: 16px;"></div>
                 </div>
-              </details>
+              </div>
 
               <!-- 📦 設定の引き継ぎ & バックアップ (独立アコーディオン) -->
               <details class="settings-accordion cf-settings-accordion" id="dataSyncAccordion" style="margin-top: 6px;">
@@ -577,6 +606,10 @@
               <a href="https://github.com/OKPN/cividge" target="_blank" rel="noopener noreferrer" class="footer-github-link">
                 <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" style="vertical-align: text-bottom; margin-right: 4px;"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
                 Cividge
+              </a>
+              <a href="https://github.com/OKPN/cividge-kv-worker" target="_blank" rel="noopener noreferrer" class="footer-github-link">
+                <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" style="vertical-align: text-bottom; margin-right: 4px;"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
+                cividge-kv-worker
               </a>
             </div>
             <div class="footer-right">
