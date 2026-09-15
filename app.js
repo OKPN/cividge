@@ -1111,6 +1111,22 @@ function normalizeDeliveryProvider(provider) {
   return provider === "filebase" ? "filebase" : "r2";
 }
 
+async function fetchKvRecord(key) {
+  if (!key || !hasAdminAccess()) return null;
+  const token = getAdminApiToken();
+  const endpoint = getKvApiEndpoint();
+  const sep = endpoint.includes("?") ? "&" : "?";
+  try {
+    const res = await fetch(`${endpoint}${sep}key=${encodeURIComponent(key)}`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    return res.ok ? await res.json() : null;
+  } catch (e) {
+    console.warn("Failed to fetch KV record:", e);
+    return null;
+  }
+}
+
 function getR2DomainList(provider = activeStorageTab) {
   const storageProvider = normalizeDeliveryProvider(provider);
   const listKey = storageProvider === "filebase" ? "filebaseDomainList" : "r2DomainList";
@@ -4886,11 +4902,8 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
       // KV 側のメタデータを unpinned: true に更新（7日間キャッシュ & マルチゲートウェイ配信へ切り替え）
       for (const unpinnedKey of filesToUnpin) {
         try {
-          const endpoint = getKvApiEndpoint();
-          const sep = endpoint.includes("?") ? "&" : "?";
-          const kvRes = await fetch(`${endpoint}${sep}key=${encodeURIComponent(unpinnedKey)}`);
-          if (kvRes.ok) {
-            const kvData = await kvRes.json();
+          const kvData = await fetchKvRecord(unpinnedKey);
+          if (kvData) {
             if (kvData.found && kvData.cid) {
               let kuboStatus = kvData.metadata?.kuboStatus || "not_pinned";
 
@@ -6880,11 +6893,8 @@ r2FileList?.addEventListener("click", async (e) => {
     try {
       const res = await unpinFromKubo(cid);
       if (res.success) {
-        const endpoint = getKvApiEndpoint();
-        const sep = endpoint.includes("?") ? "&" : "?";
-        const kvRes = await fetch(`${endpoint}${sep}key=${encodeURIComponent(key)}`);
-        if (kvRes.ok) {
-          const kvData = await kvRes.json();
+        const kvData = await fetchKvRecord(key);
+        if (kvData) {
           const meta = kvData.metadata || {};
           await registerKvCid(
             key,
@@ -6961,11 +6971,8 @@ r2FileList?.addEventListener("click", async (e) => {
           if (isPinned) {
             clearInterval(pollInterval);
             console.log(`🏠 Kubo P2P同期完了を検知: ${key}`);
-            const endpoint = getKvApiEndpoint();
-            const sep = endpoint.includes("?") ? "&" : "?";
-            const kvRes = await fetch(`${endpoint}${sep}key=${encodeURIComponent(key)}`);
-            if (kvRes.ok) {
-              const kvData = await kvRes.json();
+            const kvData = await fetchKvRecord(key);
+            if (kvData) {
               const meta = kvData.metadata || {};
               await registerKvCid(
                 key,
@@ -7030,9 +7037,8 @@ r2FileList?.addEventListener("click", async (e) => {
       let currentKuboStatus = "not_pinned";
       let meta = {};
       if (key && cid) {
-        const kvRes = await fetch(`/api/ipfs-kv?key=${encodeURIComponent(key)}`);
-        if (kvRes.ok) {
-          const kvData = await kvRes.json();
+        const kvData = await fetchKvRecord(key);
+        if (kvData) {
           meta = kvData.metadata || {};
           currentKuboStatus = meta.kuboStatus || "not_pinned";
         }

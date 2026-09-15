@@ -1,6 +1,18 @@
 // functions/api/resolve-url.js
 // URLリダイレクト解決 API: image.civitai.com 等の 301/302 リダイレクト先（blobs-b2.civitai.com 等）を取得して返却
 
+function isAllowedCivitaiUrl(candidate) {
+  try {
+    const parsed = new URL(candidate);
+    const host = parsed.hostname.toLowerCase();
+    return parsed.protocol === "https:" &&
+      !parsed.port &&
+      (host === "civitai.com" || host.endsWith(".civitai.com"));
+  } catch (_) {
+    return false;
+  }
+}
+
 export async function onRequestOptions() {
   return new Response(null, {
     status: 204,
@@ -34,8 +46,8 @@ export async function onRequestGet(context) {
 
   try {
     const parsed = new URL(targetUrl);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      return new Response(JSON.stringify({ error: "Invalid protocol" }), {
+    if (!isAllowedCivitaiUrl(targetUrl)) {
+      return new Response(JSON.stringify({ error: "Only HTTPS Civitai media URLs are allowed" }), {
         status: 400,
         headers: corsHeaders,
       });
@@ -51,7 +63,9 @@ export async function onRequestGet(context) {
 
       const location = res.headers.get("location");
       if (location) {
-        resolvedUrl = new URL(location, targetUrl).href;
+        const nextUrl = new URL(location, targetUrl).href;
+        if (!isAllowedCivitaiUrl(nextUrl)) throw new Error("Redirect target is not an allowed Civitai URL");
+        resolvedUrl = nextUrl;
       } else if (res.url && res.url !== targetUrl) {
         resolvedUrl = res.url;
       }
@@ -65,7 +79,9 @@ export async function onRequestGet(context) {
         });
         const location = resGet.headers.get("location");
         if (location) {
-          resolvedUrl = new URL(location, targetUrl).href;
+          const nextUrl = new URL(location, targetUrl).href;
+          if (!isAllowedCivitaiUrl(nextUrl)) throw new Error("Redirect target is not an allowed Civitai URL");
+          resolvedUrl = nextUrl;
         } else if (resGet.url && resGet.url !== targetUrl) {
           resolvedUrl = resGet.url;
         }

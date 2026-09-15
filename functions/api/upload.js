@@ -29,22 +29,19 @@ const MIME_MAP = {
   zip: "application/zip", "7z": "application/x-7z-compressed", pdf: "application/pdf"
 };
 
+const MAX_UPLOAD_BYTES = 80 * 1024 * 1024;
+
 // 投稿トークンの検証
 function verifyAuth(request, env) {
   const adminToken = (env.API_TOKEN || "").trim();
   const uploadToken = (env.UPLOAD_TOKEN || "").trim();
-  if (!adminToken && !uploadToken) return true; // トークン未設定環境では許可
+  if (!adminToken && !uploadToken) return false;
 
   let clientToken = "";
   const authHeader = (request.headers.get("Authorization") || "").trim();
   if (authHeader) {
     clientToken = authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : authHeader;
   }
-  if (!clientToken) {
-    const url = new URL(request.url);
-    clientToken = (url.searchParams.get("token") || url.searchParams.get("api_token") || "").trim();
-  }
-
   if (adminToken && clientToken === adminToken) return true;
   if (uploadToken && clientToken === uploadToken) return true;
   return false;
@@ -63,6 +60,14 @@ export async function onRequestPost(context) {
   }
 
   try {
+    const declaredLength = Number(request.headers.get("content-length") || 0);
+    if (declaredLength > MAX_UPLOAD_BYTES) {
+      return new Response(JSON.stringify({ success: false, error: "File too large (Max: 80MB)" }), {
+        status: 413,
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      });
+    }
+
     let fileBuffer = null;
     let originalFilename = url.searchParams.get("filename") || "";
     let password = (request.headers.get("X-Upload-Password") || url.searchParams.get("password") || "").trim();
@@ -89,6 +94,12 @@ export async function onRequestPost(context) {
     if (!fileBuffer || fileBuffer.byteLength === 0) {
       return new Response(JSON.stringify({ success: false, error: "No file content uploaded" }), {
         status: 400,
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      });
+    }
+    if (fileBuffer.byteLength > MAX_UPLOAD_BYTES) {
+      return new Response(JSON.stringify({ success: false, error: "File too large (Max: 80MB)" }), {
+        status: 413,
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       });
     }
@@ -130,13 +141,9 @@ export async function onRequestPost(context) {
       );
       const hashHex = Array.from(new Uint8Array(derivedBits)).map(b => b.toString(16).padStart(2, "0")).join("");
       const saltHex = Array.from(saltBytes).map(b => b.toString(16).padStart(2, "0")).join("");
-      const sessionSecret = "sec_" + Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, "0")).join("");
-
       passwordMeta = {
-        password,
         passwordHash: hashHex,
         passwordSalt: saltHex,
-        sessionSecret,
       };
     }
 

@@ -116,6 +116,55 @@ function parseCookies(cookieHeader) {
   return list;
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function base64UrlEncode(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlDecode(value) {
+  const padded = String(value).replace(/-/g, "+").replace(/_/g, "/") + "===".slice((String(value).length + 3) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, char => char.charCodeAt(0));
+}
+
+async function getSessionKey(meta) {
+  const material = meta?.passwordHash || (meta?.password ? `legacy:${meta.password}` : "");
+  if (!material) return null;
+  return crypto.subtle.importKey("raw", new TextEncoder().encode(material), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+
+async function createSessionToken(filename, meta) {
+  const key = await getSessionKey(meta);
+  if (!key) return null;
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ f: filename, e: Math.floor(Date.now() / 1000) + 3600 })));
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return `${payload}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
+
+async function verifySessionToken(token, filename, meta) {
+  if (!token) return false;
+  const [payload, signature] = String(token).split(".");
+  if (!payload || !signature) return false;
+  try {
+    const decoded = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
+    if (decoded.f !== filename || !Number.isFinite(decoded.e) || decoded.e <= Math.floor(Date.now() / 1000)) return false;
+    const key = await getSessionKey(meta);
+    return Boolean(key) && await crypto.subtle.verify("HMAC", key, base64UrlDecode(signature), new TextEncoder().encode(payload));
+  } catch (_) {
+    return false;
+  }
+}
+
 async function verifyPassword(inputPassword, meta) {
   if (!inputPassword || !meta) return false;
   if (meta.password && inputPassword === meta.password) return true;
@@ -153,6 +202,7 @@ async function verifyPassword(inputPassword, meta) {
 }
 
 function renderPasswordForm(filename, errorMsg = "") {
+  const safeFilename = escapeHtml(filename);
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -235,7 +285,7 @@ function renderPasswordForm(filename, errorMsg = "") {
   <div class="card">
     <div class="icon">🔒</div>
     <h1>保護されたファイル</h1>
-    <div class="filename">${filename}</div>
+    <div class="filename">${safeFilename}</div>
     <p>このファイルを閲覧するには合言葉（パスワード）が必要です。</p>
     <form method="POST" action="">
       <input type="password" name="pwd" placeholder="🔑 合言葉を入力" autofocus required autocomplete="off">
@@ -460,19 +510,20 @@ export async function onRequest(context) {
     const cookieKey = "auth_" + encodeURIComponent(filename);
     const authCookie = cookies[cookieKey];
 
-    const isSessionAuthed = Boolean(authCookie && meta.sessionSecret && authCookie === meta.sessionSecret);
+    const isSessionAuthed = await verifySessionToken(authCookie, filename, meta);
 
     if (request.method === "POST") {
       try {
         const formData = await request.formData();
         const pwd = formData.get("pwd");
         if (await verifyPassword(pwd, meta)) {
-          const secret = meta.sessionSecret || ("sec_" + Math.random().toString(36).slice(2));
+          const sessionToken = await createSessionToken(filename, meta);
+          if (!sessionToken) throw new Error("Unable to create session");
           return new Response(null, {
             status: 303,
             headers: {
               "Location": request.url,
-              "Set-Cookie": `${cookieKey}=${encodeURIComponent(secret)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+              "Set-Cookie": `${cookieKey}=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=3600`,
             },
           });
         } else {
@@ -484,6 +535,9 @@ export async function onRequest(context) {
             headers: {
               "Content-Type": "text/html; charset=utf-8",
               "Cache-Control": "private, no-cache, no-store",
+              "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+              "X-Frame-Options": "DENY",
+              "Referrer-Policy": "no-referrer",
             },
           });
         }
@@ -494,6 +548,9 @@ export async function onRequest(context) {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "private, no-cache, no-store",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer",
           },
         });
       }
@@ -506,6 +563,9 @@ export async function onRequest(context) {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "private, no-cache, no-store",
           "Vary": "Cookie",
+          "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+          "X-Frame-Options": "DENY",
+          "Referrer-Policy": "no-referrer",
         },
       });
     }
