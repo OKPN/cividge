@@ -47,6 +47,17 @@
   - IPFS/Filebase の CID 実体そのものは公開網から読めるため、これは配信 URL のゲートであり、秘匿が必要な用途には将来のクライアント暗号化モードが必要。
 - Pages の旧外部投稿 API も、投稿 token 未設定時は拒否し、クエリ文字列 token を受理しない。Worker / Pages の投稿上限は 80 MiB。
 - Civitai のリダイレクト解決 API は HTTPS の `*.civitai.com` のみに制限した。
+- 接続設定画面は責務ごとに分離した。
+  - `⚡ Cloudflare R2`: R2 接続情報、R2 専用配信ドメイン、CORS、FIFO。
+  - `🪐 Filebase (IPFS) / 🏠 Kubo`: Filebase 接続情報・配信ドメイン・CORS と、任意の Kubo 保全ノード。
+  - `📚 KV 配信・管理 Worker`: Worker URL / Admin API Token と、両ストレージ共通の配信台帳。
+  - 既存の入力 ID と localStorage の保存形式は維持している。
+- `README.md` を導入・運用ドキュメントとして整理し、構成図を `docs/assets/cividge-architecture.png` に追加した。
+- 動画から生成する `.mp4/.webm/.mov.thumb.webp` は OGP 専用の派生データとして扱う。
+  - 一覧・URL パレットには表示しないが、容量計算には含める。
+  - 動画のリネーム、同一 CID の別名 URL、別配信ドメインの URL は、台帳の `thumbnailKey` を通じて元のサムネイルを参照する。
+  - 動画実体を削除する時はサムネイルも同時に削除する。別名 URL だけを削除する場合は残る。
+  - サムネイルには親動画と同じ有効期限を記録し、Filebase FIFO でも親動画と一緒にだけ回収する。
 
 ## Pages URL を追加したい場合
 

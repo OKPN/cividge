@@ -60,6 +60,42 @@ const i18nDict = {
     btnUploadR2: "⚡ R2へ保存",
     btnUploadFilebase: "🪐 Filebaseへ保存",
     cfTitle: "☁️ クラウドストレージ接続設定",
+    kvAccordionTitle: "📚 KV 配信・管理 Worker",
+    kvAccordionDesc: "R2 / Filebase 共通の短縮 URL、別名リンク、有効期限、パスワード保護を管理する台帳です。",
+    r2AccordionDesc: "R2 の接続情報、R2 専用の配信ドメイン、CORS と容量解放を設定します。",
+    filebaseAccordionDesc: "Filebase の CID・IPFS 保存、Filebase 専用配信ドメイン、任意の Kubo 保全ノードを設定します。",
+    quickR2DomainLabel: "🌐 R2 配信ドメイン",
+    quickFilebaseDomainLabel: "🌐 Filebase 配信ドメイン",
+    r2DomainPlaceholder: "-- R2 ドメインを選択 --",
+    filebaseDomainPlaceholder: "-- Filebase ドメインを選択 --",
+    r2DeliveryTitle: "1️⃣ R2 の公開・配信 URL を設定",
+    filebaseDeliveryTitle: "2️⃣ Filebase の公開・配信 URL を設定",
+    requiredText: "* 必須",
+    deliveryDomainHintR2: "※ R2 用の Worker URL、pages.dev URL、独自ドメイン、R2 dev URL を何件でも追加・削除できます。選択された URL が画像コピーやパレットの配信ベース URL に使用されます。",
+    deliveryDomainHintFilebase: "※ Filebase / IPFS 用の Worker URL、pages.dev URL、独自ドメインを何件でも追加・削除できます。選択された URL が Filebase への新規投稿の配信ベース URL に使用されます。",
+    deliveryGuideSummary: "配信 URL の作り方・変更方法",
+    r2DeliveryGuide: "最初は KV Worker の <code>https://…workers.dev</code> をそのまま使えます。独自の URL が必要な場合だけ、Pages をデプロイするか Worker に独自ドメインを追加します。<ol><li><code>npx wrangler login</code></li><li>リポジトリのルートで <code>npm run build</code></li><li><code>npx wrangler pages deploy dist --project-name=my-r2-delivery</code></li><li>表示された <code>https://my-r2-delivery.pages.dev</code> を「＋」から追加します。</li></ol>",
+    filebaseDeliveryGuide: "Filebase 用には R2 と<strong>異なる</strong>配信ドメインを使います。新しい Pages プロジェクトを作成し、この Cividge の配信コードをデプロイしてください。<ol><li><code>npx wrangler login</code></li><li>リポジトリのルートで <code>npm run build</code></li><li><code>npx wrangler pages deploy dist --project-name=my-filebase-delivery</code></li><li>表示された <code>https://my-filebase-delivery.pages.dev</code> を「＋」から追加します。</li></ol>",
+    kvWorkerTitle: "📚 KV 台帳連携 (短縮URL・パスワード・BYOC)",
+    kvWorkerRepo: "cividge-kv-worker リポジトリ ↗",
+    r2CorsSummary: "R2 バケットの CORS 設定（ブラウザから接続するため必須）",
+    r2CorsHelp: "R2 → 対象バケット → Settings → CORS Policy → Edit に、フロントエンド URL を許可するポリシーを貼り付けます。配信ドメインではなく、このアプリを開く URL を指定します。",
+    r2CorsCopy: "📋 CORS 設定をコピー",
+    filebaseBucketLabel: "Filebase バケット名 (IPFS Bucket)",
+    filebaseAccessKeyLabel: "Filebase Key (Access Key)",
+    filebaseSecretKeyLabel: "Filebase Secret Key",
+    filebaseCorsAuto: "⚙️ CORS自動設定",
+    kuboTitle: "🏠 自宅 Kubo (IPFS長期保存 Provider)",
+    kuboTest: "🔌 接続テスト",
+    kuboRpcLabel: "Kubo RPC エンドポイント URL",
+    kuboUnknown: "⚪ 未確認",
+    kuboEndpointHelp: "※ 自宅PCでは http://127.0.0.1:5001、外部/HTTPS時は Tailscale 等のエンドポイントを指定",
+    kuboAutoPin: "Filebase容量解放時にKuboへ自動Pin留め",
+    kuboGuideSummary: "推奨運用・外出先から接続する場合（任意）",
+    kvApiEndpointLabel: "KV 台帳 API エンドポイント URL",
+    kvApiEndpointHelp: "※ 各自の Cloudflare Worker を指定可能。未入力時は自サイトの /api/ipfs-kv を試行します。",
+    kvApiTokenLabel: "KV API トークン (API Token)",
+    kvApiTokenHelp: "※ トークン未設定時は中央KVを汚さず、安全な IPFS CID 直リン（/i/CID/name）として動作します。",
     r2AccountLabel: "Account ID",
     r2AccountSub: "Cloudflare アカウント ID（S3 API URLを貼り付けても自動抽出されます）",
     r2BucketLabel: "R2 バケット名",
@@ -228,6 +264,43 @@ const i18nDict = {
     btnUploadR2: "⚡ Save to R2",
     btnUploadFilebase: "🪐 Save to Filebase",
     cfTitle: "☁️ Cloud Storage Settings",
+    kvAccordionTitle: "📚 KV Delivery & Management Worker",
+    kvAccordionDesc: "The shared registry for R2 and Filebase: short URLs, aliases, expiry, and password protection.",
+    r2AccordionDesc: "Configure R2 credentials, R2-only delivery domains, CORS, and capacity release.",
+    filebaseAccordionDesc: "Configure Filebase CID/IPFS storage, Filebase-only delivery domains, and an optional Kubo preservation node.",
+    quickR2DomainLabel: "🌐 R2 delivery domain",
+    quickFilebaseDomainLabel: "🌐 Filebase delivery domain",
+    r2DomainPlaceholder: "-- Select R2 domain --",
+    filebaseDomainPlaceholder: "-- Select Filebase domain --",
+    r2DeliveryTitle: "1️⃣ Set the R2 public / delivery URL",
+    filebaseDeliveryTitle: "2️⃣ Set the Filebase public / delivery URL",
+    requiredText: "* Required",
+    deliveryDomainHintR2: "Add or remove R2 Worker URLs, pages.dev URLs, custom domains, or R2 dev URLs. The selected URL is used as the delivery base for copied image URLs and the palette.",
+    deliveryDomainHintFilebase: "Add or remove Filebase/IPFS Worker URLs, pages.dev URLs, or custom domains. The selected URL is used as the delivery base for new Filebase uploads.",
+    deliveryGuideSummary: "Create or change a delivery URL",
+    r2DeliveryGuide: "Start with the KV Worker <code>https://…workers.dev</code> URL. Only deploy Pages or add a Worker custom domain when you need a separate URL.<ol><li><code>npx wrangler login</code></li><li>Run <code>npm run build</code> at the repository root</li><li><code>npx wrangler pages deploy dist --project-name=my-r2-delivery</code></li><li>Add the shown <code>https://my-r2-delivery.pages.dev</code> URL using ＋.</li></ol>",
+    filebaseDeliveryGuide: "Use a delivery domain <strong>separate</strong> from R2 for Filebase. Create a new Pages project and deploy this Cividge delivery code.<ol><li><code>npx wrangler login</code></li><li>Run <code>npm run build</code> at the repository root</li><li><code>npx wrangler pages deploy dist --project-name=my-filebase-delivery</code></li><li>Add the shown <code>https://my-filebase-delivery.pages.dev</code> URL using ＋.</li></ol>",
+    kvWorkerTitle: "📚 KV Registry Integration (short URLs, passwords, BYOC)",
+    kvWorkerRepo: "cividge-kv-worker repository ↗",
+    r2CorsSummary: "R2 bucket CORS policy (required for browser access)",
+    r2CorsHelp: "In R2 → your bucket → Settings → CORS Policy → Edit, paste a policy that allows the frontend URL. Use the URL where this app is opened, not the delivery domain.",
+    r2CorsCopy: "📋 Copy CORS policy",
+    filebaseBucketLabel: "Filebase bucket name (IPFS bucket)",
+    filebaseAccessKeyLabel: "Filebase key (Access Key)",
+    filebaseSecretKeyLabel: "Filebase Secret Key",
+    filebaseCorsAuto: "⚙️ Configure CORS",
+    kuboTitle: "🏠 Home Kubo (IPFS preservation provider)",
+    kuboTest: "🔌 Test connection",
+    kuboRpcLabel: "Kubo RPC endpoint URL",
+    kuboUnknown: "⚪ Not checked",
+    kuboEndpointHelp: "At home use http://127.0.0.1:5001; for remote HTTPS access use a Tailscale or similar endpoint.",
+    kuboAutoPin: "Automatically pin to Kubo when Filebase releases capacity",
+    kuboGuideSummary: "Recommended operation and remote access (optional)",
+    kuboGuideBody: "<p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">What does this do?</strong><br>It uses your PC or server as an IPFS node and pins a CID before Filebase releases capacity. As long as Kubo remains online and retains the pin, you preserve a copy of that CID. This is a preservation layer, not your only backup.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Minimum setup</strong><br>1. Install and start Kubo. 2. At home keep <code>http://127.0.0.1:5001</code>. 3. Enable automatic pinning only after <strong>🔌 Test connection</strong> succeeds. When Kubo is offline, Cividge safely pauses Filebase FIFO to avoid data loss.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Delivery and caching</strong><br>Cividge delivery URLs use edge caching, so cached visits reduce load on Filebase and IPFS nodes. Initial visits and cache misses still access an upstream. Kubo RPC is for pin operations; it does not by itself make Kubo the permanent first delivery origin.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Safe remote access</strong><br>Keep the API bound to <code>127.0.0.1:5001</code>; never expose it directly to the internet. For remote pinning, use an HTTPS endpoint available only inside your Tailnet, such as <strong>Tailscale Serve</strong>. Do not use <strong>0.0.0.0:5001</strong>, a public reverse proxy, or router port forwarding.</p>",
+    kvApiEndpointLabel: "KV registry API endpoint URL",
+    kvApiEndpointHelp: "You can specify your own Cloudflare Worker. When blank, Cividge tries this site's /api/ipfs-kv.",
+    kvApiTokenLabel: "KV API token",
+    kvApiTokenHelp: "Without a token, it avoids writing to the shared KV and uses a safe direct IPFS CID link (/i/CID/name).",
     r2AccountLabel: "Account ID",
     r2AccountSub: "Cloudflare Account ID",
     r2BucketLabel: "R2 Bucket Name",
@@ -469,7 +542,7 @@ const adminApiToken = document.querySelector("#adminApiToken");
 const adminTokenStatus = document.querySelector("#adminTokenStatus");
 
 const cfStatus = document.querySelector("#cfStatus");
-const cfSettingsAccordion = document.querySelector("#cfSettingsAccordion");
+const cfSettingsAccordion = document.querySelector("#kvSettingsAccordion");
 const cfSaveButton = document.querySelector("#cfSaveButton");
 const cfClearButton = document.querySelector("#cfClearButton");
 const cfShareQrButton = document.querySelector("#cfShareQrButton");
@@ -480,6 +553,43 @@ const providerR2 = document.querySelector("#providerR2");
 const providerFilebase = document.querySelector("#providerFilebase");
 const filebaseCorsButton = document.querySelector("#filebaseCorsButton");
 const cfDashboardLink = document.querySelector("#cfDashboardLink");
+
+// 設定を保存先ごとの責務で分離する。入力ID・既存の保存処理は変更せず、
+// R2 / Filebase+Kubo / KV Worker の3つの独立アコーディオンへ再配置する。
+function organizeStorageSettingsUi() {
+  const r2Content = document.querySelector("#r2SettingsContent");
+  const filebaseContent = document.querySelector("#filebaseSettingsContent");
+  const kvContent = document.querySelector("#kvSettingsContent");
+  const r2Delivery = document.querySelector("#r2DeliverySettingsGroup");
+  const r2Credentials = document.querySelector("#r2CredentialsSettingsGroup");
+  const filebaseDelivery = document.querySelector("#filebaseDeliverySettingsGroup");
+  const filebaseCredentials = document.querySelector("#filebaseCredentialsSettingsGroup");
+  const kuboSettings = document.querySelector("#kuboSettingsGroup");
+  const kvSettings = document.querySelector("#kvWorkerSettingsGroup");
+  const actions = document.querySelector("#cloudSettingsActions");
+  const keysContainer = document.querySelector("#r2KeysStepContainer");
+
+  if (!r2Content || !filebaseContent || !kvContent) return;
+  [r2Delivery, r2Credentials].filter(Boolean).forEach(node => r2Content.appendChild(node));
+  [filebaseDelivery, filebaseCredentials, kuboSettings].filter(Boolean).forEach(node => filebaseContent.appendChild(node));
+  [kvSettings, actions, cfStatus].filter(Boolean).forEach(node => kvContent.appendChild(node));
+  if (keysContainer && keysContainer.childElementCount === 0) keysContainer.remove();
+
+  const corsPreview = document.querySelector("#r2CorsPolicyPreview");
+  const corsCopyButton = document.querySelector("#r2CorsPolicyCopyBtn");
+  const frontendOrigin = window.location.origin.replace(/\/$/, "");
+  const corsPolicy = JSON.stringify([{
+    AllowedOrigins: [...new Set([frontendOrigin, "http://127.0.0.1:5173", "http://localhost:5173"])],
+    AllowedMethods: ["GET", "HEAD", "PUT", "DELETE"],
+    AllowedHeaders: ["*"],
+    ExposeHeaders: ["ETag", "Content-Length", "Content-Type"],
+    MaxAgeSeconds: 3600,
+  }], null, 2);
+  if (corsPreview) corsPreview.textContent = corsPolicy;
+  corsCopyButton?.addEventListener("click", () => copyToClipboard(corsPolicy, corsCopyButton, "📋 CORS 設定をコピーしました"));
+}
+
+organizeStorageSettingsUi();
 
 // 🎨 Civitai ギャラリー要素
 const civitaiUserSelect = document.querySelector("#civitaiUserSelect");
@@ -820,7 +930,57 @@ function hasAdminAccess() {
   return Boolean(token && custom);
 }
 
-async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false) {
+const VIDEO_THUMBNAIL_PARENT_EXTENSIONS = new Set(["mp4", "webm", "mov"]);
+
+function isVideoThumbnailParentKey(key = "") {
+  const ext = String(key).split(".").pop().toLowerCase();
+  return VIDEO_THUMBNAIL_PARENT_EXTENSIONS.has(ext);
+}
+
+function getVideoThumbnailKey(originKey = "") {
+  return isVideoThumbnailParentKey(originKey) ? `${originKey}.thumb.webp` : null;
+}
+
+function isGeneratedVideoThumbnailKey(key = "") {
+  return /\.(mp4|webm|mov)\.thumb\.webp$/i.test(String(key));
+}
+
+// 直リンク利用者が事前レイアウトを決められるよう、画像の実寸を台帳へ残す。
+// Canvas 変換後の Blob を渡すため、配信される実データと必ず一致する。
+async function getImageDimensions(blob, contentType = "") {
+  const mime = String(contentType || blob?.type || "").toLowerCase();
+  if (!blob || !mime.startsWith("image/")) return null;
+
+  try {
+    const bitmap = await createImageBitmap(blob);
+    const dimensions = { width: bitmap.width, height: bitmap.height };
+    bitmap.close?.();
+    return dimensions.width > 0 && dimensions.height > 0 ? dimensions : null;
+  } catch (bitmapError) {
+    // createImageBitmap 非対応の画像形式では通常の Image デコーダーも試す。
+    try {
+      const objectUrl = URL.createObjectURL(blob);
+      return await new Promise((resolve) => {
+        const image = new Image();
+        image.onload = () => {
+          const dimensions = { width: image.naturalWidth, height: image.naturalHeight };
+          URL.revokeObjectURL(objectUrl);
+          resolve(dimensions.width > 0 && dimensions.height > 0 ? dimensions : null);
+        };
+        image.onerror = () => {
+          URL.revokeObjectURL(objectUrl);
+          resolve(null);
+        };
+        image.src = objectUrl;
+      });
+    } catch (imageError) {
+      console.debug("Image dimension lookup skipped:", bitmapError, imageError);
+      return null;
+    }
+  }
+}
+
+async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null) {
   if (!key) return;
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
@@ -832,6 +992,13 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
   }
   try {
     const payload = { key, cid: cid || "", size, mime, s3Key: s3Key || key };
+    if (thumbnailKey) payload.thumbnailKey = thumbnailKey;
+    const numericWidth = Math.floor(Number(width));
+    const numericHeight = Math.floor(Number(height));
+    if (numericWidth > 0 && numericHeight > 0) {
+      payload.width = numericWidth;
+      payload.height = numericHeight;
+    }
     if (unpinned) {
       payload.unpinned = true;
     }
@@ -1416,10 +1583,11 @@ function renderR2DomainSelect() {
     });
   };
 
-  populateSelect(r2DomainSelect, r2Domains, selectedR2Domain, "-- R2 配信ドメインが未登録です (＋から追加) --");
-  populateSelect(filebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, "-- Filebase 配信ドメインが未登録です (＋から追加) --");
-  populateSelect(quickDomainSelect, r2Domains, selectedR2Domain, "-- R2 ドメインを選択 --");
-  populateSelect(quickFilebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, "-- Filebase ドメインを選択 --");
+  const isEnglish = getAppLanguage() === "en";
+  populateSelect(r2DomainSelect, r2Domains, selectedR2Domain, isEnglish ? "-- No R2 delivery domain (add with ＋) --" : "-- R2 配信ドメインが未登録です (＋から追加) --");
+  populateSelect(filebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, isEnglish ? "-- No Filebase delivery domain (add with ＋) --" : "-- Filebase 配信ドメインが未登録です (＋から追加) --");
+  populateSelect(quickDomainSelect, r2Domains, selectedR2Domain, isEnglish ? "-- Select R2 domain --" : "-- R2 ドメインを選択 --");
+  populateSelect(quickFilebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, isEnglish ? "-- Select Filebase domain --" : "-- Filebase ドメインを選択 --");
 
   if (r2DomainDeleteBtn) {
     r2DomainDeleteBtn.disabled = r2Domains.length === 0;
@@ -2504,6 +2672,11 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
     } else if (e.key === "Escape" && form) {
       form.style.display = "none";
     }
+  });
+
+  document.querySelectorAll("[data-i18n-title]").forEach(elem => {
+    const key = elem.getAttribute("data-i18n-title");
+    if (dict[key]) elem.title = dict[key];
   });
   deleteBtn?.addEventListener("click", () => {
     const current = getSelectedR2Domain(storageProvider);
@@ -4868,6 +5041,7 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
     // 保護対象（pinned_ で始まるもの）を除外し、古い順（LastModified 昇順）にソート
     const eligibleFiles = contents.filter(item => {
       if (item.Key?.startsWith("pinned_")) return false; // 📌永続化は保護
+      if (isGeneratedVideoThumbnailKey(item.Key)) return false; // 親動画と一体でのみ回収する
       return true;
     }).sort((a, b) => new Date(a.LastModified || 0) - new Date(b.LastModified || 0));
 
@@ -4878,6 +5052,15 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
       filesToUnpin.push(file.Key);
       freedBytes += (file.Size || 0);
       currentTotalBytes -= (file.Size || 0);
+
+      // OGP 用サムネイルは親動画と同じ実体ライフサイクル。単独で FIFO 回収しない。
+      const thumbnailKey = getVideoThumbnailKey(file.Key);
+      const thumbnail = thumbnailKey ? contents.find(item => item.Key === thumbnailKey) : null;
+      if (thumbnail) {
+        filesToUnpin.push(thumbnail.Key);
+        freedBytes += (thumbnail.Size || 0);
+        currentTotalBytes -= (thumbnail.Size || 0);
+      }
 
       // 十分な空き容量（上限の70%以下までゆったり解放し、次回の連続アップロード用バッファを確保）
       if (currentTotalBytes + requiredBytes <= limitBytes * 0.70) {
@@ -5094,6 +5277,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
     if (!contentType || contentType === "application/octet-stream") {
       contentType = getContentTypeFromFilename(result.name);
     }
+    const imageDimensions = await getImageDimensions(uploadBlob, contentType);
     const isAttachment = ["zip", "7z", "rar", "tar", "gz"].includes(ext);
     const contentDisposition = isAttachment
       ? `attachment; filename="${encodeURIComponent(result.name)}"`
@@ -5137,7 +5321,10 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
             false,
             null,
             baseDomain,
-            true
+            true,
+            getVideoThumbnailKey(duplicate.key),
+            imageDimensions?.width,
+            imageDimensions?.height
           );
           storeIpfsCid(result.name, duplicate.cid);
           storeIpfsCid(duplicate.key, duplicate.cid);
@@ -5229,7 +5416,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
       }
       // CID の有無に関わらず、KV にメタデータ（パスワード含む）を登録（※一般ユーザー時は自動スキップ）
       // 🌐 選択されている配信ドメインのみを allowedHost として渡し、指定ドメイン外からのアクセスを404遮断
-      await registerKvCid(result.name, ipfsCid || "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true);
+      await registerKvCid(result.name, ipfsCid || "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height);
       
       if (hasAdminAccess()) {
         const deliveryBase = getKvDeliveryBaseDomain();
@@ -5250,9 +5437,9 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
       }
       setFileStoredDomain(result.name, baseDomain);
     } else {
-      // ⚡ Cloudflare R2: パスワードまたは時限付きの場合は KV に保護メタデータ＆実体を登録
-      if (password || ttlSeconds > 0) {
-        await registerKvCid(result.name, "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true);
+      // ⚡ Cloudflare R2: 保護・期限付きに加え、画像は解像度ヘッダー配信用に台帳登録する。
+      if (password || ttlSeconds > 0 || imageDimensions) {
+        await registerKvCid(result.name, "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height);
         result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       } else {
         result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
@@ -5262,28 +5449,34 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
 
     // 🎬 動画の場合は先頭フレームサムネイル（.thumb.webp）を裏で自動生成・保存
     // Misskey / Twitter / Discord 等の OGP カード用ポスター画像として活用
-    const isVideoFile = ["mp4", "webm", "mov"].includes(ext);
+    const isVideoFile = isVideoThumbnailParentKey(result.name);
     if (isVideoFile && uploadBlob) {
       (async () => {
         try {
           const thumbBlob = await captureVideoFirstFrame(uploadBlob);
           if (thumbBlob) {
-            const thumbKey = `${result.name}.thumb.webp`;
+            const thumbKey = getVideoThumbnailKey(result.name);
             const thumbBytes = new Uint8Array(await thumbBlob.arrayBuffer());
+            const thumbnailDimensions = await getImageDimensions(thumbBlob, "image/webp");
             const thumbCommand = new PutObjectCommand({
               Bucket: bucketName,
               Key: thumbKey,
               Body: thumbBytes,
               ContentType: "image/webp",
               ContentDisposition: "inline",
-              Metadata: { size: String(thumbBytes.length) },
+              Metadata: expiresAt ? {
+                size: String(thumbBytes.length),
+                "expires-at": String(expiresAt),
+                ttl: String(ttlSeconds),
+              } : { size: String(thumbBytes.length) },
             });
             const thumbPut = await s3.send(thumbCommand);
-            if (isFilebase) {
-              const tHeaders = thumbPut?.$metadata?.httpHeaders || {};
-              const thumbCid = tHeaders["x-amz-meta-cid"] || tHeaders["x-amz-meta-ipfs-hash"] || "";
-              await registerKvCid(thumbKey, thumbCid, thumbBytes.length, "image/webp", thumbKey, "", thumbBlob, 0, null, false, null, baseDomain);
-            }
+            const tHeaders = thumbPut?.$metadata?.httpHeaders || {};
+            const thumbCid = isFilebase ? (tHeaders["x-amz-meta-cid"] || tHeaders["x-amz-meta-ipfs-hash"] || "") : "";
+            // サムネイル自身も親動画と同じ期限で台帳登録し、OGP 配信時に解決できるようにする。
+            await registerKvCid(thumbKey, thumbCid, thumbBytes.length, "image/webp", thumbKey, "", thumbBlob, ttlSeconds, expiresAt, false, null, baseDomain, true, null, thumbnailDimensions?.width, thumbnailDimensions?.height);
+            // 別名 URL でも元動画のサムネイルを参照できるよう、親レコードへ派生キーを保存する。
+            await registerKvCid(result.name, isFilebase ? (ipfsCid || "") : "", uploadBytes.length, contentType, result.name, "", null, ttlSeconds, expiresAt, false, null, baseDomain, true, thumbKey, imageDimensions?.width, imageDimensions?.height);
             console.log(`🎬 動画サムネイル自動アップロード完了: ${thumbKey} (${thumbBytes.length} bytes)`);
           }
         } catch (thumbErr) {
@@ -5474,10 +5667,13 @@ function syncAutoFifoControl() {
     ? localStorage.getItem("autoFifo") !== "false"
     : localStorage.getItem("r2AutoFifo") === "true";
   autoFifoCheckbox.checked = enabled;
-  const labelText = isFilebase ? "📦 Filebase 自動容量解放 (FIFO)" : "📦 R2 自動容量解放 (FIFO)";
+  const isEnglish = getAppLanguage() === "en";
+  const labelText = isFilebase
+    ? (isEnglish ? "📦 Filebase automatic capacity release (FIFO)" : "📦 Filebase 自動容量解放 (FIFO)")
+    : (isEnglish ? "📦 R2 automatic capacity release (FIFO)" : "📦 R2 自動容量解放 (FIFO)");
   const titleText = isFilebase
-    ? "Filebase の容量上限に近づいたとき、古い実体をアンピンして空きを確保します（URLは維持）"
-    : "R2 の容量上限に近づいたとき、古いファイルを削除して空きを確保します";
+    ? (isEnglish ? "When Filebase nears its storage limit, unpin old objects to make space while keeping their URLs." : "Filebase の容量上限に近づいたとき、古い実体をアンピンして空きを確保します（URLは維持）")
+    : (isEnglish ? "When R2 nears its storage limit, delete old files to make space." : "R2 の容量上限に近づいたとき、古いファイルを削除して空きを確保します");
   autoFifoLabel.title = titleText;
   const text = autoFifoLabel.querySelector("span");
   if (text) text.textContent = labelText;
@@ -5585,6 +5781,17 @@ function renderStorageOnboardingCard() {
 
   const kvUrlVal = (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim();
   const adminTokenVal = (localStorage.getItem("adminApiToken") || adminApiToken?.value || "").trim();
+  // R2 の S3 API をブラウザから直接呼ぶため、CORS では「配信先」ではなく
+  // このフロントエンドを開いている Origin を許可する。
+  const frontendOrigin = (typeof window !== "undefined" ? window.location.origin : "https://your-app.pages.dev").replace(/\/$/, "");
+  const r2CorsOrigins = [...new Set([frontendOrigin, "http://127.0.0.1:5173", "http://localhost:5173"])];
+  const r2CorsPolicy = JSON.stringify([{
+    AllowedOrigins: r2CorsOrigins,
+    AllowedMethods: ["GET", "HEAD", "PUT", "DELETE"],
+    AllowedHeaders: ["*"],
+    ExposeHeaders: ["ETag", "Content-Length", "Content-Type"],
+    MaxAgeSeconds: 3600,
+  }], null, 2);
 
   r2FileList.innerHTML = `
     <div class="storage-onboarding-card">
@@ -5641,6 +5848,18 @@ function renderStorageOnboardingCard() {
                 <li>表示された <code>https://my-content-cache.pages.dev</code> を下へ入力</li>
               </ol>
             </details>
+            ${isFb ? `
+            <details class="onboarding-guide-details" style="margin-top: 8px;">
+              <summary>Filebase バケットの CORS 設定（接続後に一度だけ）</summary>
+              <p style="margin: 8px 0;">ブラウザからアップロードし、IPFS CID を取得するため CORS が必要です。Filebase への接続が成功したら、画面上部の <strong>☁️ クラウドストレージ接続設定</strong> を開き、Filebase (IPFS) 欄の <strong>⚙️ CORS自動設定</strong> を一度実行してください。手動で JSON を貼り付ける必要はありません。</p>
+            </details>` : ""}
+            ${isFb ? "" : `
+            <details class="onboarding-guide-details" style="margin-top: 8px;">
+              <summary>R2 バケットの CORS 設定（ブラウザから接続するため必須）</summary>
+              <p style="margin: 8px 0;">Cloudflare Dashboard → R2 → 対象バケット → <strong>Settings</strong> → <strong>CORS Policy</strong> → Edit に、次を貼り付けて保存してください。<br>先頭の URL は、現在このアプリを開いているフロントエンド URL（<code>${escapeHtml(frontendOrigin)}</code>）です。配信ドメインではありません。</p>
+              <pre style="margin: 0; padding: 9px; overflow: auto; border-radius: 6px; background: rgba(0,0,0,.38); font-size: 10px; line-height: 1.4; white-space: pre-wrap;"><code>${escapeHtml(r2CorsPolicy)}</code></pre>
+              <button type="button" class="ghost-button" id="obCopyR2CorsBtn" style="margin-top: 8px; font-size: 11px;">📋 CORS 設定をコピー</button>
+            </details>`}
           </div>
 
           <fieldset id="obStorageStep" ${kvConnected ? "" : "disabled"} style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: ${kvConnected ? "1" : "0.5"};">
@@ -5698,6 +5917,11 @@ function renderStorageOnboardingCard() {
       </div>
     </div>
   `;
+
+  const copyR2CorsButton = document.querySelector("#obCopyR2CorsBtn");
+  copyR2CorsButton?.addEventListener("click", async () => {
+    await copyToClipboard(r2CorsPolicy, copyR2CorsButton, "📋 CORS 設定をコピーしました");
+  });
 
   const readDraftDomain = () => {
     const input = isFb ? document.querySelector("#obDomainInput") : document.querySelector("#obR2DomainInput");
@@ -6039,6 +6263,10 @@ async function fetchAndRenderR2Files() {
         await ensureStorageCapacityFilebase(s3, bucketName, 0);
       }
     }
+
+    // 動画の OGP 用ポスターは派生データであり、通常ファイルとして操作させない。
+    // 使用量計算と FIFO の対象には残すが、一覧・URL パレットからは隠す。
+    contents = contents.filter(item => !isGeneratedVideoThumbnailKey(item.s3Key || item.Key));
 
     // （※ 自宅 Kubo 遅延マイグレーションは一覧描画後に実行します）
 
@@ -6694,7 +6922,10 @@ r2FileList?.addEventListener("click", async (e) => {
           console.warn("fetchKvFiles error during metadata fallback:", e);
         }
 
-        await registerKvCid(newKey, cid, size, mime, originalS3Key, password, null, ttl, expiresAt, unpinned, kuboStatus, allowedHost);
+        await registerKvCid(
+          newKey, cid, size, mime, originalS3Key, password, null, ttl, expiresAt,
+          unpinned, kuboStatus, allowedHost, false, getVideoThumbnailKey(originalS3Key)
+        );
         storeIpfsCid(newKey, cid);
         storeIpfsCid(originalS3Key, cid);
         storeIpfsCid(oldKey, cid);
@@ -6830,7 +7061,8 @@ r2FileList?.addEventListener("click", async (e) => {
           unpinned,
           kuboStatus,
           cleanHost,
-          true // overwriteAllowedHost: この新ドメインのみ許可
+          true, // overwriteAllowedHost: この新ドメインのみ許可
+          getVideoThumbnailKey(s3Key)
         );
 
         if (cid) {
@@ -7140,9 +7372,13 @@ r2FileList?.addEventListener("click", async (e) => {
 
         // 3. 他に共有リンクがないか、あるいは「実体ごとすべて抹消」が選ばれた場合のみ S3 実体を削除
         if (deleteOriginAlso && s3 && bucketName && s3Key) {
-          const command = new DeleteObjectCommand({
-            Bucket: bucketName,
-            Key: s3Key,
+          const thumbnailKey = getVideoThumbnailKey(s3Key);
+          if (thumbnailKey) await deleteKvCid(thumbnailKey);
+          const keysToDelete = [s3Key, thumbnailKey].filter(Boolean);
+          const command = keysToDelete.length === 1 ? new DeleteObjectCommand({
+            Bucket: bucketName, Key: s3Key,
+          }) : new DeleteObjectsCommand({
+            Bucket: bucketName, Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
           });
           await s3.send(command);
         }
@@ -7162,9 +7398,13 @@ r2FileList?.addEventListener("click", async (e) => {
 
     try {
       if (s3 && bucketName && s3Key) {
-        const command = new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key: s3Key,
+        const thumbnailKey = getVideoThumbnailKey(s3Key);
+        if (thumbnailKey) await deleteKvCid(thumbnailKey);
+        const keysToDelete = [s3Key, thumbnailKey].filter(Boolean);
+        const command = keysToDelete.length === 1 ? new DeleteObjectCommand({
+          Bucket: bucketName, Key: s3Key,
+        }) : new DeleteObjectsCommand({
+          Bucket: bucketName, Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
         });
         await s3.send(command);
       }
@@ -7228,7 +7468,9 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
       }
 
       if (s3 && bucketName && s3KeysToDelete.size > 0) {
-        const objects = Array.from(s3KeysToDelete).map(Key => ({ Key }));
+        const thumbnailKeys = Array.from(s3KeysToDelete).map(getVideoThumbnailKey).filter(Boolean);
+        for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey);
+        const objects = [...s3KeysToDelete, ...thumbnailKeys].map(Key => ({ Key }));
         const command = new DeleteObjectsCommand({
           Bucket: bucketName,
           Delete: { Objects: objects },
@@ -7238,7 +7480,9 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
 
     } else {
       if (s3 && bucketName) {
-        const objects = keys.map(Key => ({ Key }));
+        const thumbnailKeys = keys.map(getVideoThumbnailKey).filter(Boolean);
+        for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey);
+        const objects = [...keys, ...thumbnailKeys].map(Key => ({ Key }));
         const command = new DeleteObjectsCommand({
           Bucket: bucketName,
           Delete: { Objects: objects },
