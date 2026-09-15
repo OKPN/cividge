@@ -231,9 +231,19 @@
                       </div>
 
                       <span style="font-size: 11px; color: var(--muted); margin-top: 2px;">
-                        ※ pages.dev URL（例: https://sample-cdn.pages.dev）、独自ドメイン、R2 dev URL を何件でも追加・削除できます。<br>
+                        ※ 初期値の Worker URL、pages.dev URL、独自ドメイン、R2 dev URL を何件でも追加・削除できます。<br>
                         選択された URL が画像コピーやパレットの配信ベース URL に使用されます。
                       </span>
+                      <details class="delivery-domain-guide">
+                        <summary>配信 URL の作り方・変更方法</summary>
+                        <p>最初は KV Worker の <code>https://…workers.dev</code> をそのまま使えます。独自の URL が必要な場合だけ、Pages をデプロイするか Worker に独自ドメインを追加します。</p>
+                        <ol>
+                          <li><code>npx wrangler login</code></li>
+                          <li>リポジトリのルートで <code>npm run build</code></li>
+                          <li><code>npx wrangler pages deploy dist --project-name=my-content-cache</code></li>
+                          <li>表示された <code>https://my-content-cache.pages.dev</code> を「＋」から追加します。</li>
+                        </ol>
+                      </details>
                     </div>
                   </div>
 

@@ -1,6 +1,8 @@
 import QRCode from "qrcode";
 import encodeJxl, { init as initJxl } from "@jsquash/jxl/encode.js";
 import jxlWasmUrl from "@jsquash/jxl/codec/enc/jxl_enc.wasm?url";
+import { importer as importUnixFs } from "ipfs-unixfs-importer";
+import { BlackHoleBlockstore } from "blockstore-core";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -772,7 +774,10 @@ if (typeof window !== "undefined") {
 }
 // --- 🛡️ KV台帳エンドポイント ＆ APIトークン（BYOC・責任分離） ---
 function getCustomKvWorkerUrl() {
-  return (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim().replace(/\/$/, "");
+  const rawUrl = (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim().replace(/\/$/, "");
+  if (!rawUrl) return "";
+  // Workerのホスト名だけが入力されても、fetchがローカル相対パスとして解釈しないようにする。
+  return /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
 }
 
 function getKvApiEndpoint() {
@@ -813,7 +818,7 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
 
-  // 🛡️ KV連携が有効でない（トークンも独自Workerもない）場合、中央KVへの登録はスキップ（一般ユーザーモード: CID直リンで責任分離）
+  // 🛡️ KV連携が有効でない（トークンも独自Workerもない）場合、中央KVへの登録はスキップする。
   if (!hasAdminAccess()) {
     console.log(`[責任分離] 一般ユーザーモードのため、中央KVへの登録をスキップしました: ${key}`);
     return;
@@ -1139,6 +1144,88 @@ function switchUrlDomain(originalUrl, targetDomain) {
     // URLパース失敗時のフォールバック
     return originalUrl.replace(/^https?:\/\/[^/]+/, targetDomain.replace(/\/$/, ""));
   }
+}
+
+function getIpfsCidFromS3Response(output) {
+  const headers = output?.$metadata?.httpHeaders || {};
+  const candidate = headers["x-amz-meta-cid"] ||
+    headers["x-amz-meta-ipfs-hash"] ||
+    output?.Metadata?.cid ||
+    output?.Metadata?.["ipfs-hash"];
+  return isValidIpfsCid(candidate) ? candidate.trim() : null;
+}
+
+// FilebaseのIPFSバケットと同じUnixFS（CIDv0 / protobuf leaves）でCIDを作る。
+// onlyHash + BlackHoleBlockstore により、ファイル本体やブロックをブラウザ内に保持しない。
+async function calculateFilebaseCid(bytes) {
+  if (!bytes?.byteLength) return null;
+  const blockstore = new BlackHoleBlockstore();
+  let cid = null;
+  for await (const entry of importUnixFs(
+    [{ path: "file", content: bytes }],
+    blockstore,
+    { onlyHash: true, cidVersion: 0, rawLeaves: false, wrapWithDirectory: false }
+  )) {
+    cid = entry.cid?.toString() || null;
+  }
+  return isValidIpfsCid(cid) ? cid : null;
+}
+
+// Filebaseの全オブジェクトをHEADで照合する。ListObjectsはCIDを返さないため、
+// 正確な重複判定にはx-amz-meta-cidを取得する必要がある。
+async function findFilebaseObjectByCid(s3, bucketName, targetCid) {
+  if (!s3 || !bucketName || !targetCid) return null;
+
+  let continuationToken = undefined;
+  do {
+    const page = await s3.send(new ListObjectsV2Command({
+      Bucket: bucketName,
+      MaxKeys: 1000,
+      ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+    }));
+    const objects = page.Contents || [];
+
+    // 既にこのブラウザで取得済みのCIDはHEADを省略する。
+    for (const object of objects) {
+      if (getStoredIpfsCid(object.Key) === targetCid) {
+        return { key: object.Key, cid: targetCid, size: object.Size || 0 };
+      }
+    }
+
+    const unresolved = objects.filter(object => !getStoredIpfsCid(object.Key));
+    const batchSize = 4;
+    for (let start = 0; start < unresolved.length; start += batchSize) {
+      const batch = unresolved.slice(start, start + batchSize);
+      const heads = await Promise.all(batch.map(async (object) => {
+        try {
+          const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: object.Key }));
+          return { object, cid: getIpfsCidFromS3Response(head) };
+        } catch (error) {
+          console.warn(`Filebase CID lookup failed: ${object.Key}`, error);
+          return { object, cid: null };
+        }
+      }));
+      for (const { object, cid } of heads) {
+        if (!cid) continue;
+        storeIpfsCid(object.Key, cid);
+        if (cid === targetCid) return { key: object.Key, cid, size: object.Size || 0 };
+      }
+    }
+
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return null;
+}
+
+// 公開URLは常に「選択中の配信ドメイン + ファイル名」に統一する。
+// CIDは内部の配信解決用メタデータであり、共有・コピーするURLには含めない。
+function getSelectedDeliveryUrl(result) {
+  if (!result?.name) return "";
+
+  const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : ""))
+    .replace(/\/$/, "");
+  return baseDomain ? `${baseDomain}/${encodeURIComponent(result.name)}` : "";
 }
 
 // 🌐 各ファイルカード専用の固定配信ドメイン管理（プルダウン変更で釣られないように完全分離）
@@ -2261,7 +2348,7 @@ function updateAdminTokenStatusUI() {
   } else if (token) {
     adminTokenStatus.innerHTML = '<span style="color: #4caf50; font-weight: bold;">🟢 自ホストKV連携中</span>';
   } else {
-    adminTokenStatus.innerHTML = '<span style="color: var(--muted);">⚪ 一般ユーザーモード (CID直リン)</span>';
+    adminTokenStatus.innerHTML = '<span style="color: var(--muted);">⚪ 一般ユーザーモード (配信ドメイン直リンク)</span>';
   }
 }
 
@@ -3974,6 +4061,9 @@ function render() {
         }
 
         const displayName = result ? result.name : file.name;
+        const duplicateNoticeHtml = result?.duplicateOf
+          ? `<div class="duplicate-upload-note" style="margin-top: 4px; font-size: 10.5px; color: #a5b4fc; line-height: 1.35;">♻️ 同一内容を検出: 再アップロードせず「${escapeHtml(result.duplicateOf)}」の別名URLを作成しました</div>`
+          : "";
 
         let metaHtml = "";
         if (result && result.size) {
@@ -4013,6 +4103,7 @@ function render() {
               ${metaHtml}
             </div>
             ${createComfyBadgeHtml(file, result)}
+            ${duplicateNoticeHtml}
           </div>
           <div class="card-actions-area item-actions-col" style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-left: auto;">
             ${promptBtnHtml}
@@ -4082,6 +4173,7 @@ function createCardActionHtml(file, result, index) {
 
   if (result && result.isUploaded) {
     const isFb = result.uploadedProvider === "filebase";
+    const deliveryUrl = getSelectedDeliveryUrl(result);
     const badgeHtml = isFb
       ? `<span style="font-size: 9.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.4); padding: 1px 5px; border-radius: 4px;">🪐 IPFS</span>`
       : `<span style="font-size: 9.5px; font-weight: 700; color: #fb923c; background: rgba(249, 115, 22, 0.15); border: 1px solid rgba(249, 115, 22, 0.4); padding: 1px 5px; border-radius: 4px;">⚡ R2</span>`;
@@ -4093,10 +4185,10 @@ function createCardActionHtml(file, result, index) {
     return `
       ${badgeHtml}
       ${pwdBadge}
-      <input type="text" class="url-output" value="${escapeHtml(result.proxyUrl)}" readonly style="width: 140px; font-size: 11px; height: 28px; padding: 0 6px; background: rgba(0,0,0,0.3); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8; border-radius: 4px;" title="クリックで全選択＆コピー" onclick="this.select()">
+      <input type="text" class="url-output" value="${escapeHtml(deliveryUrl)}" readonly style="width: 140px; font-size: 11px; height: 28px; padding: 0 6px; background: rgba(0,0,0,0.3); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8; border-radius: 4px;" title="クリックで全選択＆コピー" onclick="this.select()">
       <button type="button" class="ghost-button copy-button" style="font-size: 11px; padding: 0 8px; height: 28px;">${escapeHtml(dict.copyUrl || "コピー")}</button>
       <button type="button" class="ghost-button download-single-btn" data-index="${index}" style="font-size: 11px; padding: 0 8px; height: 28px;" title="${dlBtnTitle}" ${dlBtnDisabled}>📥 DL</button>
-      ${!result.hasPassword ? `<button type="button" class="ghost-button civitai-post-btn" data-index="${index}" data-url="${escapeHtml(result.proxyUrl)}" data-name="${escapeHtml(result.name)}" style="${civitaiStyle}" title="${civitaiBtnTitle}" ${civitaiOk ? '' : 'disabled'}>🎨 Civitai</button>` : ""}
+      ${!result.hasPassword ? `<button type="button" class="ghost-button civitai-post-btn" data-index="${index}" data-url="${escapeHtml(deliveryUrl)}" data-name="${escapeHtml(result.name)}" style="${civitaiStyle}" title="${civitaiBtnTitle}" ${civitaiOk ? '' : 'disabled'}>🎨 Civitai</button>` : ""}
     `;
   }
 
@@ -4348,19 +4440,15 @@ fileList?.addEventListener("click", async (event) => {
   if (copyBtn) {
     const inputEl = card.querySelector(".url-output");
     const result = state.results[index];
-    let urlToCopy = inputEl?.value?.trim() || result?.proxyUrl || "";
-
-    // Filebase IPFS モードで URL に /i/ が抜けている場合は強制的に完全な直リンを再構築
-    const provider = getStorageProvider();
-    if (provider === "filebase" && result?.ipfsCid && !urlToCopy.includes("/i/")) {
-      const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
-      urlToCopy = `${baseDomain}/i/${result.ipfsCid}/${encodeURIComponent(result.name)}`;
-    }
+    // 共有URLは常に選択中の配信ドメインとファイル名で構築する。CIDを含む
+    // 内部リレーURLや、アップロード時に残った古いドメインはコピーしない。
+    let urlToCopy = getSelectedDeliveryUrl(result) || inputEl?.value?.trim() || result?.proxyUrl || "";
 
     if (inputEl) {
       inputEl.value = urlToCopy;
       inputEl.select();
     }
+    if (result && urlToCopy) result.proxyUrl = urlToCopy;
     await copyToClipboard(urlToCopy, copyBtn);
     return;
   }
@@ -4898,6 +4986,58 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
       ? `attachment; filename="${encodeURIComponent(result.name)}"`
       : "inline";
 
+    // 🧬 Filebase重複検査: 変換後のバイト列からCIDをローカル算出し、同じCIDの
+    // 既存実体があればPutObjectを実行しない。新しい公開名だけをKV台帳に追加する。
+    let calculatedCid = null;
+    if (isFilebase) {
+      calculatedCid = await calculateFilebaseCid(uploadBytes);
+      if (calculatedCid) {
+        const duplicate = await findFilebaseObjectByCid(s3, bucketName, calculatedCid);
+        if (duplicate) {
+          if (!hasAdminAccess()) {
+            throw new Error("同一CIDのファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
+          }
+
+          const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
+          result.isUploaded = true;
+          result.uploadedProvider = "filebase";
+          result.storageKey = duplicate.key;
+          result.duplicateOf = duplicate.key;
+          result.ipfsCid = duplicate.cid;
+          result.mime = contentType;
+          result.password = password;
+          result.hasPassword = Boolean(password);
+          result.ttl = ttlSeconds;
+          result.expiresAt = expiresAt;
+
+          // 新名 -> 既存のS3実体キー、という別名マッピングを作る。旧URLは維持される。
+          await registerKvCid(
+            result.name,
+            duplicate.cid,
+            uploadBytes.length,
+            contentType,
+            duplicate.key,
+            password,
+            null,
+            ttlSeconds,
+            expiresAt,
+            false,
+            null,
+            baseDomain,
+            true
+          );
+          storeIpfsCid(result.name, duplicate.cid);
+          storeIpfsCid(duplicate.key, duplicate.cid);
+          result.proxyUrl = getSelectedDeliveryUrl(result);
+          setFileStoredDomain(result.name, baseDomain);
+          paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
+          renderUrlPalette();
+
+          return true;
+        }
+      }
+    }
+
     // 🪐 Filebase (IPFS): 容量上限に近づいている場合、最も古い実体を自動アンピン (FIFO)
     if (isFilebase) {
       await ensureStorageCapacityFilebase(s3, bucketName, uploadBytes.length);
@@ -4969,6 +5109,9 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
         result.ipfsCid = ipfsCid;
         storeIpfsCid(result.name, ipfsCid);
       }
+      if (calculatedCid && ipfsCid && calculatedCid !== ipfsCid) {
+        console.warn("Filebase returned a CID different from the local UnixFS calculation; duplicate detection will be retried with Filebase's CID on future uploads.", { calculatedCid, ipfsCid });
+      }
       // CID の有無に関わらず、KV にメタデータ（パスワード含む）を登録（※一般ユーザー時は自動スキップ）
       // 🌐 選択されている配信ドメインのみを allowedHost として渡し、指定ドメイン外からのアクセスを404遮断
       await registerKvCid(result.name, ipfsCid || "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true);
@@ -4978,13 +5121,9 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
         result.proxyUrl = `${deliveryBase}/${encodeURIComponent(result.name)}`;
         console.log(`🪐 cividge-kv-worker URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
       } else {
-        // 🛡️ 一般ユーザーモード: 中央KVを使わないため、エッジ中継 /i/CID 直リンを発行（責任分離）
-        if (ipfsCid) {
-          result.proxyUrl = `${baseDomain}/i/${ipfsCid}/${encodeURIComponent(result.name)}`;
-        } else {
-          result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-        }
-        console.log(`🪐 Filebase URL 生成完了 (一般ユーザーCID直リン): CID=${ipfsCid} -> ${result.proxyUrl}`);
+        // 一般ユーザーモードでも共有URLは配信ドメイン + ファイル名に統一する。
+        result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
+        console.log(`🪐 Filebase URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
       }
 
       // 🚀 エッジキャッシュ事前ウォームアップ（初回読み出し高速化）:
@@ -5275,6 +5414,10 @@ function renderStorageOnboardingCard() {
   if (!r2FileList) return;
 
   const isFb = activeStorageTab === "filebase";
+  // 接続テストに通るまでは次の段階を開かない。画面を閉じた際にも
+  // 中途半端な認証情報だけで次段階へ進まないよう、現在のタブ内だけで保持する。
+  const kvConnected = sessionStorage.getItem("onboardingKvConnected") === "true";
+  const kvSuccessMessage = sessionStorage.getItem("onboardingKvSuccessMessage") || "";
   const currentDomain = getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "");
   const fbBucketVal = (localStorage.getItem("filebaseBucket") || filebaseBucket?.value || "").trim();
   const fbKeyVal = (localStorage.getItem("filebaseApiKey") || filebaseApiKey?.value || "").trim();
@@ -5293,7 +5436,7 @@ function renderStorageOnboardingCard() {
       <div class="onboarding-header">
         <div>
           <h3 class="onboarding-title">✨ ${isFb ? "🪐 Filebase (IPFS)" : "⚡ Cloudflare R2"} へ接続して開始しましょう</h3>
-          <p class="onboarding-desc">${isFb ? "Filebase (IPFS)" : "Cloudflare R2"} の認証情報が未入力のためファイル一覧は空です。ここに必要な情報を入力して接続すると、自動的にファイル一覧が同期され、上部の詳細設定にも保存されます。</p>
+          <p class="onboarding-desc">最初は STEP 1 で接続した Worker URL を公開・配信ドメインとして使えます。独自の配信 URL を使いたい場合だけ、Wrangler で配信用 Pages をデプロイするか、Worker に独自ドメインを設定してから STEP 2 の「公開・配信ドメイン」を差し替えてください。</p>
         </div>
       </div>
 
@@ -5319,6 +5462,10 @@ function renderStorageOnboardingCard() {
             <label>Admin API Token <span style="color: #ef4444; font-weight: bold;">(必須)</span></label>
             <input type="password" id="obAdminToken" placeholder="例: your-secret-token" value="${escapeHtml(adminTokenVal)}">
           </div>
+          <div class="onboarding-step-action">
+            <span id="obKvStatus" class="onboarding-step-status" style="color: ${kvSuccessMessage ? "#4ade80" : "#fcd34d"};">${escapeHtml(kvSuccessMessage)}</span>
+            <button type="button" class="ghost-button" id="obKvConnectBtn">🔌 保存して KV に接続</button>
+          </div>
         </div>
 
         <!-- STEP 2: ストレージ認証情報 (R2またはFilebase個別画面) -->
@@ -5328,19 +5475,25 @@ function renderStorageOnboardingCard() {
           </span>
           <div style="font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-bottom: 8px;">
             ${isFb 
-              ? "IPFSファイルを独自エッジ経由（/i/…）で高速キャッシュ配信するために、各自の配信用 Pages をデプロイして発行されたアドレスを設定します。" 
-              : "ファイルを独自エッジ経由（/raw/…）で爆速配信するために、各自の配信用 Pages をデプロイして発行されたアドレスを設定します。"}
-            <div style="margin: 6px 0; padding: 6px 8px; background: rgba(0,0,0,0.4); border-radius: 6px; font-family: monospace; font-size: 11px; color: #cbd5e1;">
-              npx wrangler pages deploy dist --project-name=my-media
-            </div>
-            ※ 発行された <code>https://my-media.pages.dev</code> を下の「公開・配信ドメイン」に入力してください。
+              ? "初期値の Worker URL のままでも、IPFSファイルを「配信ドメイン/ファイル名」で配信できます。独自の配信 URL に変えたい場合は Pages のデプロイまたは Worker の独自ドメイン設定後、その URL を入力してください。"
+              : "初期値の Worker URL のままでもファイルを配信できます。独自の配信 URL に変えたい場合は Pages のデプロイまたは Worker の独自ドメイン設定後、その URL を入力してください。"}
+            <details class="onboarding-guide-details">
+              <summary>Pages URL を取得する手順（任意）</summary>
+              <ol>
+                <li><code>npx wrangler login</code></li>
+                <li>このリポジトリのルートで <code>npm run build</code></li>
+                <li><code>npx wrangler pages deploy dist --project-name=my-content-cache</code></li>
+                <li>表示された <code>https://my-content-cache.pages.dev</code> を下へ入力</li>
+              </ol>
+            </details>
           </div>
 
+          <fieldset id="obStorageStep" ${kvConnected ? "" : "disabled"} style="border: 0; padding: 0; margin: 0; min-width: 0; opacity: ${kvConnected ? "1" : "0.5"};">
           ${isFb ? `
           <!-- Filebase 専用設定フォーム -->
           <div id="obFbFields" style="display: flex; flex-direction: column; gap: 8px;">
             <div class="onboarding-input-field">
-              <label>公開・配信ドメイン <span style="color: #ef4444; font-weight: bold;">(必須: pages.dev)</span></label>
+              <label>公開・配信ドメイン <span style="color: #ef4444; font-weight: bold;">(必須: Worker URL または独自配信 URL)</span></label>
               <input type="text" id="obDomainInput" placeholder="例: https://my-media.pages.dev" value="${escapeHtml(currentDomain)}">
             </div>
             <div class="onboarding-input-field">
@@ -5360,7 +5513,7 @@ function renderStorageOnboardingCard() {
           <!-- R2 専用設定フォーム -->
           <div id="obR2Fields" style="display: flex; flex-direction: column; gap: 8px;">
             <div class="onboarding-input-field">
-              <label>公開・配信ドメイン <span style="color: #ef4444; font-weight: bold;">(必須: pages.dev)</span></label>
+              <label>公開・配信ドメイン <span style="color: #ef4444; font-weight: bold;">(必須: Worker URL または独自配信 URL)</span></label>
               <input type="text" id="obR2DomainInput" placeholder="例: https://my-media.pages.dev" value="${escapeHtml(currentDomain)}">
             </div>
             <div class="onboarding-input-field">
@@ -5381,36 +5534,34 @@ function renderStorageOnboardingCard() {
             </div>
           </div>
           `}
+          </fieldset>
+          <div class="onboarding-step-action">
+            <span id="obStorageStatus" class="onboarding-step-status">${kvConnected ? "" : "🔒 STEP 1 の接続確認後に入力できます"}</span>
+            <button type="button" class="primary-button" id="obStorageConnectBtn" ${kvConnected ? "" : "disabled"}>💾 保存して ${isFb ? "Filebase" : "R2"} に接続</button>
+          </div>
         </div>
-      </div>
-
-      <!-- アクションボタン -->
-      <div class="onboarding-action-row">
-        <span id="obStatusNotice" style="font-size: 12px; color: #fcd34d; margin-right: auto;"></span>
-        <button type="button" class="primary-button" id="obConnectBtn" style="padding: 8px 20px; font-size: 13px; font-weight: bold;">
-          🚀 ${isFb ? "Filebase に接続してファイル一覧を読み込む" : "R2 に接続してファイル一覧を読み込む"}
-        </button>
       </div>
     </div>
   `;
 
-  // オンボーディング内の入力変更をリアルタイムで通常入力欄 & localStorage に同期
-  const syncOnboardingInputs = () => {
-    const domainInput = isFb ? document.querySelector("#obDomainInput") : document.querySelector("#obR2DomainInput");
-    const domainVal = domainInput?.value?.trim() || "";
+  const readDraftDomain = () => {
+    const input = isFb ? document.querySelector("#obDomainInput") : document.querySelector("#obR2DomainInput");
+    const value = input?.value?.trim().replace(/\/$/, "") || "";
+    return value && !/^https?:\/\//i.test(value) ? `https://${value}` : value;
+  };
 
-    if (domainVal) {
-      let formatted = domainVal.replace(/\/$/, "");
-      if (!/^https?:\/\//i.test(formatted)) formatted = "https://" + formatted;
+  // 接続テスト成功後だけ、下書きを通常設定と localStorage に確定する。
+  const saveStorageDraft = () => {
+    const domain = readDraftDomain();
+    if (domain) {
       const list = getR2DomainList();
-      if (!list.includes(formatted)) {
-        list.push(formatted);
+      if (!list.includes(domain)) {
+        list.push(domain);
         saveR2DomainList(list);
       }
-      setSelectedR2Domain(formatted);
+      setSelectedR2Domain(domain);
       renderR2DomainSelect();
     }
-
     if (isFb) {
       const fbBucketInput = document.querySelector("#obFbBucket");
       const fbKeyInput = document.querySelector("#obFbKey");
@@ -5429,55 +5580,97 @@ function renderStorageOnboardingCard() {
       if (r2SecretAccessKey && r2SecInput) r2SecretAccessKey.value = r2SecInput.value.trim();
     }
 
-    const obKv = document.querySelector("#obKvUrl");
-    const obTok = document.querySelector("#obAdminToken");
-    if (kvWorkerUrl && obKv) kvWorkerUrl.value = obKv.value.trim();
-    if (adminApiToken && obTok) adminApiToken.value = obTok.value.trim();
-
     saveR2SettingsAuto();
     updateR2Status();
   };
 
-  const obInputs = r2FileList.querySelectorAll("input");
-  obInputs.forEach(input => {
-    input.addEventListener("input", syncOnboardingInputs);
-  });
+  const obKvConnectBtn = document.querySelector("#obKvConnectBtn");
+  const obKvStatus = document.querySelector("#obKvStatus");
+  const obStorageConnectBtn = document.querySelector("#obStorageConnectBtn");
+  const obStorageStatus = document.querySelector("#obStorageStatus");
 
-  // 「接続して利用開始」ボタン
-  const obConnectBtn = document.querySelector("#obConnectBtn");
-  const obStatusNotice = document.querySelector("#obStatusNotice");
-
-  obConnectBtn?.addEventListener("click", async () => {
-    syncOnboardingInputs();
-
-    const kvUrl = (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim();
-    const adminTok = (localStorage.getItem("adminApiToken") || adminApiToken?.value || "").trim();
+  obKvConnectBtn?.addEventListener("click", async () => {
+    const rawKvUrl = document.querySelector("#obKvUrl")?.value?.trim().replace(/\/$/, "") || "";
+    const kvUrl = rawKvUrl && !/^https?:\/\//i.test(rawKvUrl) ? `https://${rawKvUrl}` : rawKvUrl;
+    const adminTok = document.querySelector("#obAdminToken")?.value?.trim() || "";
 
     if (!kvUrl || !adminTok) {
-      if (obStatusNotice) {
-        obStatusNotice.textContent = "⚠️ STEP 1 の KV 台帳 Worker URL と Admin API Token を入力してください。";
-      }
+      if (obKvStatus) obKvStatus.textContent = "⚠️ Worker URL と Admin API Token を入力してください。";
       return;
     }
-
-    const configured = isFb ? isFilebaseConfigured() : isR2Configured();
-
-    if (!configured) {
-      if (obStatusNotice) {
-        obStatusNotice.textContent = "⚠️ 公開・配信ドメイン(pages.dev) およびストレージ認証情報をすべて入力してください。";
+    const apiEndpoint = kvUrl.endsWith("/api/ipfs-kv") ? kvUrl : `${kvUrl}/api/ipfs-kv`;
+    const originalText = obKvConnectBtn.textContent;
+    obKvConnectBtn.disabled = true;
+    obKvConnectBtn.textContent = "🔄 KV 接続を確認中...";
+    if (obKvStatus) obKvStatus.textContent = "";
+    try {
+      const response = await fetch(apiEndpoint, { headers: { Authorization: `Bearer ${adminTok}` } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await response.json();
+      if (kvWorkerUrl) kvWorkerUrl.value = kvUrl;
+      if (adminApiToken) adminApiToken.value = adminTok;
+      // 初回は同じ Worker をそのまま配信エッジとして利用できる。
+      // 利用者が既に選んだ独自ドメインがある場合は上書きしない。
+      if (!getSelectedR2Domain()) {
+        const workerDeliveryDomain = kvUrl.replace(/\/api\/ipfs-kv\/?$/, "");
+        const domains = getR2DomainList();
+        if (!domains.includes(workerDeliveryDomain)) {
+          domains.push(workerDeliveryDomain);
+          saveR2DomainList(domains);
+        }
+        setSelectedR2Domain(workerDeliveryDomain);
+        renderR2DomainSelect();
       }
+      saveR2SettingsAuto();
+      updateR2Status();
+      sessionStorage.setItem("onboardingKvConnected", "true");
+      sessionStorage.setItem("onboardingKvSuccessMessage", "✅ KV 接続に成功しました。STEP 2 を入力できます。");
+      renderStorageOnboardingCard();
+    } catch (error) {
+      if (obKvStatus) obKvStatus.textContent = `⚠️ KV 接続に失敗しました: ${error.message}`;
+      obKvConnectBtn.disabled = false;
+      obKvConnectBtn.textContent = originalText;
+    }
+  });
+
+  obStorageConnectBtn?.addEventListener("click", async () => {
+    const domain = readDraftDomain();
+    const bucket = (isFb ? document.querySelector("#obFbBucket") : document.querySelector("#obR2Bucket"))?.value?.trim() || "";
+    const accessKey = (isFb ? document.querySelector("#obFbKey") : document.querySelector("#obR2Key"))?.value?.trim() || "";
+    const secretKey = (isFb ? document.querySelector("#obFbSecret") : document.querySelector("#obR2Secret"))?.value?.trim() || "";
+    const accountId = isFb ? "" : (document.querySelector("#obR2Account")?.value?.trim() || "");
+    if (!domain || !bucket || !accessKey || !secretKey || (!isFb && !accountId)) {
+      if (obStorageStatus) obStorageStatus.textContent = "⚠️ 公開・配信ドメインとストレージ認証情報をすべて入力してください。";
       return;
     }
-
-    if (obConnectBtn) {
-      obConnectBtn.disabled = true;
-      obConnectBtn.textContent = "🔄 接続確認中...";
+    const client = new S3Client(isFb ? {
+      region: "us-east-1", endpoint: "https://s3.filebase.io", forcePathStyle: true,
+      credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
+    } : {
+      region: "auto", endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
+    });
+    const originalText = obStorageConnectBtn.textContent;
+    obStorageConnectBtn.disabled = true;
+    obStorageConnectBtn.textContent = "🔄 ストレージ接続を確認中...";
+    if (obStorageStatus) obStorageStatus.textContent = "";
+    try {
+      await client.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1 }));
+      saveStorageDraft();
+      storageCurrentPage = 1;
+      await fetchAndRenderR2Files();
+      if (r2FileList) {
+        const notice = document.createElement("div");
+        notice.className = "storage-connection-success";
+        notice.textContent = `✅ ${isFb ? "Filebase" : "Cloudflare R2"} への接続に成功しました。設定を保存し、ファイル一覧を読み込みました。`;
+        notice.style.cssText = "margin: 0 0 12px; padding: 10px 12px; border: 1px solid rgba(74, 222, 128, 0.45); border-radius: 7px; background: rgba(22, 163, 74, 0.12); color: #86efac; font-size: 12px;";
+        r2FileList.prepend(notice);
+      }
+    } catch (error) {
+      if (obStorageStatus) obStorageStatus.textContent = `⚠️ ${isFb ? "Filebase" : "R2"} 接続に失敗しました: ${error.message}`;
+      obStorageConnectBtn.disabled = false;
+      obStorageConnectBtn.textContent = originalText;
     }
-    if (obStatusNotice) obStatusNotice.textContent = "";
-
-    // 再描画を呼び出す
-    storageCurrentPage = 1;
-    await fetchAndRenderR2Files();
   });
 }
 
@@ -5891,18 +6084,8 @@ function renderCurrentStoragePage() {
     const fileDomain = getFileStoredDomain(itemKey, itemDisplayName, rawAllowedHost).replace(/\/$/, "");
     article.dataset.allowedhost = fileDomain;
 
-    let publicUrl = "";
-    if (isFilebase) {
-      if (hasAdminAccess()) {
-        publicUrl = `${fileDomain}/${encodeURIComponent(item.Key)}`;
-      } else if (itemCid) {
-        publicUrl = `${fileDomain}/i/${itemCid}/${encodeURIComponent(item.Key)}`;
-      } else {
-        publicUrl = `${fileDomain}/${encodeURIComponent(item.Key)}`;
-      }
-    } else {
-      publicUrl = `${fileDomain}/${encodeURIComponent(item.Key)}`;
-    }
+    // 公開・コピー用URLはストレージ種別やCIDの有無にかかわらず常に配信ドメイン + ファイル名。
+    const publicUrl = `${fileDomain}/${encodeURIComponent(item.Key)}`;
     const devUrl = isFilebase ? null : getDevUrl(item.Key);
 
     const hasPassword = Boolean(item.password || item.metadata?.passwordHash || item.metadata?.password);
@@ -6084,6 +6267,26 @@ function renderCurrentStoragePage() {
       }
     }
 
+    // Filebaseに実体だけがありKV台帳レコードがない場合は、取得済みCIDで台帳を自己修復する。
+    // 以前のWorker URL設定不備でアップロード済みになったファイルを、再アップロードせず公開可能にする。
+    if (isFilebase && item.isFromS3 && !item.rawKey && itemCid && hasAdminAccess()) {
+      registerKvCid(
+        itemKey,
+        itemCid,
+        Number(item.Size || 0),
+        item.metadata?.mime || "",
+        item.s3Key || item.Key,
+        item.password || "",
+        null,
+        item.ttl || 0,
+        item.expiresAt || null,
+        false,
+        null,
+        fileDomain,
+        true
+      ).catch(error => console.warn("Failed to repair Filebase KV mapping:", error));
+    }
+
     // 🪐 Filebase かつ CID が未取得のアイテムについて、バックグラウンドで S3 から CID を自動解決して即時反映
     if (isFilebase && !itemCid && item.isFromS3) {
       (async () => {
@@ -6109,10 +6312,8 @@ function renderCurrentStoragePage() {
               item.cid = resolvedCid;
               article.dataset.cid = resolvedCid;
 
-              // サムネイル画像 URL を CID 直リンへ更新して 404 を解消
-              const newPublicUrl = hasAdminAccess()
-                ? `${fileInitialDomain || getKvDeliveryBaseDomain()}/${encodeURIComponent(item.Key)}`
-                : `${fileInitialDomain || baseDomain}/i/${resolvedCid}/${encodeURIComponent(item.Key)}`;
+              // CID解決後も公開URLは配信ドメイン + ファイル名を維持する。
+              const newPublicUrl = `${fileInitialDomain || baseDomain}/${encodeURIComponent(item.Key)}`;
 
               const thumbImg = article.querySelector("img.thumb");
               if (thumbImg) thumbImg.src = newPublicUrl;
@@ -7168,7 +7369,18 @@ function openCivitaiIntent(mediaUrl, title = "", existingWindow = null) {
   window.open(intentUrl, "_blank", "noopener,noreferrer");
 }
 async function copyToClipboard(text, button = null) {
-  if (!text) return;
+  if (!text) {
+    if (button) {
+      const orig = button.textContent;
+      button.textContent = "URLなし";
+      button.classList.add("danger-button");
+      setTimeout(() => {
+        button.textContent = orig;
+        button.classList.remove("danger-button");
+      }, 1500);
+    }
+    return false;
+  }
   let copied = false;
   try {
     if (navigator?.clipboard?.writeText) {
@@ -7205,6 +7417,7 @@ async function copyToClipboard(text, button = null) {
       button.classList.remove("good", "danger-button");
     }, 1500);
   }
+  return copied;
 }
 
 function escapeHtml(str) {

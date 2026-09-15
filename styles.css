@@ -1244,6 +1244,49 @@ input[type="range"] {
   border-color: #38bdf8;
 }
 
+.onboarding-step-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.onboarding-step-status {
+  margin-right: auto;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #fcd34d;
+}
+
+.onboarding-guide-details,
+.delivery-domain-guide {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.onboarding-guide-details summary,
+.delivery-domain-guide summary {
+  width: fit-content;
+  cursor: pointer;
+  color: #7dd3fc;
+  font-weight: 600;
+}
+
+.onboarding-guide-details ol,
+.delivery-domain-guide ol {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.delivery-domain-guide p {
+  margin: 6px 0;
+}
+
 .onboarding-action-row {
   display: flex;
   justify-content: flex-end;
