@@ -5743,6 +5743,9 @@ function renderStorageOnboardingCard() {
 
   const isFb = activeStorageTab === "filebase";
   const isEnglish = getAppLanguage() === "en";
+  // R2 CORS の案内文（日本語版）で展開するため、翻訳オブジェクトを
+  // 構築する前に確定させる。
+  const frontendOrigin = (typeof window !== "undefined" ? window.location.origin : "https://your-app.pages.dev").replace(/\/$/, "");
   const onboarding = isEnglish ? {
     title: `Connect ${isFb ? "🪐 Filebase (IPFS)" : "⚡ Cloudflare R2"} to get started`,
     intro: "Start by using the Worker URL connected in Step 1 as the public delivery domain. Only if you want a dedicated delivery URL, deploy a Pages delivery project with Wrangler or add a custom domain to the Worker, then replace the Step 2 delivery domain.",
@@ -5798,7 +5801,6 @@ function renderStorageOnboardingCard() {
   const adminTokenVal = (localStorage.getItem("adminApiToken") || adminApiToken?.value || "").trim();
   // R2 の S3 API をブラウザから直接呼ぶため、CORS では「配信先」ではなく
   // このフロントエンドを開いている Origin を許可する。
-  const frontendOrigin = (typeof window !== "undefined" ? window.location.origin : "https://your-app.pages.dev").replace(/\/$/, "");
   const r2CorsOrigins = [...new Set([frontendOrigin, "http://127.0.0.1:5173", "http://localhost:5173"])];
   const r2CorsPolicy = JSON.stringify([{
     AllowedOrigins: r2CorsOrigins,
