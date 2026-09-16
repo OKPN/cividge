@@ -18,6 +18,10 @@ AI creators need more than a temporary file host: they need stable links for Civ
 
 This is not a promise of permanent storage. It is a practical, user-controlled design that avoids dependence on one application server and makes the storage lifecycle explicit.
 
+The lifecycle properties that Cividge must preserve are defined in
+[SPEC.md](SPEC.md). It is the contract for links, shared CID cleanup, expiry,
+password gates, retries, and Kubo preservation.
+
 ## Features
 
 - Browser-side WebP, JPEG, and JPEG XL conversion, plus metadata and workflow inspection.

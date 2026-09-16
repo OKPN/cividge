@@ -568,7 +568,7 @@ const civitaiGalleryState = {
   scopeKey: "",
   items: [],
   nextPages: {},
-  showNewOnly: false,
+  showNewOnly: localStorage.getItem("civitaiShowNewOnly") === "true",
 };
 
 // R2 & Filebase ファイル一覧 & タブ要素
@@ -1642,7 +1642,6 @@ function createCivitaiStatsHtml(stats) {
     civitaiGalleryState.scopeKey = scopeKey;
     civitaiGalleryState.items = [];
     civitaiGalleryState.nextPages = {};
-    civitaiGalleryState.showNewOnly = false;
   }
   if (loadMore && !hasCachedScope) loadMore = false;
 
@@ -1735,17 +1734,20 @@ function createCivitaiStatsHtml(stats) {
       if (civitaiMarkReadBtn) {
         civitaiMarkReadBtn.style.display = "inline-flex";
         civitaiMarkReadBtn.onclick = () => {
-          if (!isAll) {
-            const newestId = items.length > 0 ? Number(items[0].id) : 0;
-            if (newestId > 0) lastSeenMap[username] = newestId;
-          } else {
-            list.forEach(u => {
-              const uFirst = items.find(it => it._creator === u);
-              if (uFirst) lastSeenMap[u] = Number(uFirst.id);
-            });
-          }
-          saveCivitaiLastSeenMap(lastSeenMap);
+          // The API result is sorted by publication time, whereas unread state uses
+          // Civitai IDs. Store the largest ID we received for each creator so one
+          // click reliably acknowledges every displayed new item.
+          const updatedLastSeenMap = getCivitaiLastSeenMap();
+          const creatorsToMark = isAll ? list : [username];
+          creatorsToMark.forEach((creator) => {
+            const highestSeenId = items
+              .filter(item => (item._creator || item.username || "") === creator)
+              .reduce((highest, item) => Math.max(highest, Number(item.id) || 0), 0);
+            if (highestSeenId > 0) updatedLastSeenMap[creator] = highestSeenId;
+          });
+          saveCivitaiLastSeenMap(updatedLastSeenMap);
           civitaiGalleryState.showNewOnly = false;
+          localStorage.setItem("civitaiShowNewOnly", "false");
           fetchAndRenderCivitaiGallery({ refresh: false });
         };
       }
@@ -1764,6 +1766,7 @@ function createCivitaiStatsHtml(stats) {
         : (dict.civitaiNewOnly || "✨ 新着のみ");
       civitaiNewOnlyBtn.onclick = () => {
         civitaiGalleryState.showNewOnly = !civitaiGalleryState.showNewOnly;
+        localStorage.setItem("civitaiShowNewOnly", String(civitaiGalleryState.showNewOnly));
         fetchAndRenderCivitaiGallery({ refresh: false });
       };
     }
