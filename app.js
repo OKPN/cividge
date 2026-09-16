@@ -5748,14 +5748,27 @@ function renderStorageOnboardingCard() {
   const frontendOrigin = (typeof window !== "undefined" ? window.location.origin : "https://your-app.pages.dev").replace(/\/$/, "");
   const onboarding = isEnglish ? {
     title: `Connect ${isFb ? "🪐 Filebase (IPFS)" : "⚡ Cloudflare R2"} to get started`,
-    intro: "Start by using the Worker URL connected in Step 1 as the public delivery domain. Only if you want a dedicated delivery URL, deploy a Pages delivery project with Wrangler or add a custom domain to the Worker, then replace the Step 2 delivery domain.",
+    intro: "Connect your KV Worker first, then use a dedicated pages.dev relay as the public delivery URL. This keeps the URL you share separate from the delivery backend.",
     kvStep: "STEP 1: KV Registry Worker (required: short URLs, expiry, and protection)",
     kvIntro: "Deploy the <code>kv-worker</code> to your own Cloudflare account for short URLs, expiry, password gates, and safe edge-cached delivery.",
     kvAfterDeploy: "Enter the Worker URL issued after deployment and the ADMIN_TOKEN you configured.",
     kvUrl: "KV Registry Worker URL", connectKv: "🔌 Save and connect KV",
+    kvSetupGuide: "First-time Worker setup from GitHub",
+    kvSetupIntro: "Only needed when you have not deployed your own Worker yet. Keep the API tokens private; do not commit them.",
+    kvClone: "Clone or update the Worker source",
+    kvUpdateComment: "# later updates: git pull --ff-only",
+    kvNamespace: "Create a KV namespace and copy its id into wrangler.toml",
+    kvSecrets: "Register the secrets (enter the same ADMIN_API_TOKEN below)",
+    kvDeploy: "Deploy, then copy the Workers URL shown by Wrangler",
     storageStep: `STEP 2: ${isFb ? "🪐 Filebase (IPFS) and custom delivery edge" : "⚡ Cloudflare R2 and custom delivery edge"}`,
     storageIntro: isFb ? "The default Worker URL can already deliver IPFS files as delivery-domain/file-name. To use a dedicated delivery URL, deploy Pages or configure a Worker custom domain, then enter that URL." : "The default Worker URL can already deliver files. To use a dedicated delivery URL, deploy Pages or configure a Worker custom domain, then enter that URL.",
-    pagesGuide: "How to get a Pages URL (optional)", pagesLastStep: "Enter the displayed <code>https://my-content-cache.pages.dev</code> below.",
+    pagesGuide: "Create a public pages.dev relay (recommended)",
+    pagesIntro: "This is the board-facing URL. It is a static redirect layer: it has no storage credentials, KV binding, or application Function.",
+    pagesTemplate: "Copy the matching relay template and set its backend origin",
+    pagesCopyComment: "# copy _redirects.template into an empty folder as _redirects",
+    pagesOriginComment: "# replace the placeholder with your delivery backend URL",
+    pagesDeploy: "Deploy the relay directory as its own Pages project",
+    pagesLastStep: "Enter the resulting <code>https://my-content-cache.pages.dev</code> below as the public / delivery domain.",
     filebaseCorsSummary: "Filebase bucket CORS setup (once after connecting)",
     filebaseCorsBody: "CORS is required for browser uploads and IPFS CID lookup. After connecting to Filebase, open <strong>Cloud Storage Settings</strong> above and run <strong>⚙️ Configure CORS</strong> once in the Filebase (IPFS) section. No manual JSON is required.",
     r2CorsSummary: "R2 bucket CORS setup (required for browser access)",
@@ -5764,16 +5777,30 @@ function renderStorageOnboardingCard() {
     filebaseBucket: "Filebase bucket name", r2Bucket: "R2 bucket name",
     locked: "🔒 Complete and verify Step 1 before entering these fields", connectStorage: `💾 Save and connect ${isFb ? "Filebase" : "R2"}`,
     copiedCors: "📋 CORS policy copied",
+    adminToken: "Admin API Token", required: "(required)",
   } : {
     title: `${isFb ? "🪐 Filebase (IPFS)" : "⚡ Cloudflare R2"} へ接続して開始しましょう`,
-    intro: "最初は STEP 1 で接続した Worker URL を公開・配信ドメインとして使えます。独自の配信 URL を使いたい場合だけ、Wrangler で配信用 Pages をデプロイするか、Worker に独自ドメインを設定してから STEP 2 の「公開・配信ドメイン」を差し替えてください。",
+    intro: "まず KV 台帳 Worker を接続し、公開・配信URLには専用の pages.dev リレーを登録します。掲示板へ貼るURLと実際の配信バックエンドを分ける構成です。",
     kvStep: "STEP 1: KV 台帳 Worker 連携 (必須: 高速短縮URL・時限削除・保護)",
     kvIntro: "短縮URL・時限削除・パスワード保護・安全なエッジキャッシュ配信を行うため、各自の Cloudflare に <code>kv-worker</code> をデプロイします。",
     kvAfterDeploy: "デプロイ後に発行された Worker URL と設定した ADMIN_TOKEN を入力してください。",
     kvUrl: "KV 台帳 Worker URL", connectKv: "🔌 保存して KV に接続",
+    kvSetupGuide: "GitHub から初回セットアップする",
+    kvSetupIntro: "自分用の Worker をまだデプロイしていない場合だけ実行します。APIトークンは秘密情報なので、Gitへコミット・共有しないでください。",
+    kvClone: "Worker ソースを取得／更新する",
+    kvUpdateComment: "# 更新時: git pull --ff-only",
+    kvNamespace: "KV 名前空間を作成し、表示された id を wrangler.toml へ貼る",
+    kvSecrets: "秘密値を登録する（下欄へ入力する ADMIN_API_TOKEN と同じ値を設定）",
+    kvDeploy: "デプロイ後、Wrangler が表示した Workers URL をコピーする",
     storageStep: `STEP 2: ${isFb ? "🪐 Filebase (IPFS) & 独自配信エッジ設定" : "⚡ Cloudflare R2 & 独自配信エッジ設定"}`,
     storageIntro: isFb ? "初期値の Worker URL のままでも、IPFSファイルを「配信ドメイン/ファイル名」で配信できます。独自の配信 URL に変えたい場合は Pages のデプロイまたは Worker の独自ドメイン設定後、その URL を入力してください。" : "初期値の Worker URL のままでもファイルを配信できます。独自の配信 URL に変えたい場合は Pages のデプロイまたは Worker の独自ドメイン設定後、その URL を入力してください。",
-    pagesGuide: "Pages URL を取得する手順（任意）", pagesLastStep: "表示された <code>https://my-content-cache.pages.dev</code> を下へ入力",
+    pagesGuide: "公開用 pages.dev リレーを作る（推奨）",
+    pagesIntro: "掲示板へ貼る公開URLです。静的リダイレクトだけを行い、ストレージ資格情報・KV・Functionは持ちません。",
+    pagesTemplate: "対応するリレーテンプレートをコピーし、配信バックエンドURLを設定する",
+    pagesCopyComment: "# _redirects.template を空フォルダ内の _redirects としてコピー",
+    pagesOriginComment: "# プレースホルダーを自分の配信バックエンドURLへ置換",
+    pagesDeploy: "そのフォルダを専用の Pages プロジェクトとしてデプロイする",
+    pagesLastStep: "発行された <code>https://my-content-cache.pages.dev</code> を下の「公開・配信ドメイン」へ入力",
     filebaseCorsSummary: "Filebase バケットの CORS 設定（接続後に一度だけ）",
     filebaseCorsBody: "ブラウザからアップロードし、IPFS CID を取得するため CORS が必要です。Filebase への接続が成功したら、画面上部の <strong>☁️ クラウドストレージ接続設定</strong> を開き、Filebase (IPFS) 欄の <strong>⚙️ CORS自動設定</strong> を一度実行してください。手動で JSON を貼り付ける必要はありません。",
     r2CorsSummary: "R2 バケットの CORS 設定（ブラウザから接続するため必須）",
@@ -5782,6 +5809,7 @@ function renderStorageOnboardingCard() {
     filebaseBucket: "Filebase バケット名", r2Bucket: "R2 バケット名",
     locked: "🔒 STEP 1 の接続確認後に入力できます", connectStorage: `💾 保存して ${isFb ? "Filebase" : "R2"} に接続`,
     copiedCors: "📋 CORS 設定をコピーしました",
+    adminToken: "Admin API Token", required: "(必須)",
   };
   // 接続テストに通るまでは次の段階を開かない。画面を閉じた際にも
   // 中途半端な認証情報だけで次段階へ進まないよう、現在のタブ内だけで保持する。
@@ -5826,10 +5854,28 @@ function renderStorageOnboardingCard() {
           <span class="onboarding-step-badge" style="background: rgba(245, 158, 11, 0.2); color: #f59e0b;">${onboarding.kvStep}</span>
           <div style="font-size: 11.5px; color: var(--muted); line-height: 1.5;">
             ${onboarding.kvIntro}
-            <div style="margin: 8px 0; padding: 8px; background: rgba(0,0,0,0.4); border-radius: 6px; font-family: monospace; font-size: 11px; color: #cbd5e1;">
-              cd cividge-kv-worker<br>
-              npx wrangler deploy
-            </div>
+            <details class="onboarding-guide-details">
+              <summary>${onboarding.kvSetupGuide}</summary>
+              <p style="margin: 8px 0;">${onboarding.kvSetupIntro}</p>
+              <ol>
+                <li><strong>${onboarding.kvClone}</strong>
+                  <pre><code>git clone https://github.com/OKPN/cividge-kv-worker.git
+cd cividge-kv-worker
+${onboarding.kvUpdateComment}</code></pre>
+                </li>
+                <li><strong>${onboarding.kvNamespace}</strong>
+                  <pre><code>npx wrangler login
+npx wrangler kv namespace create IPFS_KV</code></pre>
+                </li>
+                <li><strong>${onboarding.kvSecrets}</strong>
+                  <pre><code>npx wrangler secret put ADMIN_API_TOKEN
+npx wrangler secret put UPLOAD_TOKEN</code></pre>
+                </li>
+                <li><strong>${onboarding.kvDeploy}</strong>
+                  <pre><code>npx wrangler deploy</code></pre>
+                </li>
+              </ol>
+            </details>
             ${onboarding.kvAfterDeploy}
           </div>
 
@@ -5838,8 +5884,8 @@ function renderStorageOnboardingCard() {
             <input type="text" id="obKvUrl" placeholder="例: https://cividge-kv-worker.yourname.workers.dev" value="${escapeHtml(kvUrlVal)}">
           </div>
           <div class="onboarding-input-field">
-            <label>Admin API Token <span style="color: #ef4444; font-weight: bold;">(必須)</span></label>
-            <input type="password" id="obAdminToken" placeholder="例: your-secret-token" value="${escapeHtml(adminTokenVal)}">
+            <label>${onboarding.adminToken} <span style="color: #ef4444; font-weight: bold;">${onboarding.required}</span></label>
+            <input type="password" id="obAdminToken" placeholder="${isEnglish ? "e.g. your-secret-token" : "例: your-secret-token"}" value="${escapeHtml(adminTokenVal)}">
           </div>
           <div class="onboarding-step-action">
             <span id="obKvStatus" class="onboarding-step-status" style="color: ${kvSuccessMessage ? "#4ade80" : "#fcd34d"};">${escapeHtml(kvSuccessMessage)}</span>
@@ -5856,10 +5902,21 @@ function renderStorageOnboardingCard() {
             ${onboarding.storageIntro}
             <details class="onboarding-guide-details">
               <summary>${onboarding.pagesGuide}</summary>
+              <p style="margin: 8px 0;">${onboarding.pagesIntro}</p>
               <ol>
-                <li><code>npx wrangler login</code></li>
-                <li>このリポジトリのルートで <code>npm run build</code></li>
-                <li><code>npx wrangler pages deploy dist --project-name=my-content-cache</code></li>
+                <li><strong>${onboarding.pagesTemplate}</strong>
+                  <pre><code>git clone https://github.com/OKPN/cividge.git
+cd cividge/compatibility-layer/${isFb ? "filebase" : "r2"}
+mkdir ../../my-content-cache
+cp _redirects.template ../../my-content-cache/_redirects
+${onboarding.pagesCopyComment}
+${onboarding.pagesOriginComment}: __${isFb ? "FILEBASE" : "R2"}_COMPATIBILITY_ORIGIN__</code></pre>
+                </li>
+                <li><strong>${onboarding.pagesDeploy}</strong>
+                  <pre><code>cd ../../my-content-cache
+npx wrangler login
+npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
+                </li>
                 <li>${onboarding.pagesLastStep}</li>
               </ol>
             </details>

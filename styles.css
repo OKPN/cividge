@@ -1283,6 +1283,18 @@ input[type="range"] {
   padding-left: 20px;
 }
 
+.onboarding-guide-details pre {
+  margin: 5px 0 8px;
+  padding: 8px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.38);
+  color: #cbd5e1;
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .delivery-domain-guide p {
   margin: 6px 0;
 }
