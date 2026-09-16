@@ -305,6 +305,10 @@
                             <summary style="cursor: pointer; color: #c4b5fd;" data-i18n="filebaseCompatibilityInstallSummary">Install the static relay project</summary>
                             <div style="margin-top: 7px;" data-i18n="filebaseCompatibilityInstallBody" data-i18n-html="true">Deploy the included static template as the public Pages project. It contains no Functions, KV, or storage credentials; it redirects each path to the compatibility Worker. Add the resulting pages.dev URL to the Filebase delivery-domain list above and select it. There is no per-upload switch.</div>
                           </details>
+                          <details style="font-size: 10.5px; color: var(--muted); line-height: 1.5;">
+                            <summary style="cursor: pointer; color: #c4b5fd;" data-i18n="filebaseCompatibilityCloudflareSummary">Recommended Cloudflare settings</summary>
+                            <div style="margin-top: 7px;" data-i18n="filebaseCompatibilityCloudflareBody" data-i18n-html="true">For a compatibility Worker on your own domain, add a small URL Rewrite Rule that removes query strings while preserving the path. For steady public delivery, also rate-limit the internal <code>/r/</code> path.</div>
+                          </details>
                         </div>
                       </details>
                     </div>
