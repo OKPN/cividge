@@ -3,6 +3,15 @@ import encodeJxl, { init as initJxl } from "@jsquash/jxl/encode.js";
 import jxlWasmUrl from "@jsquash/jxl/codec/enc/jxl_enc.wasm?url";
 import { importer as importUnixFs } from "ipfs-unixfs-importer";
 import { BlackHoleBlockstore } from "blockstore-core";
+import {
+  extensions,
+  getContentTypeFromFilename,
+  getImageDimensions,
+  getVideoThumbnailKey,
+  isGeneratedVideoThumbnailKey,
+  isVideoThumbnailParentKey,
+} from "./media-utils.js";
+import { createKuboClient } from "./kubo-client.js";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -124,6 +133,8 @@ const i18nDict = {
     ttl7d: "7日間 (168時間後消滅)",
     tempPasswordLabel: "🔑 閲覧パスワード",
     tempPasswordPlaceholder: "合言葉を設定",
+    passwordIpfsNoticeSummary: "IPFS のパスワード保護について",
+    passwordIpfsNotice: "※ パスワードは Cividge の配信 URL を保護します。IPFS の CID を知る人は、IPFS Gateway 経由で直接取得できる場合があります。秘匿が必要なファイルは投稿しないでください。",
     optionalText: "(任意)",
     quickUploadHeading: "🚀 外部投稿 / Windows「送る」連携",
     uploadReturnDomainLabel: "🌐 返却配信用アドレス (用途別に選択):",
@@ -330,6 +341,8 @@ const i18nDict = {
     ttl7d: "7 Days (Auto-expire)",
     tempPasswordLabel: "🔑 Access Password",
     tempPasswordPlaceholder: "Set password phrase",
+    passwordIpfsNoticeSummary: "About IPFS password protection",
+    passwordIpfsNotice: "Password protection applies to the Cividge delivery URL. Anyone who knows an IPFS CID may still retrieve it through an IPFS gateway. Do not upload files that require strict confidentiality.",
     optionalText: "(Optional)",
     quickUploadHeading: "🚀 Quick Upload / Windows 'Send To'",
     uploadReturnDomainLabel: "🌐 Return Delivery Address (Select per purpose):",
@@ -408,58 +421,6 @@ const state = {
 };
 
 let paletteFiles = [];
-
-const extensions = {
-  "image/webp": "webp",
-  "image/jxl": "jxl",
-  "image/jpeg": "jpg",
-  "image/png": "png",
-};
-
-// MIME タイプの判定
-const getContentTypeFromFilename = (filename, fallback = "application/octet-stream") => {
-  const ext = filename.split(".").pop().toLowerCase();
-  const mimeTypes = {
-    // 画像
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    webp: "image/webp",
-    gif: "image/gif",
-    svg: "image/svg+xml",
-    jxl: "image/jxl",
-    avif: "image/avif",
-    bmp: "image/bmp",
-    ico: "image/x-icon",
-    // 動画
-    mp4: "video/mp4",
-    webm: "video/webm",
-    mov: "video/quicktime",
-    m4v: "video/mp4",
-    avi: "video/x-msvideo",
-    ogv: "video/ogg",
-    // 音声
-    mp3: "audio/mpeg",
-    wav: "audio/wav",
-    ogg: "audio/ogg",
-    m4a: "audio/mp4",
-    flac: "audio/flac",
-    aac: "audio/aac",
-    // 圧縮アーカイブ
-    zip: "application/zip",
-    "7z": "application/x-7z-compressed",
-    rar: "application/vnd.rar",
-    tar: "application/x-tar",
-    gz: "application/gzip",
-    // 文書・テキスト
-    pdf: "application/pdf",
-    txt: "text/plain; charset=utf-8",
-    md: "text/markdown; charset=utf-8",
-    json: "application/json; charset=utf-8",
-    csv: "text/csv; charset=utf-8",
-  };
-  return mimeTypes[ext] || fallback;
-};
 
 const defaultTemplates = {
   "standard": {
@@ -930,56 +891,6 @@ function hasAdminAccess() {
   return Boolean(token && custom);
 }
 
-const VIDEO_THUMBNAIL_PARENT_EXTENSIONS = new Set(["mp4", "webm", "mov"]);
-
-function isVideoThumbnailParentKey(key = "") {
-  const ext = String(key).split(".").pop().toLowerCase();
-  return VIDEO_THUMBNAIL_PARENT_EXTENSIONS.has(ext);
-}
-
-function getVideoThumbnailKey(originKey = "") {
-  return isVideoThumbnailParentKey(originKey) ? `${originKey}.thumb.webp` : null;
-}
-
-function isGeneratedVideoThumbnailKey(key = "") {
-  return /\.(mp4|webm|mov)\.thumb\.webp$/i.test(String(key));
-}
-
-// 直リンク利用者が事前レイアウトを決められるよう、画像の実寸を台帳へ残す。
-// Canvas 変換後の Blob を渡すため、配信される実データと必ず一致する。
-async function getImageDimensions(blob, contentType = "") {
-  const mime = String(contentType || blob?.type || "").toLowerCase();
-  if (!blob || !mime.startsWith("image/")) return null;
-
-  try {
-    const bitmap = await createImageBitmap(blob);
-    const dimensions = { width: bitmap.width, height: bitmap.height };
-    bitmap.close?.();
-    return dimensions.width > 0 && dimensions.height > 0 ? dimensions : null;
-  } catch (bitmapError) {
-    // createImageBitmap 非対応の画像形式では通常の Image デコーダーも試す。
-    try {
-      const objectUrl = URL.createObjectURL(blob);
-      return await new Promise((resolve) => {
-        const image = new Image();
-        image.onload = () => {
-          const dimensions = { width: image.naturalWidth, height: image.naturalHeight };
-          URL.revokeObjectURL(objectUrl);
-          resolve(dimensions.width > 0 && dimensions.height > 0 ? dimensions : null);
-        };
-        image.onerror = () => {
-          URL.revokeObjectURL(objectUrl);
-          resolve(null);
-        };
-        image.src = objectUrl;
-      });
-    } catch (imageError) {
-      console.debug("Image dimension lookup skipped:", bitmapError, imageError);
-      return null;
-    }
-  }
-}
-
 async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null) {
   if (!key) return;
   const token = getAdminApiToken();
@@ -1095,126 +1006,7 @@ function getKuboRpcEndpoint() {
   const custom = (localStorage.getItem("kuboRpcUrl") || kuboRpcUrl?.value || "").trim().replace(/\/$/, "");
   return custom || "http://127.0.0.1:5001";
 }
-
-async function checkKuboOnline(timeoutMs = 4000) {
-  const endpoint = getKuboRpcEndpoint();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${endpoint}/api/v0/version`, {
-      method: "POST",
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    if (!res.ok) return { online: false, error: `HTTP ${res.status}` };
-    const data = await res.json();
-    return {
-      online: true,
-      agentVersion: data.Version ? `kubo/${data.Version}` : "Kubo",
-      commit: data.Commit || "",
-    };
-  } catch (err) {
-    clearTimeout(timeoutId);
-    return { online: false, error: err.name === "AbortError" ? "Timeout" : err.message };
-  }
-}
-
-async function pinToKubo(cid) {
-  if (!cid) return { success: false, error: "Missing CID" };
-  const endpoint = getKuboRpcEndpoint();
-
-  // 純粋なP2P Pin留め要求 (Kuboに非同期ダウンロード・Pin留めを指示)
-  // ブラウザが数分〜数十分の完了待ちでフリーズしないよう、fetchを開始して裏で実行させます
-  try {
-    const p = fetch(`${endpoint}/api/v0/pin/add?arg=${encodeURIComponent(cid)}&recursive=true`, {
-      method: "POST",
-    }).then(async (res) => {
-      if (res.ok) {
-        console.log(`🏠 Kubo P2P Pin留め完了: ${cid}`);
-        return { success: true };
-      } else {
-        const t = await res.text();
-        console.warn(`🏠 Kubo P2P Pin失敗: ${cid}`, t);
-        return { success: false, error: t };
-      }
-    }).catch(err => {
-      console.warn(`🏠 Kubo P2P Pin通信エラー: ${cid}`, err);
-      return { success: false, error: err.message };
-    });
-
-    // 既にローカルに存在するか、即座に終わった場合はすぐ返却
-    const checkAlready = await checkKuboPinned(cid, 800);
-    if (checkAlready) {
-      return { success: true, alreadyPinned: true };
-    }
-
-    // バックグラウンドでP2P探索・ダウンロードを継続
-    return { success: true, inProgress: true };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-}
-
-async function checkKuboPinned(cid, timeoutMs = 2000) {
-  if (!cid) return false;
-  const endpoint = getKuboRpcEndpoint();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${endpoint}/api/v0/pin/ls?arg=${encodeURIComponent(cid)}&type=recursive`, {
-      method: "POST",
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    if (!res.ok) return false;
-    const data = await res.json();
-    return Boolean(data.Keys && data.Keys[cid]);
-  } catch (e) {
-    clearTimeout(timeoutId);
-    return false;
-  }
-}
-
-async function getKuboPinnedCids(timeoutMs = 3000) {
-  const endpoint = getKuboRpcEndpoint();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${endpoint}/api/v0/pin/ls?type=recursive`, {
-      method: "POST",
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return new Set(Object.keys(data.Keys || {}));
-  } catch (e) {
-    clearTimeout(timeoutId);
-    return null;
-  }
-}
-
-async function unpinFromKubo(cid) {
-  if (!cid) return { success: false, error: "Missing CID" };
-  const endpoint = getKuboRpcEndpoint();
-  try {
-    const res = await fetch(`${endpoint}/api/v0/pin/rm?arg=${encodeURIComponent(cid)}`, {
-      method: "POST",
-    });
-    if (res.ok) {
-      return { success: true };
-    }
-    const t = await res.text();
-    // 💡 既にノード上にPinされていない場合（not pinned or pinned indirectly）は、目的の状態（未Pin）であるため成功とみなす
-    if (t.includes("not pinned") || t.includes("pinned indirectly")) {
-      console.log(`🏠 Kubo: '${cid}' は既にPin留めされていないため、Pin解除成功とみなします。`);
-      return { success: true, alreadyUnpinned: true };
-    }
-    return { success: false, error: t };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-}
+const { checkKuboOnline, checkKuboPinned, pinToKubo, getKuboPinnedCids, unpinFromKubo } = createKuboClient(getKuboRpcEndpoint);
 
 // 🪦 墓標（Unpin予約キュー）の回収処理
 async function drainKuboTombstones() {
@@ -5765,6 +5557,44 @@ function renderStorageOnboardingCard() {
   if (!r2FileList) return;
 
   const isFb = activeStorageTab === "filebase";
+  const isEnglish = getAppLanguage() === "en";
+  const onboarding = isEnglish ? {
+    title: `Connect ${isFb ? "🪐 Filebase (IPFS)" : "⚡ Cloudflare R2"} to get started`,
+    intro: "Start by using the Worker URL connected in Step 1 as the public delivery domain. Only if you want a dedicated delivery URL, deploy a Pages delivery project with Wrangler or add a custom domain to the Worker, then replace the Step 2 delivery domain.",
+    kvStep: "STEP 1: KV Registry Worker (required: short URLs, expiry, and protection)",
+    kvIntro: "Deploy the <code>kv-worker</code> to your own Cloudflare account for short URLs, expiry, password gates, and safe edge-cached delivery.",
+    kvAfterDeploy: "Enter the Worker URL issued after deployment and the ADMIN_TOKEN you configured.",
+    kvUrl: "KV Registry Worker URL", connectKv: "🔌 Save and connect KV",
+    storageStep: `STEP 2: ${isFb ? "🪐 Filebase (IPFS) and custom delivery edge" : "⚡ Cloudflare R2 and custom delivery edge"}`,
+    storageIntro: isFb ? "The default Worker URL can already deliver IPFS files as delivery-domain/file-name. To use a dedicated delivery URL, deploy Pages or configure a Worker custom domain, then enter that URL." : "The default Worker URL can already deliver files. To use a dedicated delivery URL, deploy Pages or configure a Worker custom domain, then enter that URL.",
+    pagesGuide: "How to get a Pages URL (optional)", pagesLastStep: "Enter the displayed <code>https://my-content-cache.pages.dev</code> below.",
+    filebaseCorsSummary: "Filebase bucket CORS setup (once after connecting)",
+    filebaseCorsBody: "CORS is required for browser uploads and IPFS CID lookup. After connecting to Filebase, open <strong>Cloud Storage Settings</strong> above and run <strong>⚙️ Configure CORS</strong> once in the Filebase (IPFS) section. No manual JSON is required.",
+    r2CorsSummary: "R2 bucket CORS setup (required for browser access)",
+    r2CorsBody: "In Cloudflare Dashboard → R2 → your bucket → <strong>Settings</strong> → <strong>CORS Policy</strong> → Edit, paste and save the policy below.<br>The first URL is the frontend URL currently opening this app (<code>${escapeHtml(frontendOrigin)}</code>), not the delivery domain.",
+    deliveryDomain: "Public / delivery domain", requiredWorkerDomain: "(required: Worker URL or custom delivery URL)",
+    filebaseBucket: "Filebase bucket name", r2Bucket: "R2 bucket name",
+    locked: "🔒 Complete and verify Step 1 before entering these fields", connectStorage: `💾 Save and connect ${isFb ? "Filebase" : "R2"}`,
+    copiedCors: "📋 CORS policy copied",
+  } : {
+    title: `${isFb ? "🪐 Filebase (IPFS)" : "⚡ Cloudflare R2"} へ接続して開始しましょう`,
+    intro: "最初は STEP 1 で接続した Worker URL を公開・配信ドメインとして使えます。独自の配信 URL を使いたい場合だけ、Wrangler で配信用 Pages をデプロイするか、Worker に独自ドメインを設定してから STEP 2 の「公開・配信ドメイン」を差し替えてください。",
+    kvStep: "STEP 1: KV 台帳 Worker 連携 (必須: 高速短縮URL・時限削除・保護)",
+    kvIntro: "短縮URL・時限削除・パスワード保護・安全なエッジキャッシュ配信を行うため、各自の Cloudflare に <code>kv-worker</code> をデプロイします。",
+    kvAfterDeploy: "デプロイ後に発行された Worker URL と設定した ADMIN_TOKEN を入力してください。",
+    kvUrl: "KV 台帳 Worker URL", connectKv: "🔌 保存して KV に接続",
+    storageStep: `STEP 2: ${isFb ? "🪐 Filebase (IPFS) & 独自配信エッジ設定" : "⚡ Cloudflare R2 & 独自配信エッジ設定"}`,
+    storageIntro: isFb ? "初期値の Worker URL のままでも、IPFSファイルを「配信ドメイン/ファイル名」で配信できます。独自の配信 URL に変えたい場合は Pages のデプロイまたは Worker の独自ドメイン設定後、その URL を入力してください。" : "初期値の Worker URL のままでもファイルを配信できます。独自の配信 URL に変えたい場合は Pages のデプロイまたは Worker の独自ドメイン設定後、その URL を入力してください。",
+    pagesGuide: "Pages URL を取得する手順（任意）", pagesLastStep: "表示された <code>https://my-content-cache.pages.dev</code> を下へ入力",
+    filebaseCorsSummary: "Filebase バケットの CORS 設定（接続後に一度だけ）",
+    filebaseCorsBody: "ブラウザからアップロードし、IPFS CID を取得するため CORS が必要です。Filebase への接続が成功したら、画面上部の <strong>☁️ クラウドストレージ接続設定</strong> を開き、Filebase (IPFS) 欄の <strong>⚙️ CORS自動設定</strong> を一度実行してください。手動で JSON を貼り付ける必要はありません。",
+    r2CorsSummary: "R2 バケットの CORS 設定（ブラウザから接続するため必須）",
+    r2CorsBody: `Cloudflare Dashboard → R2 → 対象バケット → <strong>Settings</strong> → <strong>CORS Policy</strong> → Edit に、次を貼り付けて保存してください。<br>先頭の URL は、現在このアプリを開いているフロントエンド URL（<code>${escapeHtml(frontendOrigin)}</code>）です。配信ドメインではありません。`,
+    deliveryDomain: "公開・配信ドメイン", requiredWorkerDomain: "(必須: Worker URL または独自配信 URL)",
+    filebaseBucket: "Filebase バケット名", r2Bucket: "R2 バケット名",
+    locked: "🔒 STEP 1 の接続確認後に入力できます", connectStorage: `💾 保存して ${isFb ? "Filebase" : "R2"} に接続`,
+    copiedCors: "📋 CORS 設定をコピーしました",
+  };
   // 接続テストに通るまでは次の段階を開かない。画面を閉じた際にも
   // 中途半端な認証情報だけで次段階へ進まないよう、現在のタブ内だけで保持する。
   const kvConnected = sessionStorage.getItem("onboardingKvConnected") === "true";
@@ -5797,8 +5627,8 @@ function renderStorageOnboardingCard() {
     <div class="storage-onboarding-card">
       <div class="onboarding-header">
         <div>
-          <h3 class="onboarding-title">✨ ${isFb ? "🪐 Filebase (IPFS)" : "⚡ Cloudflare R2"} へ接続して開始しましょう</h3>
-          <p class="onboarding-desc">最初は STEP 1 で接続した Worker URL を公開・配信ドメインとして使えます。独自の配信 URL を使いたい場合だけ、Wrangler で配信用 Pages をデプロイするか、Worker に独自ドメインを設定してから STEP 2 の「公開・配信ドメイン」を差し替えてください。</p>
+          <h3 class="onboarding-title">✨ ${onboarding.title}</h3>
+          <p class="onboarding-desc">${onboarding.intro}</p>
         </div>
       </div>
 
@@ -5806,18 +5636,18 @@ function renderStorageOnboardingCard() {
       <div class="onboarding-step-grid">
         <!-- STEP 1: cividge-kv-worker デプロイ & 連携案内 -->
         <div class="onboarding-step-box">
-          <span class="onboarding-step-badge" style="background: rgba(245, 158, 11, 0.2); color: #f59e0b;">STEP 1: KV 台帳 Worker 連携 (必須: 高速短縮URL・時限削除・保護)</span>
+          <span class="onboarding-step-badge" style="background: rgba(245, 158, 11, 0.2); color: #f59e0b;">${onboarding.kvStep}</span>
           <div style="font-size: 11.5px; color: var(--muted); line-height: 1.5;">
-            短縮URL・時限削除・パスワード保護・安全なエッジキャッシュ配信を行うため、各自の Cloudflare に <code>kv-worker</code> をデプロイします。
+            ${onboarding.kvIntro}
             <div style="margin: 8px 0; padding: 8px; background: rgba(0,0,0,0.4); border-radius: 6px; font-family: monospace; font-size: 11px; color: #cbd5e1;">
               cd cividge-kv-worker<br>
               npx wrangler deploy
             </div>
-            デプロイ後に発行された Worker URL と設定した ADMIN_TOKEN を入力してください。
+            ${onboarding.kvAfterDeploy}
           </div>
 
           <div class="onboarding-input-field">
-            <label>KV 台帳 Worker URL <span style="color: #ef4444; font-weight: bold;">(必須)</span></label>
+            <label>${onboarding.kvUrl} <span style="color: #ef4444; font-weight: bold;">${isEnglish ? "(required)" : "(必須)"}</span></label>
             <input type="text" id="obKvUrl" placeholder="例: https://cividge-kv-worker.yourname.workers.dev" value="${escapeHtml(kvUrlVal)}">
           </div>
           <div class="onboarding-input-field">
@@ -5826,37 +5656,35 @@ function renderStorageOnboardingCard() {
           </div>
           <div class="onboarding-step-action">
             <span id="obKvStatus" class="onboarding-step-status" style="color: ${kvSuccessMessage ? "#4ade80" : "#fcd34d"};">${escapeHtml(kvSuccessMessage)}</span>
-            <button type="button" class="ghost-button" id="obKvConnectBtn">🔌 保存して KV に接続</button>
+            <button type="button" class="ghost-button" id="obKvConnectBtn">${onboarding.connectKv}</button>
           </div>
         </div>
 
         <!-- STEP 2: ストレージ認証情報 (R2またはFilebase個別画面) -->
         <div class="onboarding-step-box">
           <span class="onboarding-step-badge" style="background: ${isFb ? 'rgba(56, 189, 248, 0.2); color: #38bdf8;' : 'rgba(249, 115, 22, 0.2); color: #fb923c;'}">
-            STEP 2: ${isFb ? "🪐 Filebase (IPFS) & 独自配信エッジ設定" : "⚡ Cloudflare R2 & 独自配信エッジ設定"}
+            ${onboarding.storageStep}
           </span>
           <div style="font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-bottom: 8px;">
-            ${isFb 
-              ? "初期値の Worker URL のままでも、IPFSファイルを「配信ドメイン/ファイル名」で配信できます。独自の配信 URL に変えたい場合は Pages のデプロイまたは Worker の独自ドメイン設定後、その URL を入力してください。"
-              : "初期値の Worker URL のままでもファイルを配信できます。独自の配信 URL に変えたい場合は Pages のデプロイまたは Worker の独自ドメイン設定後、その URL を入力してください。"}
+            ${onboarding.storageIntro}
             <details class="onboarding-guide-details">
-              <summary>Pages URL を取得する手順（任意）</summary>
+              <summary>${onboarding.pagesGuide}</summary>
               <ol>
                 <li><code>npx wrangler login</code></li>
                 <li>このリポジトリのルートで <code>npm run build</code></li>
                 <li><code>npx wrangler pages deploy dist --project-name=my-content-cache</code></li>
-                <li>表示された <code>https://my-content-cache.pages.dev</code> を下へ入力</li>
+                <li>${onboarding.pagesLastStep}</li>
               </ol>
             </details>
             ${isFb ? `
             <details class="onboarding-guide-details" style="margin-top: 8px;">
-              <summary>Filebase バケットの CORS 設定（接続後に一度だけ）</summary>
-              <p style="margin: 8px 0;">ブラウザからアップロードし、IPFS CID を取得するため CORS が必要です。Filebase への接続が成功したら、画面上部の <strong>☁️ クラウドストレージ接続設定</strong> を開き、Filebase (IPFS) 欄の <strong>⚙️ CORS自動設定</strong> を一度実行してください。手動で JSON を貼り付ける必要はありません。</p>
+              <summary>${onboarding.filebaseCorsSummary}</summary>
+              <p style="margin: 8px 0;">${onboarding.filebaseCorsBody}</p>
             </details>` : ""}
             ${isFb ? "" : `
             <details class="onboarding-guide-details" style="margin-top: 8px;">
-              <summary>R2 バケットの CORS 設定（ブラウザから接続するため必須）</summary>
-              <p style="margin: 8px 0;">Cloudflare Dashboard → R2 → 対象バケット → <strong>Settings</strong> → <strong>CORS Policy</strong> → Edit に、次を貼り付けて保存してください。<br>先頭の URL は、現在このアプリを開いているフロントエンド URL（<code>${escapeHtml(frontendOrigin)}</code>）です。配信ドメインではありません。</p>
+              <summary>${onboarding.r2CorsSummary}</summary>
+              <p style="margin: 8px 0;">${onboarding.r2CorsBody}</p>
               <pre style="margin: 0; padding: 9px; overflow: auto; border-radius: 6px; background: rgba(0,0,0,.38); font-size: 10px; line-height: 1.4; white-space: pre-wrap;"><code>${escapeHtml(r2CorsPolicy)}</code></pre>
               <button type="button" class="ghost-button" id="obCopyR2CorsBtn" style="margin-top: 8px; font-size: 11px;">📋 CORS 設定をコピー</button>
             </details>`}
@@ -5867,11 +5695,11 @@ function renderStorageOnboardingCard() {
           <!-- Filebase 専用設定フォーム -->
           <div id="obFbFields" style="display: flex; flex-direction: column; gap: 8px;">
             <div class="onboarding-input-field">
-              <label>公開・配信ドメイン <span style="color: #ef4444; font-weight: bold;">(必須: Worker URL または独自配信 URL)</span></label>
+              <label>${onboarding.deliveryDomain} <span style="color: #ef4444; font-weight: bold;">${onboarding.requiredWorkerDomain}</span></label>
               <input type="text" id="obDomainInput" placeholder="例: https://my-media.pages.dev" value="${escapeHtml(currentDomain)}">
             </div>
             <div class="onboarding-input-field">
-              <label>Filebase バケット名</label>
+              <label>${onboarding.filebaseBucket}</label>
               <input type="text" id="obFbBucket" placeholder="例: my-ipfs-bucket" value="${escapeHtml(fbBucketVal)}">
             </div>
             <div class="onboarding-input-field">
@@ -5887,7 +5715,7 @@ function renderStorageOnboardingCard() {
           <!-- R2 専用設定フォーム -->
           <div id="obR2Fields" style="display: flex; flex-direction: column; gap: 8px;">
             <div class="onboarding-input-field">
-              <label>公開・配信ドメイン <span style="color: #ef4444; font-weight: bold;">(必須: Worker URL または独自配信 URL)</span></label>
+              <label>${onboarding.deliveryDomain} <span style="color: #ef4444; font-weight: bold;">${onboarding.requiredWorkerDomain}</span></label>
               <input type="text" id="obR2DomainInput" placeholder="例: https://my-media.pages.dev" value="${escapeHtml(currentDomain)}">
             </div>
             <div class="onboarding-input-field">
@@ -5895,7 +5723,7 @@ function renderStorageOnboardingCard() {
               <input type="text" id="obR2Account" placeholder="例: 0123456789abcdef..." value="${escapeHtml(r2AccountVal)}">
             </div>
             <div class="onboarding-input-field">
-              <label>R2 バケット名</label>
+              <label>${onboarding.r2Bucket}</label>
               <input type="text" id="obR2Bucket" placeholder="例: my-bucket" value="${escapeHtml(r2BucketVal)}">
             </div>
             <div class="onboarding-input-field">
@@ -5910,8 +5738,8 @@ function renderStorageOnboardingCard() {
           `}
           </fieldset>
           <div class="onboarding-step-action">
-            <span id="obStorageStatus" class="onboarding-step-status">${kvConnected ? "" : "🔒 STEP 1 の接続確認後に入力できます"}</span>
-            <button type="button" class="primary-button" id="obStorageConnectBtn" ${kvConnected ? "" : "disabled"}>💾 保存して ${isFb ? "Filebase" : "R2"} に接続</button>
+            <span id="obStorageStatus" class="onboarding-step-status">${kvConnected ? "" : onboarding.locked}</span>
+            <button type="button" class="primary-button" id="obStorageConnectBtn" ${kvConnected ? "" : "disabled"}>${onboarding.connectStorage}</button>
           </div>
         </div>
       </div>
@@ -5920,7 +5748,7 @@ function renderStorageOnboardingCard() {
 
   const copyR2CorsButton = document.querySelector("#obCopyR2CorsBtn");
   copyR2CorsButton?.addEventListener("click", async () => {
-    await copyToClipboard(r2CorsPolicy, copyR2CorsButton, "📋 CORS 設定をコピーしました");
+    await copyToClipboard(r2CorsPolicy, copyR2CorsButton, onboarding.copiedCors);
   });
 
   const readDraftDomain = () => {

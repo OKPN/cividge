@@ -182,6 +182,11 @@
                 </label>
               </div>
 
+              <details style="margin: 2px 0 0; padding: 6px 8px; border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 6px; color: var(--muted); font-size: 10px; line-height: 1.4;">
+                <summary style="cursor: pointer; color: #cbd5e1; font-weight: 600;" data-i18n="passwordIpfsNoticeSummary">IPFS のパスワード保護について</summary>
+                <div style="margin-top: 5px;" data-i18n="passwordIpfsNotice">※ パスワードは Cividge の配信 URL を保護します。IPFS の CID を知る人は、IPFS Gateway 経由で直接取得できる場合があります。秘匿が必要なファイルは投稿しないでください。</div>
+              </details>
+
               <!-- 保存先ごとに配信ドメインと実行ボタンを固定で対応付ける -->
               <div class="upload-destination-grid" style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 8px;">
                 <div style="min-width: 0; padding: 8px; background: rgba(234, 88, 12, 0.07); border: 1px solid rgba(249, 115, 22, 0.28); border-radius: 7px;">
@@ -206,7 +211,7 @@
               <div id="cfSettingsContainer">
                 <div class="settings-content" style="padding: 14px 0 4px; display: flex; flex-direction: column; gap: 12px;">
 
-                  <details class="settings-accordion cf-settings-accordion" id="kvSettingsAccordion" open>
+                  <details class="settings-accordion cf-settings-accordion" id="kvSettingsAccordion">
                     <summary data-i18n="kvAccordionTitle">📚 KV 配信・管理 Worker</summary>
                     <div id="kvSettingsContent" class="settings-content" style="padding: 12px 0 4px; display: flex; flex-direction: column; gap: 12px;">
                       <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="kvAccordionDesc">R2 / Filebase 共通の短縮 URL、別名リンク、有効期限、パスワード保護を管理する台帳です。</p>
