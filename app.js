@@ -79,6 +79,16 @@ const i18nDict = {
     filebaseDomainPlaceholder: "-- Filebase ドメインを選択 --",
     r2DeliveryTitle: "1️⃣ R2 の公開・配信 URL を設定",
     filebaseDeliveryTitle: "2️⃣ Filebase の公開・配信 URL を設定",
+    r2CompatibilitySummary: "🛡️ pages.dev 公開互換レイヤー（ランダムクエリ防御）",
+    r2CompatibilityConfigured: "公開入口: ",
+    r2CompatibilityMissing: "⚠ 上の R2 配信ドメインから、静的リレープロジェクトの pages.dev URL を選択してください。",
+    r2CompatibilityInstallSummary: "静的リレープロジェクトを設置する",
+    r2CompatibilityInstallBody: "同梱テンプレートを<strong>公開用の静的 Pages プロジェクト</strong>としてデプロイします。各パスを既存の R2 配信ドメインへ転送します。作成された pages.dev URL を上の R2 配信ドメインに追加して選択してください。投稿ごとのスイッチはありません。",
+    filebaseCompatibilitySummary: "🛡️ pages.dev 公開互換レイヤー（ランダムクエリ防御）",
+    filebaseCompatibilityConfigured: "公開入口: ",
+    filebaseCompatibilityMissing: "⚠ 上の Filebase 配信ドメインから、静的リレープロジェクトの pages.dev URL を選択してください。",
+    filebaseCompatibilityInstallSummary: "静的リレープロジェクトを設置する",
+    filebaseCompatibilityInstallBody: "同梱テンプレートを<strong>公開用の静的 Pages プロジェクト</strong>としてデプロイします。Function・KV・ストレージ認証情報は含みません。各パスを互換 Worker へ転送します。作成された pages.dev URL を上の Filebase 配信ドメインに追加して選択してください。投稿ごとのスイッチはありません。",
     requiredText: "* 必須",
     deliveryDomainHintR2: "※ R2 用の Worker URL、pages.dev URL、独自ドメイン、R2 dev URL を何件でも追加・削除できます。選択された URL が画像コピーやパレットの配信ベース URL に使用されます。",
     deliveryDomainHintFilebase: "※ Filebase / IPFS 用の Worker URL、pages.dev URL、独自ドメインを何件でも追加・削除できます。選択された URL が Filebase への新規投稿の配信ベース URL に使用されます。",
@@ -219,6 +229,9 @@ const i18nDict = {
         <p style="margin-bottom: 12px; font-weight: 500;">
           <strong>Civitai Bridge (Cividge)</strong> is a personal media uploader for AI creators who want to keep control of where their work lives. Convert media in your browser, then upload directly to storage you control: Cloudflare R2 or Filebase/IPFS.
         </p>
+        <p style="margin: 0 0 12px; font-size: 12px; color: var(--text-secondary);">
+          It began as a practical replacement when Catbox became unavailable on major Japanese anonymous boards: a way to keep sharing generated images without depending on a single public file host.
+        </p>
 
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 14px 0;">
           <div style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 8px; padding: 10px 12px;">
@@ -273,6 +286,16 @@ const i18nDict = {
     filebaseDomainPlaceholder: "-- Select Filebase domain --",
     r2DeliveryTitle: "1️⃣ Set the R2 public / delivery URL",
     filebaseDeliveryTitle: "2️⃣ Set the Filebase public / delivery URL",
+    r2CompatibilitySummary: "🛡️ pages.dev public compatibility layer (query-busting defense)",
+    r2CompatibilityConfigured: "Public entry: ",
+    r2CompatibilityMissing: "⚠ Select the static relay project's pages.dev URL from the R2 delivery-domain list above.",
+    r2CompatibilityInstallSummary: "Install the static relay project",
+    r2CompatibilityInstallBody: "Deploy the included template as the <strong>public static Pages project</strong>. It redirects each path to the existing R2 delivery domain. Add the resulting pages.dev URL to the R2 delivery-domain list above and select it. There is no per-upload switch.",
+    filebaseCompatibilitySummary: "🛡️ pages.dev public compatibility layer (query-busting defense)",
+    filebaseCompatibilityConfigured: "Public entry: ",
+    filebaseCompatibilityMissing: "⚠ Select the static relay project's pages.dev URL from the Filebase delivery-domain list above.",
+    filebaseCompatibilityInstallSummary: "Install the static relay project",
+    filebaseCompatibilityInstallBody: "Deploy the included template as the <strong>public static Pages project</strong>. It contains no Functions, KV, or storage credentials; it redirects each path to the compatibility Worker. Add the resulting pages.dev URL to the Filebase delivery-domain list above and select it. There is no per-upload switch.",
     requiredText: "* Required",
     deliveryDomainHintR2: "Add or remove R2 Worker URLs, pages.dev URLs, custom domains, or R2 dev URLs. The selected URL is used as the delivery base for copied image URLs and the palette.",
     deliveryDomainHintFilebase: "Add or remove Filebase/IPFS Worker URLs, pages.dev URLs, or custom domains. The selected URL is used as the delivery base for new Filebase uploads.",
@@ -479,6 +502,8 @@ const filebaseDomainAddForm = document.querySelector("#filebaseDomainAddForm");
 const filebaseDomainNewInput = document.querySelector("#filebaseDomainNewInput");
 const filebaseDomainNewSaveBtn = document.querySelector("#filebaseDomainNewSaveBtn");
 const filebaseDomainNewCancelBtn = document.querySelector("#filebaseDomainNewCancelBtn");
+const r2CompatibilityStatus = document.querySelector("#r2CompatibilityStatus");
+const filebaseCompatibilityStatus = document.querySelector("#filebaseCompatibilityStatus");
 
 // 🪐 Filebase 接続設定フォーム要素
 const filebaseBucket = document.querySelector("#filebaseBucket");
@@ -1228,15 +1253,35 @@ async function findFilebaseObjectByCid(s3, bucketName, targetCid) {
   return null;
 }
 
-// 公開URLは常に「選択中の配信ドメイン + ファイル名」に統一する。
-// CIDは内部の配信解決用メタデータであり、共有・コピーするURLには含めない。
+function normalizeHttpsOrigin(value) {
+  try {
+    const parsed = new URL((value || "").trim());
+    if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password) return "";
+    if (parsed.pathname !== "/" || parsed.search || parsed.hash) return "";
+    return parsed.origin;
+  } catch {
+    return "";
+  }
+}
+
+function getPublicDeliveryBase(provider = activeStorageTab, canonicalBase = "") {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  const canonical = normalizeHttpsOrigin(canonicalBase || getSelectedR2Domain(storageProvider));
+  return canonical || (typeof window !== "undefined" ? window.location.origin.replace(/\/$/, "") : "");
+}
+
+function getPublicDeliveryUrl(name, provider = activeStorageTab, canonicalBase = "") {
+  if (!name) return "";
+  const baseDomain = getPublicDeliveryBase(provider, canonicalBase);
+  return baseDomain ? `${baseDomain}/${encodeURIComponent(name)}` : "";
+}
+
+// CID は内部の配信解決用メタデータであり、共有・コピーする URL には含めない。
+// Filebase の静的互換レイヤーを有効にした場合だけ、公開側の origin を差し替える。
 function getSelectedDeliveryUrl(result) {
   if (!result?.name) return "";
-
   const provider = result?.uploadedProvider === "filebase" ? "filebase" : "r2";
-  const baseDomain = (getSelectedR2Domain(provider) || (typeof window !== "undefined" ? window.location.origin : ""))
-    .replace(/\/$/, "");
-  return baseDomain ? `${baseDomain}/${encodeURIComponent(result.name)}` : "";
+  return getPublicDeliveryUrl(result.name, provider);
 }
 
 // 🌐 各ファイルカード専用の固定配信ドメイン管理（プルダウン変更で釣られないように完全分離）
@@ -1386,6 +1431,38 @@ function renderR2DomainSelect() {
     r2DomainDeleteBtn.disabled = r2Domains.length === 0;
   }
   if (filebaseDomainDeleteBtn) filebaseDomainDeleteBtn.disabled = filebaseDomains.length === 0;
+  updateR2CompatibilityUi();
+  updateFilebaseCompatibilityUi();
+}
+
+function updateR2CompatibilityUi() {
+  if (!r2CompatibilityStatus) return;
+  const isEnglish = getAppLanguage() === "en";
+  const publicUrl = normalizeHttpsOrigin(getSelectedR2Domain("r2"));
+  const isPagesRelay = publicUrl && new URL(publicUrl).hostname.toLowerCase().endsWith(".pages.dev");
+  if (isPagesRelay) {
+    const prefix = isEnglish ? i18nDict.en.r2CompatibilityConfigured : i18nDict.ja.r2CompatibilityConfigured;
+    r2CompatibilityStatus.innerHTML = `✅ ${prefix}<code>${escapeHtml(publicUrl)}</code>`;
+    r2CompatibilityStatus.style.color = "#86efac";
+  } else {
+    r2CompatibilityStatus.textContent = isEnglish ? i18nDict.en.r2CompatibilityMissing : i18nDict.ja.r2CompatibilityMissing;
+    r2CompatibilityStatus.style.color = "#fcd34d";
+  }
+}
+
+function updateFilebaseCompatibilityUi() {
+  if (!filebaseCompatibilityStatus) return;
+  const isEnglish = getAppLanguage() === "en";
+  const publicUrl = normalizeHttpsOrigin(getSelectedR2Domain("filebase"));
+  const isPagesRelay = publicUrl && new URL(publicUrl).hostname.toLowerCase().endsWith(".pages.dev");
+  if (isPagesRelay) {
+    const prefix = isEnglish ? i18nDict.en.filebaseCompatibilityConfigured : i18nDict.ja.filebaseCompatibilityConfigured;
+    filebaseCompatibilityStatus.innerHTML = `✅ ${prefix}<code>${escapeHtml(publicUrl)}</code>`;
+    filebaseCompatibilityStatus.style.color = "#86efac";
+  } else {
+    filebaseCompatibilityStatus.textContent = isEnglish ? i18nDict.en.filebaseCompatibilityMissing : i18nDict.ja.filebaseCompatibilityMissing;
+    filebaseCompatibilityStatus.style.color = "#fcd34d";
+  }
 }
 
 // --- R2 / Filebase 設定状態の更新 ---
@@ -1930,6 +2007,7 @@ function loadSettings() {
   if (filebaseSecretKey) filebaseSecretKey.value = savedFbSecret;
 
   renderR2DomainSelect();
+  updateFilebaseCompatibilityUi();
   updateR2Status();
   renderCivitaiUserSelect();
   updateCivitaiStatus();
@@ -2161,7 +2239,6 @@ function applyAppImportPayload(payload) {
     if (payload.fds) setSelectedR2Domain(payload.fds, "filebase");
     hasRestoredAny = true;
   }
-
   // 1.2 Filebase 接続設定
   if (payload.fb && payload.fk && payload.fs) {
     localStorage.setItem("filebaseBucket", payload.fb);
@@ -2477,6 +2554,8 @@ const handleDomainSelectionChange = (newDomain, provider = activeStorageTab) => 
   if (storageProvider === "filebase" && quickFilebaseDomainSelect && quickFilebaseDomainSelect.value !== newDomain) {
     quickFilebaseDomainSelect.value = newDomain;
   }
+  if (storageProvider === "r2") updateR2CompatibilityUi();
+  if (storageProvider === "filebase") updateFilebaseCompatibilityUi();
   updateR2Status();
   render();
   if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
@@ -2582,6 +2661,8 @@ cfClearButton?.addEventListener("click", () => {
   localStorage.removeItem("r2DevDomain");
   localStorage.removeItem("filebaseDomainList");
   localStorage.removeItem("filebaseSelectedDomain");
+  localStorage.removeItem("filebaseCompatibilityUrl");
+  localStorage.removeItem("filebaseCompatibilityEnabled");
 
   localStorage.removeItem("filebaseBucket");
   localStorage.removeItem("filebaseApiKey");
@@ -5297,6 +5378,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
         result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
         console.log(`🪐 Filebase URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
       }
+      result.proxyUrl = getSelectedDeliveryUrl(result) || result.proxyUrl;
 
       // 🚀 エッジキャッシュ事前ウォームアップ（初回読み出し高速化）:
       // アップロード直後に裏で1回フェッチを投げてCloudflareエッジにキャッシュを載せておく
@@ -6319,7 +6401,7 @@ function renderCurrentStoragePage() {
     article.dataset.allowedhost = fileDomain;
 
     // 公開・コピー用URLはストレージ種別やCIDの有無にかかわらず常に配信ドメイン + ファイル名。
-    const publicUrl = `${fileDomain}/${encodeURIComponent(item.Key)}`;
+    const publicUrl = getPublicDeliveryUrl(item.Key, isFilebase ? "filebase" : "r2", fileDomain);
 
     const hasPassword = Boolean(item.password || item.metadata?.passwordHash || item.metadata?.password);
     const plainPwd = item.password || item.metadata?.password;
@@ -6545,7 +6627,7 @@ function renderCurrentStoragePage() {
               article.dataset.cid = resolvedCid;
 
               // CID解決後も公開URLは配信ドメイン + ファイル名を維持する。
-              const newPublicUrl = `${fileInitialDomain || baseDomain}/${encodeURIComponent(item.Key)}`;
+              const newPublicUrl = getPublicDeliveryUrl(item.Key, "filebase", fileInitialDomain || baseDomain);
 
               const thumbImg = article.querySelector("img.thumb");
               if (thumbImg) thumbImg.src = newPublicUrl;

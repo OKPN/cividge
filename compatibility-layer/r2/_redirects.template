@@ -1,0 +1,6 @@
+# This project must contain only static assets: do not add a functions/ directory.
+# Replace __R2_COMPATIBILITY_ORIGIN__ with the HTTPS custom domain or r2.dev
+# origin that serves this R2 bucket. The fixed `r` query replaces arbitrary
+# incoming query strings at the static edge.
+# Example: /* https://media.example.com/:splat?r 307
+/* __R2_COMPATIBILITY_ORIGIN__/:splat?r 307

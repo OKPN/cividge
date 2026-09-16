@@ -207,6 +207,23 @@ npx wrangler pages deploy dist --project-name=my-filebase-delivery
 
 Add the resulting `https://my-filebase-delivery.pages.dev` through the Filebase delivery-domain **＋** button. A custom domain can be used instead when configured on Cloudflare.
 
+### Stable public `pages.dev` URLs for Filebase
+
+If you want a board-facing `pages.dev/file-name.ext` URL while keeping a
+separate Filebase compatibility Worker/domain behind it, deploy the
+function-free template in [`compatibility-layer/filebase`](compatibility-layer/filebase/).
+Add the resulting public Pages URL to the **Filebase delivery-domain** list and
+select it. There is no per-upload switch: the selected delivery domain is always
+the public URL Cividge copies and posts.
+
+The relay has no Functions, KV access, or storage credentials. It only forwards
+the path to the configured compatibility Worker/domain. Its fixed destination
+query replaces arbitrary incoming query strings before they reach that Worker.
+
+For R2, use the analogous [`compatibility-layer/r2`](compatibility-layer/r2/)
+template. Point it at the R2 custom domain or `r2.dev` origin, then add and
+select its public Pages URL in the **R2 delivery-domain** list.
+
 ## Optional: use Kubo as a preservation node
 
 Install and start Kubo, then normally set its RPC URL to `http://127.0.0.1:5001`. Enable automatic Kubo pinning only after the connection test succeeds.

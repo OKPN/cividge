@@ -261,6 +261,16 @@
                         <summary data-i18n="deliveryGuideSummary">配信 URL の作り方・変更方法</summary>
                         <div data-i18n="r2DeliveryGuide" data-i18n-html="true">最初は KV Worker の <code>https://…workers.dev</code> をそのまま使えます。独自の URL が必要な場合だけ、Pages をデプロイするか Worker に独自ドメインを追加します。</div>
                       </details>
+                      <details id="r2CompatibilitySettings" class="delivery-domain-guide" style="margin-top: 4px; border-color: rgba(167, 139, 250, 0.4);">
+                        <summary data-i18n="r2CompatibilitySummary">🛡️ pages.dev 公開互換レイヤー（ランダムクエリ防御）</summary>
+                        <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 9px;">
+                          <span id="r2CompatibilityStatus" style="font-size: 10.5px; color: var(--muted); line-height: 1.45;"></span>
+                          <details style="font-size: 10.5px; color: var(--muted); line-height: 1.5;">
+                            <summary style="cursor: pointer; color: #c4b5fd;" data-i18n="r2CompatibilityInstallSummary">静的リレープロジェクトを設置する</summary>
+                            <div style="margin-top: 7px;" data-i18n="r2CompatibilityInstallBody" data-i18n-html="true">同梱テンプレートを公開用の静的 Pages プロジェクトとしてデプロイします。作成された pages.dev URL を上の R2 配信ドメインに追加して選択してください。</div>
+                          </details>
+                        </div>
+                      </details>
                     </div>
                   </div>
 
@@ -286,6 +296,16 @@
                       <details class="delivery-domain-guide">
                         <summary data-i18n="deliveryGuideSummary">配信 URL の作り方・変更方法</summary>
                         <div data-i18n="filebaseDeliveryGuide" data-i18n-html="true">Filebase 用には R2 と<strong>異なる</strong>配信ドメインを使います。新しい Pages プロジェクトを作成し、この Cividge の配信コードをデプロイしてください。</div>
+                      </details>
+                      <details id="filebaseCompatibilitySettings" class="delivery-domain-guide" style="margin-top: 4px; border-color: rgba(167, 139, 250, 0.4);">
+                        <summary data-i18n="filebaseCompatibilitySummary">🛡️ Stable public URL layer (optional)</summary>
+                        <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 9px;">
+                          <span id="filebaseCompatibilityStatus" style="font-size: 10.5px; color: var(--muted); line-height: 1.45;"></span>
+                          <details style="font-size: 10.5px; color: var(--muted); line-height: 1.5;">
+                            <summary style="cursor: pointer; color: #c4b5fd;" data-i18n="filebaseCompatibilityInstallSummary">Install the static relay project</summary>
+                            <div style="margin-top: 7px;" data-i18n="filebaseCompatibilityInstallBody" data-i18n-html="true">Deploy the included static template as the public Pages project. It contains no Functions, KV, or storage credentials; it redirects each path to the compatibility Worker. Add the resulting pages.dev URL to the Filebase delivery-domain list above and select it. There is no per-upload switch.</div>
+                          </details>
+                        </div>
                       </details>
                     </div>
                   </div>

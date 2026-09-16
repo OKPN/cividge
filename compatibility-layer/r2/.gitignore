@@ -1,0 +1,2 @@
+# A local deployment has a user-specific R2 origin. Keep it out of Git.
+active-relay/
