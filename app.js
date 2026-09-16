@@ -5684,7 +5684,8 @@ r2PrevPageBtn?.addEventListener("click", () => {
 
 // ▶ 次へ
 r2NextPageBtn?.addEventListener("click", () => {
-  const totalPages = Math.max(1, Math.ceil(storageCachedContents.length / (storagePerPage || 1)));
+  const visibleCount = storageCachedContents.filter(item => item.storageProvider === activeStorageTab).length;
+  const totalPages = Math.max(1, Math.ceil(visibleCount / (storagePerPage || 1)));
   if (storageCurrentPage < totalPages) {
     storageCurrentPage++;
     renderCurrentStoragePage();
@@ -5703,6 +5704,7 @@ storageTabR2?.addEventListener("click", () => {
   activeStorageTab = "r2";
   localStorage.setItem("activeStorageTab", "r2");
   storageCurrentPage = 1;
+  storageCachedContents = [];
   updateStorageTabsUi();
   syncStorageLimitControl();
   renderR2DomainSelect("r2");
@@ -5713,6 +5715,7 @@ storageTabFilebase?.addEventListener("click", () => {
   activeStorageTab = "filebase";
   localStorage.setItem("activeStorageTab", "filebase");
   storageCurrentPage = 1;
+  storageCachedContents = [];
   updateStorageTabsUi();
   syncStorageLimitControl();
   renderR2DomainSelect("filebase");
@@ -6089,7 +6092,7 @@ async function fetchAndRenderR2Files() {
     const response = await s3.send(command);
     if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     let contents = [];
-    const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
+    const baseDomain = (getSelectedR2Domain(requestedProvider) || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
 
     if (isFilebase) {
       // 🪐 Filebase (IPFS) モード: S3実体とKV名札をスマートマッチング
@@ -6164,6 +6167,7 @@ async function fetchAndRenderR2Files() {
         if (matchedS3) {
           consumedS3Keys.add(matchedS3.Key);
           contents.push({
+            storageProvider: "filebase",
             Key: displayName,
             rawKey: rawKey,
             s3Key: matchedS3.Key,
@@ -6185,6 +6189,7 @@ async function fetchAndRenderR2Files() {
         } else {
           // S3 に実体がない（アンピン後など）
           contents.push({
+            storageProvider: "filebase",
             Key: displayName,
             rawKey: rawKey,
             s3Key: null,
@@ -6209,6 +6214,7 @@ async function fetchAndRenderR2Files() {
       for (const s3Item of s3RawList) {
         if (!consumedS3Keys.has(s3Item.Key)) {
           contents.push({
+            storageProvider: "filebase",
             Key: s3Item.Key,
             s3Key: s3Item.Key,
             Size: s3Item.Size || 0,
@@ -6234,6 +6240,7 @@ async function fetchAndRenderR2Files() {
       contents = (response.Contents || []).map(item => {
         const meta = r2KvMap.get(item.Key) || {};
         return {
+          storageProvider: "r2",
           Key: item.Key,
           s3Key: item.Key,
           Size: item.Size || meta.size || 0,
@@ -6375,9 +6382,10 @@ function renderCurrentStoragePage() {
   if (!r2FileList) return;
   const lang = getAppLanguage();
   const dict = i18nDict[lang] || i18nDict.ja;
-  const isFilebase = activeStorageTab === "filebase";
-  const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
-  const totalItems = storageCachedContents.length;
+  // 取得元が現在タブと一致するカードだけを描画する。非同期取得中の旧タブ
+  // データや、旧バージョンがメモリに残した未分類データを表示しない。
+  const visibleContents = storageCachedContents.filter(item => item.storageProvider === activeStorageTab);
+  const totalItems = visibleContents.length;
   const labels = getStorageListLabels();
 
   updateStoragePaginationUI(totalItems);
@@ -6389,15 +6397,17 @@ function renderCurrentStoragePage() {
   }
 
   // 表示件数に合わせてスライス
-  let pageItems = storageCachedContents;
+  let pageItems = visibleContents;
   if (storagePerPage > 0) {
     const startIdx = (storageCurrentPage - 1) * storagePerPage;
-    pageItems = storageCachedContents.slice(startIdx, startIdx + storagePerPage);
+    pageItems = visibleContents.slice(startIdx, startIdx + storagePerPage);
   }
 
   const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
 
   pageItems.forEach(item => {
+    const isFilebase = item.storageProvider === "filebase";
+    const baseDomain = (getSelectedR2Domain(item.storageProvider) || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
     const article = document.createElement("article");
     article.className = "result-item";
     const ext = item.Key ? item.Key.split('.').pop().toLowerCase() : "";
