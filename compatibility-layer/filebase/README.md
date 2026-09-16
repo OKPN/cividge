@@ -32,10 +32,10 @@ curl.exe -I "https://content-relay.pages.dev/example.webp"
 ```
 
 Confirm that the redirect `Location` preserves `/example.webp`, points to the
-Filebase compatibility/delivery Worker, and contains only the short fixed
-`r` marker. The explicit destination query replaces arbitrary
-incoming query strings at the static Pages edge, so cache-busting requests do
-not reach the delivery Worker with attacker-controlled queries.
+Filebase compatibility/delivery Worker, and contains the internal
+`/__cividge/` marker. Add a URL Rewrite Rule on the backend domain that removes
+the query string; this marker survives that rewrite and identifies the allowed
+public entry to Cividge.
 
 Changing the real delivery domain later requires updating and redeploying this
 one static `_redirects` file (or updating that Bulk Redirect). File uploads do

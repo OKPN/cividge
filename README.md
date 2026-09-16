@@ -217,8 +217,10 @@ select it. There is no per-upload switch: the selected delivery domain is always
 the public URL Cividge copies and posts.
 
 The relay has no Functions, KV access, or storage credentials. It only forwards
-the path to the configured compatibility Worker/domain. Its fixed destination
-query replaces arbitrary incoming query strings before they reach that Worker.
+the path to the configured compatibility Worker/domain. Add a URL Rewrite Rule
+on that backend domain to remove query strings; the Filebase template uses an
+internal path marker so the Worker still identifies the public entry after that
+rewrite.
 
 For R2, use the analogous [`compatibility-layer/r2`](compatibility-layer/r2/)
 template. Point it at the R2 custom domain or `r2.dev` origin, then add and

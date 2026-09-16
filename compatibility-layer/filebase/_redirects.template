@@ -1,7 +1,7 @@
 # This project must contain only static assets: do not add a functions/ directory.
 # Replace __FILEBASE_COMPATIBILITY_ORIGIN__ with the actual Filebase delivery
 # Worker/domain (the domain that resolves Cividge aliases and then fetches IPFS).
-# The short fixed `r` marker replaces arbitrary incoming query strings at the
-# static edge. Configure exactly one allowed public host in the delivery Worker.
-# Example: /* https://ipfs-relay.example.com/:splat?r 307
-/* __FILEBASE_COMPATIBILITY_ORIGIN__/:splat?r 307
+# The internal `__cividge/` path marker survives a query-stripping rule on the
+# backend domain. Configure that backend rule to discard arbitrary queries.
+# Example: /* https://ipfs-relay.example.com/__cividge/:splat 307
+/* __FILEBASE_COMPATIBILITY_ORIGIN__/__cividge/:splat 307
