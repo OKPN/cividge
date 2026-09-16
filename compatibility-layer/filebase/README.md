@@ -33,7 +33,7 @@ curl.exe -I "https://content-relay.pages.dev/example.webp"
 
 Confirm that the redirect `Location` preserves `/example.webp`, points to the
 Filebase compatibility/delivery Worker, and contains the internal
-`/__cividge/` marker. Add a URL Rewrite Rule on the backend domain that removes
+`/r/` marker. Add a URL Rewrite Rule on the backend domain that removes
 the query string; this marker survives that rewrite and identifies the allowed
 public entry to Cividge.
 
