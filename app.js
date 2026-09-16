@@ -44,9 +44,9 @@ import {
 const i18nDict = {
   ja: {
     siteTitle: "Cividge",
-    eyebrow: "ブラウザ内のみで画像をセキュアに変換 ＆ R2にダイレクト保存!",
+    eyebrow: "ブラウザで変換し、自分のストレージへ直接保存・配信",
     whatIsSiteSummary: "❓ どのようなサイト？",
-    whatIsSiteBody: `外部サーバやWorkerを一切介さず、お使いのブラウザ内だけで画像をセキュアに変換し、ご自身の Cloudflare R2 ストレージ（S3互換）にダイレクト保存・配信できるローカル＆R2専用ツールです。<br><span style="display: inline-block; margin-top: 6px; font-size: 12px; color: #a5b4fc;">※接続情報は全てお使いのブラウザ内（localStorage）にのみセキュア保存されます。</span>`,
+    whatIsSiteBody: `<strong>Civitai Bridge（Cividge）</strong>は、ブラウザ内でメディアを変換し、自分の Cloudflare R2 または Filebase（IPFS）へ保存・配信する個人用アップローダです。<br><span style="display: inline-block; margin-top: 6px; font-size: 12px; color: #a5b4fc;">必要に応じて KV Worker により別名 URL・期限・閲覧パスワードを管理でき、Kubo ノードは IPFS コンテンツの保全先として利用できます。接続情報はこのブラウザの localStorage に保存されます。</span>`,
     inputFiles: "入力ファイル",
     addFolder: "フォルダを追加",
     dropText: "ファイルやフォルダをここにドロップ",
@@ -155,11 +155,18 @@ const i18nDict = {
     civitaiAddCreator: "➕ ウォッチするクリエイターを追加:",
     civitaiMarkRead: "✓ 既読にする",
     civitaiNewBadge: "{count}件の新着",
+    civitaiNewOnly: "✨ 新着のみ",
+    civitaiShowAll: "☷ すべて表示",
+    civitaiLoadMore: "↓ 過去の投稿をさらに読み込む",
+    civitaiNoNewItems: "新着の投稿はありません。",
+    civitaiLoadingMore: "過去の投稿を読み込み中…",
+    sendToSecurityTitle: "🔐 個人専用バッチを生成しますか？",
+    sendToSecurityConfirm: "この BAT ファイルには投稿専用の UPLOAD_TOKEN が平文で含まれます。自分の Windows アカウントだけで保管・使用してください。\n\nメール、チャット、Git リポジトリ、共有フォルダへ渡してはいけません。\n紛失・共有した場合は、Worker の UPLOAD_TOKEN を再発行して、古いバッチを削除してください。",
+    sendToSecurityProceed: "理解して生成",
     civitaiDeleteConfirm: "登録クリエイター「{name}」をウォッチリストから削除しますか？",
     civitaiLastOneError: "最低1件のクリエイター登録が必要です。",
     btnAdd: "追加",
     btnCancel: "キャンセル",
-    r2Notice: "ブラウザから S3 互換ストレージ（Cloudflare R2 / Filebase IPFS）へダイレクトに通信します（バックエンド不要）。事前にバケットの設定で CORS（Cross-Origin Resource Sharing）を許可してください。",
     statusWaiting: "待機中",
     statusReady: "準備完了",
     textComposerHeading: "💬 テキスト作成支援",
@@ -205,51 +212,32 @@ const i18nDict = {
   },
   en: {
     siteTitle: "Cividge",
-    eyebrow: "Secure in-browser image conversion & direct Cloudflare R2 upload!",
+    eyebrow: "Your media. Your storage. Your delivery.",
     whatIsSiteSummary: "❓ What is this site?",
     whatIsSiteBody: `
       <div style="font-size: 13px; line-height: 1.6; color: var(--text);">
         <p style="margin-bottom: 12px; font-weight: 500;">
-          <strong>Cividge</strong> is a 100% serverless, client-side tool built for AI creators. Convert images in your browser and upload them directly to your personal Cloudflare R2 bucket via S3 API — without any intermediate server or Worker.
+          <strong>Civitai Bridge (Cividge)</strong> is a personal media uploader for AI creators who want to keep control of where their work lives. Convert media in your browser, then upload directly to storage you control: Cloudflare R2 or Filebase/IPFS.
         </p>
 
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 14px 0;">
           <div style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 8px; padding: 10px 12px;">
-            <div style="font-weight: bold; color: #818cf8; margin-bottom: 3px;">🔒 Zero External Servers</div>
-            <div style="font-size: 11.5px; color: var(--muted);">Direct S3 API communication from your browser to Cloudflare R2. No backend, no proxy, maximum privacy.</div>
+            <div style="font-weight: bold; color: #818cf8; margin-bottom: 3px;">🔒 Direct-to-your-storage</div>
+            <div style="font-size: 11.5px; color: var(--muted);">Upload from your browser to storage in your own account. Cividge does not operate a shared upload relay or keep your storage credentials.</div>
           </div>
           <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 10px 12px;">
-            <div style="font-weight: bold; color: #34d399; margin-bottom: 3px;">🧬 ComfyUI Workflows Intact</div>
-            <div style="font-size: 11.5px; color: var(--muted);">Preserves complete ComfyUI node graph workflows and API prompts in PNG, WebP, and MP4/WebM videos.</div>
+            <div style="font-weight: bold; color: #34d399; margin-bottom: 3px;">🧭 Controlled delivery</div>
+            <div style="font-size: 11.5px; color: var(--muted);">An optional Worker you deploy yourself adds stable delivery URLs, aliases, expiration, password gates, and delivery control.</div>
           </div>
           <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 10px 12px;">
-            <div style="font-weight: bold; color: #38bdf8; margin-bottom: 3px;">📦 Massive 10 GB Free Tier</div>
-            <div style="font-size: 11.5px; color: var(--muted);">Take advantage of Cloudflare R2's generous 10GB free storage every month with zero egress fees.</div>
+            <div style="font-weight: bold; color: #38bdf8; margin-bottom: 3px;">🌱 Discover, preserve, and share</div>
+            <div style="font-size: 11.5px; color: var(--muted);">Browse public creator posts with the Civitai API, collect media URLs, and share work through delivery links you control.</div>
           </div>
         </div>
 
-        <h4 style="font-size: 13.5px; font-weight: bold; color: #fff; margin: 16px 0 8px 0; display: flex; align-items: center; gap: 6px;">
-          🚀 Quick Setup Guide (3 Simple Steps)
-        </h4>
-
-        <ol style="margin: 0; padding-left: 20px; font-size: 12px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 8px;">
-          <li>
-            <strong>Step 1: Create an R2 Bucket in Cloudflare</strong><br>
-            Log into your Cloudflare Dashboard, navigate to <strong>R2 Object Storage</strong>, and create a bucket (e.g. <code>my-images</code>).
-          </li>
-          <li>
-            <strong>Step 2: Generate S3 API Credentials</strong><br>
-            Under <strong>R2 > Manage R2 API Tokens</strong>, create an API token with <code>Object Read & Write</code> permissions. Note your <strong>Access Key ID</strong>, <strong>Secret Access Key</strong>, and <strong>Account ID</strong>.
-          </li>
-          <li>
-            <strong>Step 3: Connect in Settings Below</strong><br>
-            Paste your Account ID, Bucket Name, and API Keys into the <strong>☁️ Cloudflare R2 Connection Settings</strong> panel below. You are now ready to publish direct links!
-          </li>
-        </ol>
-
         <div style="margin-top: 14px; padding: 10px 12px; background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 11.5px; color: var(--muted);">
-          <strong style="color: #fbbf24;">🛡️ Privacy & Security Guarantee:</strong><br>
-          Your R2 API keys are stored solely inside your browser's local storage (<code>localStorage</code>) and are transmitted only directly to Cloudflare's official S3 endpoint. We never store or see your keys.
+          <strong style="color: #fbbf24;">📌 Independent tool notice:</strong><br>
+          Storage credentials remain in this browser and are sent to the storage provider you configure. Cividge is independent software and is not affiliated with or endorsed by Civitai.
         </div>
       </div>
     `,
@@ -363,11 +351,18 @@ const i18nDict = {
     civitaiAddCreator: "➕ Add Creator to Watch:",
     civitaiMarkRead: "✓ Mark as Read",
     civitaiNewBadge: "{count} New",
+    civitaiNewOnly: "✨ New only",
+    civitaiShowAll: "☷ Show all",
+    civitaiLoadMore: "↓ Load older posts",
+    civitaiNoNewItems: "No new posts.",
+    civitaiLoadingMore: "Loading older posts…",
+    sendToSecurityTitle: "🔐 Generate a personal batch file?",
+    sendToSecurityConfirm: "This BAT file contains your upload-only UPLOAD_TOKEN in plain text. Store and use it only under your own Windows account.\n\nNever share it in email, chat, a Git repository, or a shared folder.\nIf it is lost or shared, rotate the Worker's UPLOAD_TOKEN and delete old batch files.",
+    sendToSecurityProceed: "I understand — generate",
     civitaiDeleteConfirm: "Remove creator \"{name}\" from your watch list?",
     civitaiLastOneError: "At least one creator must be kept.",
     btnAdd: "Add",
     btnCancel: "Cancel",
-    r2Notice: "Communicates directly with S3-compatible storage (Cloudflare R2 / Filebase IPFS) without a backend. Please allow CORS on your bucket settings.",
     statusWaiting: "Waiting",
     statusReady: "Ready",
     textComposerHeading: "💬 Text Composer",
@@ -562,11 +557,19 @@ const civitaiUserNewSaveBtn = document.querySelector("#civitaiUserNewSaveBtn");
 const civitaiUserNewCancelBtn = document.querySelector("#civitaiUserNewCancelBtn");
 const civitaiNewBadge = document.querySelector("#civitaiNewBadge");
 const civitaiMarkReadBtn = document.querySelector("#civitaiMarkReadBtn");
+const civitaiNewOnlyBtn = document.querySelector("#civitaiNewOnlyBtn");
+const civitaiLoadMoreBtn = document.querySelector("#civitaiLoadMoreBtn");
 const civitaiUsername = civitaiUserSelect; // 後方互換
 const civitaiPanel = document.querySelector("#civitaiPanel");
 const civitaiGalleryList = document.querySelector("#civitaiGalleryList");
 const reloadCivitaiButton = document.querySelector("#reloadCivitaiButton");
 const civitaiProfileLink = document.querySelector("#civitaiProfileLink");
+const civitaiGalleryState = {
+  scopeKey: "",
+  items: [],
+  nextPages: {},
+  showNewOnly: false,
+};
 
 // R2 & Filebase ファイル一覧 & タブ要素
 const storageTabR2 = document.querySelector("#storageTabR2");
@@ -1572,7 +1575,19 @@ async function checkCivitaiItemWf(item) {
   return false;
 }
 
-async function fetchAndRenderCivitaiGallery() {
+function civitaiRequestUrl(url) {
+  const requestUrl = new URL(url, window.location.origin);
+  requestUrl.searchParams.set("_t", String(Date.now()));
+  return requestUrl.toString();
+}
+
+function mergeCivitaiItems(existingItems, incomingItems) {
+  const byId = new Map(existingItems.map(item => [String(item.id), item]));
+  incomingItems.forEach(item => byId.set(String(item.id), item));
+  return [...byId.values()].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+async function fetchAndRenderCivitaiGallery({ loadMore = false, refresh = true } = {}) {
   if (!civitaiGalleryList) return;
 
 function createCivitaiStatsHtml(stats) {
@@ -1610,41 +1625,82 @@ function createCivitaiStatsHtml(stats) {
   const list = getCivitaiUserList();
   const username = getCurrentCivitaiUser() || "__ALL__";
   const isAll = (username === "__ALL__");
+  const scopeKey = `${isAll ? "all" : "user"}:${isAll ? list.join("|") : username}`;
 
   if (list.length === 0) {
+    civitaiGalleryState.items = [];
+    civitaiGalleryState.nextPages = {};
+    civitaiGalleryState.scopeKey = "";
+    if (civitaiNewOnlyBtn) civitaiNewOnlyBtn.style.display = "none";
+    if (civitaiLoadMoreBtn) civitaiLoadMoreBtn.style.display = "none";
     civitaiGalleryList.innerHTML = `<span class="item-meta" style="padding: 18px; color: var(--muted); text-align: center; display: block;">${escapeHtml(dict.civitaiEmptyDesc || "Civitai クリエイターが登録されていません。「＋」ボタンから気になるクリエイター名を追加してください。")}</span>`;
     return;
   }
 
-  const loadingMsg = isAll
-    ? (lang === "en" ? "Fetching newest posts from all creators..." : "登録クリエイター全員の新着を取得中...")
-    : `Civitai からメディアを取得中 (${escapeHtml(username)})...`;
-  civitaiGalleryList.innerHTML = `<span class="status-text" style="padding: 18px;">${escapeHtml(loadingMsg)}</span>`;
+  const hasCachedScope = civitaiGalleryState.scopeKey === scopeKey;
+  if (!loadMore && refresh) {
+    civitaiGalleryState.scopeKey = scopeKey;
+    civitaiGalleryState.items = [];
+    civitaiGalleryState.nextPages = {};
+    civitaiGalleryState.showNewOnly = false;
+  }
+  if (loadMore && !hasCachedScope) loadMore = false;
+
+  if (refresh || loadMore || !hasCachedScope) {
+    const loadingMsg = loadMore
+      ? (dict.civitaiLoadingMore || "過去の投稿を読み込み中…")
+      : (isAll
+        ? (lang === "en" ? "Fetching newest posts from all creators..." : "登録クリエイター全員の新着を取得中...")
+        : `Civitai からメディアを取得中 (${escapeHtml(username)})...`);
+    civitaiGalleryList.innerHTML = `<span class="status-text" style="padding: 18px;">${escapeHtml(loadingMsg)}</span>`;
+  }
 
   try {
-    let items = [];
-    if (isAll) {
-      const fetches = list.map(async (u) => {
+    if (refresh || loadMore || !hasCachedScope) {
+      if (isAll) {
+        const usersToFetch = loadMore
+          ? list.filter(u => civitaiGalleryState.nextPages[u])
+          : list;
+        const fetches = usersToFetch.map(async (u) => {
+          const pageUrl = loadMore
+            ? civitaiGalleryState.nextPages[u]
+            : `https://civitai.com/api/v1/images?username=${encodeURIComponent(u)}&limit=25&sort=Newest&browsingLevel=127&nsfw=true`;
+          if (!pageUrl) return [];
+          try {
+            const res = await fetch(civitaiRequestUrl(pageUrl));
+            if (!res.ok) return [];
+            const data = await res.json();
+            civitaiGalleryState.nextPages[u] = data.metadata?.nextPage || null;
+            return (data.items || []).map(it => ({ ...it, _creator: u }));
+          } catch (e) {
+            return [];
+          }
+        });
+        const results = await Promise.all(fetches);
+        civitaiGalleryState.items = mergeCivitaiItems(
+          loadMore ? civitaiGalleryState.items : [],
+          results.flat(),
+        );
+      } else {
         try {
-          const res = await fetch(`https://civitai.com/api/v1/images?username=${encodeURIComponent(u)}&limit=25&sort=Newest&browsingLevel=127&nsfw=true&_t=${Date.now()}`);
-          if (!res.ok) return [];
+          const pageUrl = loadMore
+            ? civitaiGalleryState.nextPages[username]
+            : `https://civitai.com/api/v1/images?username=${encodeURIComponent(username)}&limit=50&sort=Newest&browsingLevel=127&nsfw=true`;
+          if (!pageUrl) return;
+          const res = await fetch(civitaiRequestUrl(pageUrl));
+          if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
           const data = await res.json();
-          return (data.items || []).map(it => ({ ...it, _creator: u }));
-        } catch (e) {
-          return [];
+          civitaiGalleryState.nextPages[username] = data.metadata?.nextPage || null;
+          civitaiGalleryState.items = mergeCivitaiItems(
+            loadMore ? civitaiGalleryState.items : [],
+            (data.items || []).map(it => ({ ...it, _creator: username })),
+          );
+        } catch (err) {
+          throw err;
         }
-      });
-      const results = await Promise.all(fetches);
-      items = results.flat();
-      items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    } else {
-      const res = await fetch(`https://civitai.com/api/v1/images?username=${encodeURIComponent(username)}&limit=50&sort=Newest&browsingLevel=127&nsfw=true&_t=${Date.now()}`);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} ${res.statusText}`);
       }
-      const data = await res.json();
-      items = (data.items || []).map(it => ({ ...it, _creator: username }));
     }
+    const items = civitaiGalleryState.items;
 
     // 新着判定
     const lastSeenMap = getCivitaiLastSeenMap();
@@ -1689,16 +1745,38 @@ function createCivitaiStatsHtml(stats) {
             });
           }
           saveCivitaiLastSeenMap(lastSeenMap);
-          if (civitaiNewBadge) civitaiNewBadge.style.display = "none";
-          if (civitaiMarkReadBtn) civitaiMarkReadBtn.style.display = "none";
-          document.querySelectorAll(".civitai-new-item-badge").forEach(el => el.remove());
-          checkAllCivitaiCreatorsUnread();
+          civitaiGalleryState.showNewOnly = false;
+          fetchAndRenderCivitaiGallery({ refresh: false });
         };
       }
     } else {
       if (civitaiNewBadge) civitaiNewBadge.style.display = "none";
       if (civitaiMarkReadBtn) civitaiMarkReadBtn.style.display = "none";
     }
+
+    const hasMore = isAll
+      ? list.some(u => Boolean(civitaiGalleryState.nextPages[u]))
+      : Boolean(civitaiGalleryState.nextPages[username]);
+    if (civitaiNewOnlyBtn) {
+      civitaiNewOnlyBtn.style.display = newItemsCount > 0 ? "inline-flex" : "none";
+      civitaiNewOnlyBtn.textContent = civitaiGalleryState.showNewOnly
+        ? (dict.civitaiShowAll || "☷ すべて表示")
+        : (dict.civitaiNewOnly || "✨ 新着のみ");
+      civitaiNewOnlyBtn.onclick = () => {
+        civitaiGalleryState.showNewOnly = !civitaiGalleryState.showNewOnly;
+        fetchAndRenderCivitaiGallery({ refresh: false });
+      };
+    }
+    if (civitaiLoadMoreBtn) {
+      civitaiLoadMoreBtn.style.display = hasMore ? "inline-flex" : "none";
+      civitaiLoadMoreBtn.disabled = !hasMore;
+      civitaiLoadMoreBtn.textContent = dict.civitaiLoadMore || "↓ 過去の投稿をさらに読み込む";
+      civitaiLoadMoreBtn.onclick = () => fetchAndRenderCivitaiGallery({ loadMore: true });
+    }
+
+    const visibleItems = civitaiGalleryState.showNewOnly
+      ? items.filter(item => Number(item.id) > Number(lastSeenMap[item._creator || item.username || ""] || 0))
+      : items;
 
     civitaiPaletteFiles = items.map(item => {
       const isVideo = item.type === "video";
@@ -1716,12 +1794,15 @@ function createCivitaiStatsHtml(stats) {
 
     civitaiGalleryList.className = "result-list civitai-grid";
     civitaiGalleryList.innerHTML = "";
-    if (items.length === 0) {
-      civitaiGalleryList.innerHTML = `<span class="item-meta" style="padding: 18px; text-align: center;">Civitai に投稿されたメディアが見つかりませんでした。</span>`;
+    if (visibleItems.length === 0) {
+      const emptyText = civitaiGalleryState.showNewOnly
+        ? (dict.civitaiNoNewItems || "新着の投稿はありません。")
+        : (lang === "en" ? "No media posts found on Civitai." : "Civitai に投稿されたメディアが見つかりませんでした。");
+      civitaiGalleryList.innerHTML = `<span class="item-meta" style="padding: 18px; text-align: center;">${escapeHtml(emptyText)}</span>`;
       return;
     }
 
-    items.forEach(item => {
+    visibleItems.forEach(item => {
       const itemCreator = item._creator || item.username || "";
       const lastSeenId = Number(lastSeenMap[itemCreator] || 0);
       const isNewItem = (lastSeenId > 0 && Number(item.id) > lastSeenId);
@@ -7613,6 +7694,7 @@ function showCustomConfirm(message, title = "確認", okText = "OK", cancelText 
 
     titleEl.textContent = title;
     bodyEl.textContent = message;
+    bodyEl.style.whiteSpace = "pre-line";
     okBtn.textContent = okText;
     cancelBtn.textContent = cancelText;
     cancelBtn.style.display = "inline-flex";
@@ -8139,17 +8221,28 @@ copyCurlCmdBtn?.addEventListener("click", async () => {
 
   let curlCmd = `curl -X POST "${url.toString()}"`;
   curlCmd += ` \\\n  -H "Authorization: Bearer ${token}"`;
-  curlCmd += ` \\\n  -F "file=@/path/to/image.webp"`;
+  curlCmd += ` \\\n  -H "X-Upload-Filename: image.webp"`;
+  curlCmd += ` \\\n  -H "Content-Type: application/octet-stream"`;
+  curlCmd += ` \\\n  --data-binary "@/path/to/image.webp"`;
 
   await copyToClipboard(curlCmd, copyCurlCmdBtn, "💻 コピー完了!");
 });
 
-downloadSendToBatBtn?.addEventListener("click", () => {
+downloadSendToBatBtn?.addEventListener("click", async () => {
   const token = getUploadApiToken();
   if (!token) {
     alert("⚠️ 投稿専用 API トークンが未入力です。Worker の UPLOAD_TOKEN を入力してから登録してください。");
     return;
   }
+
+  const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
+  const confirmed = await showCustomConfirm(
+    dict.sendToSecurityConfirm || "この BAT ファイルには投稿専用トークンが平文で含まれます。共有しないでください。",
+    dict.sendToSecurityTitle || "🔐 個人専用バッチを生成しますか？",
+    dict.sendToSecurityProceed || "理解して生成",
+    dict.btnCancel || "キャンセル",
+  );
+  if (!confirmed) return;
 
   const endpoint = getDedicatedUploadEndpoint();
   const selectedDomain = getSelectedUploadReturnDomain();
@@ -8225,7 +8318,10 @@ foreach ($f in $files) {
         if ($token) {
             $curlArgs += @('-H', ('Authorization: Bearer ' + $token))
         }
-        $curlArgs += @('-F', ('file=@' + $f), $endpoint)
+        $fileName = [System.IO.Path]::GetFileName($f)
+        $curlArgs += @('-H', ('X-Upload-Filename: ' + $fileName))
+        $curlArgs += @('-H', 'Content-Type: application/octet-stream')
+        $curlArgs += @('--data-binary', ('@' + $f), $endpoint)
         
         try {
             $raw = & curl.exe @curlArgs

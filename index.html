@@ -3,21 +3,21 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Cividge</title>
-    <meta name="description" content="外部サーバを一切介さず、ブラウザ内完結で画像をセキュアに変換し、ご自身のCloudflare R2ストレージへS3 APIでダイレクト保存・配信できるローカルツール。">
+    <title>Civitai Bridge (Cividge)</title>
+    <meta name="description" content="Civitai Bridge（Cividge）は、ブラウザでメディアを変換し、自分の Cloudflare R2 または Filebase (IPFS) へ直接保存・配信する個人用アップローダです。">
     <link rel="icon" type="image/png" href="./icon-192.png">
     <link rel="apple-touch-icon" href="./icon-192.png">
 
     <!-- OGP (Open Graph / SNSシェア) -->
     <meta property="og:type" content="website">
-    <meta property="og:title" content="Cividge - ブラウザ完結変換 ＆ R2ダイレクト保存">
-    <meta property="og:description" content="外部サーバゼロ！ブラウザ内だけで画像をWebP/JXLに高圧縮し、ご自身のCloudflare R2ストレージへダイレクトにアップロード・管理。">
+    <meta property="og:title" content="Civitai Bridge (Cividge) — 個人用メディアアップローダ">
+    <meta property="og:description" content="ブラウザで変換し、自分の Cloudflare R2 または Filebase (IPFS) へ直接保存・配信。">
     <meta property="og:image" content="./icon-512.png">
 
     <!-- Twitter (X) Card -->
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="Cividge">
-    <meta name="twitter:description" content="ブラウザ内完結変換 ＆ Cloudflare R2 ダイレクト保存ツール。">
+    <meta name="twitter:title" content="Civitai Bridge (Cividge)">
+    <meta name="twitter:description" content="ブラウザで変換し、自分のストレージへ直接保存・配信する個人用アップローダ。">
     <meta name="twitter:image" content="./icon-512.png">
 
     <link rel="manifest" href="./manifest.json">
@@ -32,7 +32,7 @@
       <section class="workspace" aria-label="画像圧縮ツール">
         <header class="topbar">
           <div>
-            <p class="eyebrow" data-i18n="eyebrow">ブラウザ内のみで画像をセキュアに変換 ＆ R2にダイレクト保存!</p>
+            <p class="eyebrow" data-i18n="eyebrow">ブラウザで変換し、自分のストレージへ直接保存・配信</p>
             <h1 data-i18n="siteTitle">Cividge</h1>
           </div>
           <div class="topbar-actions" style="display: flex; gap: 8px; align-items: center;">
@@ -49,8 +49,8 @@
         <details class="settings-accordion site-about-accordion" style="margin-bottom: 20px;">
           <summary style="font-size: 13px; font-weight: 600; color: #c7d2fe; cursor: pointer;" data-i18n="whatIsSiteSummary">❓ どのようなサイト？</summary>
           <div class="settings-content" style="padding: 12px 16px; font-size: 13px; color: var(--text-muted); line-height: 1.6; background: rgba(99, 102, 241, 0.06); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; margin-top: 8px;" data-i18n="whatIsSiteBody" data-i18n-html="true">
-            外部サーバやWorkerを一切介さず、お使いのブラウザ内だけで画像をセキュアに変換し、ご自身の Cloudflare R2 ストレージ（S3互換）にダイレクト保存・配信できるローカル＆R2専用ツールです。<br>
-            <span style="display: inline-block; margin-top: 6px; font-size: 12px; color: #a5b4fc;">※接続情報は全てお使いのブラウザ内（localStorage）にのみセキュア保存されます。</span>
+            <strong>Civitai Bridge（Cividge）</strong>は、ブラウザ内でメディアを変換し、自分の Cloudflare R2 または Filebase（IPFS）へ保存・配信する個人用アップローダです。<br>
+            <span style="display: inline-block; margin-top: 6px; font-size: 12px; color: #a5b4fc;">必要に応じて KV Worker により別名 URL・期限・閲覧パスワードを管理でき、Kubo ノードは IPFS コンテンツの保全先として利用できます。</span>
           </div>
         </details>
 
@@ -482,12 +482,6 @@
                 </div>
               </details>
 
-              <div class="metadata-warning" style="border-color: rgba(99, 102, 241, 0.3); background: rgba(99, 102, 241, 0.08);">
-                <span class="warning-icon" style="color: #818cf8;">ℹ️</span>
-                <p data-i18n="r2Notice" data-i18n-html="true" style="color: #c7d2fe; font-size: 11px; line-height: 1.5; margin: 0;">
-                  ブラウザから S3 互換ストレージ（Cloudflare R2 / Filebase IPFS）へダイレクトに通信します（バックエンド不要）。事前にバケットの設定で CORS（Cross-Origin Resource Sharing）を許可してください。
-                </p>
-              </div>
             </div>
           </aside>
         </div>
@@ -599,6 +593,10 @@
             <button class="ghost-button" id="civitaiUserNewCancelBtn" type="button" style="padding: 0 12px; height: 32px; font-size: 12px;" data-i18n="btnCancel">キャンセル</button>
           </div>
           <div class="result-list" id="civitaiGalleryList" style="margin-top: 12px;"></div>
+          <div id="civitaiGalleryControls" style="display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
+            <button class="ghost-button" id="civitaiNewOnlyBtn" type="button" style="display: none;" data-i18n="civitaiNewOnly">✨ 新着のみ</button>
+            <button class="ghost-button" id="civitaiLoadMoreBtn" type="button" style="display: none;" data-i18n="civitaiLoadMore">↓ 過去の投稿をさらに読み込む</button>
+          </div>
         </section>
 
         <footer class="site-footer">

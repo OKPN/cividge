@@ -1,4 +1,4 @@
-# Cividge
+# Civitai Bridge (Cividge)
 
 **A data-sovereign uploader for ComfyUI and Civitai users.** Cividge is for creators who want to keep control of their media, URLs, and storage credentials while aiming to keep an origin alive for as long as practical with free-tier infrastructure.
 
