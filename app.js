@@ -679,7 +679,17 @@ function applyLanguage(lang) {
 
   updateR2Status();
   updateStorageUsageUI();
-  if (storageCachedContents.length > 0) renderCurrentStoragePage();
+  // 言語切替でも、件数0のオンボーディングを含めストレージ領域を必ず
+  // 現在の言語で再描画する。従来は一覧が1件以上の場合だけだったため、
+  // 未設定時の案内カードが切替後に古いDOMのまま残っていた。
+  const storageConfigured = activeStorageTab === "filebase"
+    ? isFilebaseConfigured()
+    : isR2Configured();
+  if (storageConfigured) {
+    renderCurrentStoragePage();
+  } else {
+    renderStorageOnboardingCard();
+  }
   loadTemplates(templateSelect ? templateSelect.value : "");
   render();
 }
