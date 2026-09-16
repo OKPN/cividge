@@ -616,6 +616,8 @@ const r2PerPageSelect = document.querySelector("#r2PerPageSelect");
 let storageCurrentPage = 1;
 let storagePerPage = parseInt(localStorage.getItem("storagePerPage") || "10", 10);
 let storageCachedContents = [];
+// タブ切替中に古い非同期一覧取得が完了して、新しいタブの表示を上書きしないための世代番号。
+let storageFetchGeneration = 0;
 const storageLimitRange = document.querySelector("#storageLimitRange");
 const storageLimitInput = document.querySelector("#storageLimitInput");
 const storageLimitOutput = document.querySelector("#storageLimitOutput");
@@ -2418,6 +2420,10 @@ let r2AutoFetchTimer = null;
 function saveR2SettingsAuto() {
   s3ClientR2 = null;
   s3ClientFilebase = null;
+  const saveOrRemove = (key, value) => {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  };
 
   let rawAccount = r2AccountId?.value?.trim() || "";
   // S3 API URL（https://<account_id>.r2.cloudflarestorage.com）が貼られた場合は自動抽出
@@ -2434,18 +2440,20 @@ function saveR2SettingsAuto() {
   const accessKeyId = r2AccessKeyId?.value?.trim() || "";
   const secretAccessKey = r2SecretAccessKey?.value?.trim() || "";
 
-  if (accountId) localStorage.setItem("r2AccountId", accountId);
-  if (bucketName) localStorage.setItem("r2BucketName", bucketName);
-  if (accessKeyId) localStorage.setItem("r2AccessKeyId", accessKeyId);
-  if (secretAccessKey) localStorage.setItem("r2SecretAccessKey", secretAccessKey);
+  // 入力を消した場合も以前の認証情報を残さない。表示上は未設定なのに
+  // 背景で古いR2バケットを読み続ける状態を防ぐ。
+  saveOrRemove("r2AccountId", accountId);
+  saveOrRemove("r2BucketName", bucketName);
+  saveOrRemove("r2AccessKeyId", accessKeyId);
+  saveOrRemove("r2SecretAccessKey", secretAccessKey);
 
   const fbBucket = filebaseBucket?.value?.trim() || "";
   const fbKeyId = filebaseApiKey?.value?.trim() || "";
   const fbSecret = filebaseSecretKey?.value?.trim() || "";
 
-  if (fbBucket) localStorage.setItem("filebaseBucket", fbBucket);
-  if (fbKeyId) localStorage.setItem("filebaseApiKey", fbKeyId);
-  if (fbSecret) localStorage.setItem("filebaseSecretKey", fbSecret);
+  saveOrRemove("filebaseBucket", fbBucket);
+  saveOrRemove("filebaseApiKey", fbKeyId);
+  saveOrRemove("filebaseSecretKey", fbSecret);
 
   const kUrl = kuboRpcUrl?.value?.trim() || "";
   if (kUrl) {
@@ -6047,17 +6055,24 @@ function renderStorageOnboardingCard() {
 
 async function fetchAndRenderR2Files() {
   if (!r2FileList) return;
+  const fetchGeneration = ++storageFetchGeneration;
+  const requestedProvider = activeStorageTab;
   updateStorageTabsUi();
 
   const lang = getAppLanguage();
   const dict = i18nDict[lang] || i18nDict.ja;
-  const isFilebase = activeStorageTab === "filebase";
-  const s3 = getS3Client(activeStorageTab);
-  const bucketName = getBucketName(activeStorageTab);
+  const isFilebase = requestedProvider === "filebase";
+  const s3 = getS3Client(requestedProvider);
+  const bucketName = getBucketName(requestedProvider);
   const providerLabel = isFilebase ? "Filebase (IPFS)" : "Cloudflare R2";
+  const isStorageConfigured = isFilebase ? isFilebaseConfigured() : isR2Configured();
 
-  // 🌟 ストレージ未設定の場合、案内＆簡単セットアップ用オンボーディングカードを描画
-  if (!s3 || !bucketName) {
+  // 🌟 ストレージ未設定の場合、案内＆簡単セットアップ用オンボーディングカードを描画。
+  // 認証情報だけ残っていて配信ドメインが未設定の場合も、一覧は出さない。
+  if (!isStorageConfigured || !s3 || !bucketName) {
+    storageCachedContents = [];
+    storageCurrentPage = 1;
+    updateStoragePaginationUI(0);
     renderStorageOnboardingCard();
     state.r2TotalSize = 0;
     updateStorageUsageUI();
@@ -6072,6 +6087,7 @@ async function fetchAndRenderR2Files() {
       MaxKeys: 1000,
     });
     const response = await s3.send(command);
+    if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     let contents = [];
     const baseDomain = (getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
 
@@ -6336,6 +6352,7 @@ async function fetchAndRenderR2Files() {
     }
 
     // 全件キャッシュとページネーションUI更新
+    if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     storageCachedContents = contents;
     renderCurrentStoragePage();
 
@@ -6347,6 +6364,7 @@ async function fetchAndRenderR2Files() {
       }
     }
   } catch (error) {
+    if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     console.error("Storage fetch error:", error);
     r2FileList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)}</span>`;
   }
