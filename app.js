@@ -4407,7 +4407,7 @@ function createCardActionHtml(file, result, index) {
   const civitaiStyle = civitaiOk
     ? "color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); font-size: 11px; padding: 0 8px; height: 28px;"
     : "opacity: 0.35; font-size: 11px; padding: 0 8px; height: 28px; cursor: not-allowed;";
-  let civitaiBtnTitle = "リネームを無視して変換・一時共有し、Civitaiの投稿画面を開く";
+  let civitaiBtnTitle = "リネームを無視して変換・5分間だけ一時保存し、Civitaiの投稿画面を開く";
   if (!upOk) civitaiBtnTitle = "ストレージ未接続のためCivitai連携不可";
   else if (!isCivitaiSupported) civitaiBtnTitle = "Civitai非対応フォーマット";
   else if (isProtected) civitaiBtnTitle = "パスワード保護中のファイルはCivitai連携不可";
