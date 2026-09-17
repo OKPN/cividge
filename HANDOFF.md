@@ -175,6 +175,40 @@ npx wrangler pages deploy dist --project-name=my-content-cache
 - `ADMIN_API_TOKEN` は `npx wrangler secret put ADMIN_API_TOKEN` で Worker の秘密情報として設定する。Git にコミットしない。
 - Admin API Token はブラウザから KV 台帳を管理する権限を持つ。共通 Worker と共通トークンを他人へ配布しない。共有サービス化するなら、別途ユーザー認証とテナント分離が必要。
 
+## 将来的な `ipfs-kv` の完全撤廃（廃止）に向けた壁とロードマップ
+
+将来的に旧名称 `ipfs-kv`（バインディング名 `IPFS_KV` および エンドポイント `/api/ipfs-kv`）を完全に削除・整理したい場合の技術的な壁・影響範囲および推奨手順。
+
+### 1. 完全撤廃における3つの「壁（ハードル）」
+* **壁①: 利用者各自の Cloudflare バインディング設定（最大の影響箇所）**
+  - **現状**: `wrangler.toml` には新旧両方を同一 Namespace で定義しているが、Cloudflare ダッシュボード上で手動設定を行っている場合、変数名が `IPFS_KV` のままの環境が存在しうる。
+  - **影響**: コードから `env.IPFS_KV` のフォールバックを削除すると、ダッシュボード側で `CIVIDGE_KV` をバインドしていない環境で「KV binding not configured (500)」が発生する。
+  - **対策**: コードから `env.IPFS_KV` を完全に消す前に、「Cloudflare 上で `CIVIDGE_KV` をバインドする」か「最新リポジトリから `wrangler deploy` を再実行する」よう周知・確認が必要。
+
+* **壁②: ブラウザの localStorage に残る旧接続先 URL**
+  - **現状**: 利用者ブラウザの `localStorage`（キー: `customKvWorkerUrl`）に、過去に保存された `https://<worker>/api/ipfs-kv` がそのまま残っているケースがある。
+  - **影響**: Worker および Pages から `/api/ipfs-kv` を削除すると、その端末の管理画面から KV 台帳 API が 404 となり通信エラーになる。
+  - **対策**: `app.js` の初期化時に `customUrl.replace(/\/api\/ipfs-kv\/?$/, "/api/cividge-kv")` と自動マイグレーションするコードを1行追加しておけば、利用者が意識することなく透過的に新エンドポイントへ移行完了する。
+
+* **壁③: 外部スクリプト・過去の直リンク**
+  - **現状**: Windows「送る（Send To）」バッチは `/api/upload` を叩くため影響を受けないが、curl や個人スクリプトで `/api/ipfs-kv` を直叩きしている連携がある場合。
+  - **影響**: エイリアス（re-export）を削除すると 404 になる。
+  - **対策**: 十分な周知期間を置く。
+
+### 2. 結論と推奨アプローチ
+* **技術的な壁は極めて低い（ほぼ無い）**:
+  - 現在のコードはすでに `CIVIDGE_KV` / `/api/cividge-kv` が主系統（本線）として動作しており、内部のロジックはほぼ移行完了している。
+* **エイリアス残存のコストはゼロ**:
+  - 現在残している `ipfs-kv.js` は単なる1行の re-export（`export * from "./cividge-kv.js";`）であり、`env.CIVIDGE_KV || env.IPFS_KV` もオーバーヘッドは皆無（数文字のフォールバック）。
+  - そのため、無理に完全撤廃を急ぐ実利（コードの数行削減）よりも、**「過去の環境や設定が絶対に壊れない」というメリットの方が運用上圧倒的に大きい**。
+* **完全削除を実施する場合のチェックリスト**:
+  1. `app.js` に `localStorage` の `/api/ipfs-kv` 自動書き換えコードを配備。
+  2. 利用者の Cloudflare ダッシュボードで `CIVIDGE_KV` バインディングが存在することを確認。
+  3. `functions/api/ipfs-kv.js` および `cividge-kv-worker/ipfs-kv.js` を削除。
+  4. 各種コードから `|| env.IPFS_KV` を削除し、`wrangler.toml` から `binding = "IPFS_KV"` を削除して再デプロイ。
+
+---
+
 ## 検証
 
 - `node --check app.js`
