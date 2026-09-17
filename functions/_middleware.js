@@ -399,20 +399,20 @@ async function cleanupExpiredAlias(env, request, key, expectedCid) {
   if (!env?.IPFS_KV || !key || !expectedCid) return;
 
   try {
-    const latest = await env.IPFS_KV.getWithMetadata(key);
+    const latest = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(key);
     const latestMeta = latest?.metadata || {};
     const latestExpiresAt = latestMeta.e ? latestMeta.e * 1000 : latestMeta.expiresAt;
     if (!latest?.value || latest.value !== expectedCid || !latestExpiresAt || Date.now() <= Number(latestExpiresAt)) return;
 
     if (latestMeta.blobKey) {
-      await env.IPFS_KV.delete(latestMeta.blobKey).catch(() => {});
+      await (env.CIVIDGE_KV || env.IPFS_KV).delete(latestMeta.blobKey).catch(() => {});
     }
-    await env.IPFS_KV.delete(key);
+    await (env.CIVIDGE_KV || env.IPFS_KV).delete(key);
 
     let cursor = undefined;
     let isCidShared = false;
     do {
-      const page = await env.IPFS_KV.list({ limit: 1000, ...(cursor ? { cursor } : {}) });
+      const page = await (env.CIVIDGE_KV || env.IPFS_KV).list({ limit: 1000, ...(cursor ? { cursor } : {}) });
       isCidShared = (page.keys || []).some((item) => {
         if (item.name.startsWith("tombstone_") || item.name.startsWith("blob_")) return false;
         return (item.metadata?.c || item.metadata?.cid) === expectedCid;
@@ -421,10 +421,10 @@ async function cleanupExpiredAlias(env, request, key, expectedCid) {
     } while (!isCidShared && cursor);
 
     if (!isCidShared) {
-      await env.IPFS_KV.put(`tombstone_${expectedCid}`, "1", { expirationTtl: 86400 * 30 }).catch(() => {});
+      await (env.CIVIDGE_KV || env.IPFS_KV).put(`tombstone_${expectedCid}`, "1", { expirationTtl: 86400 * 30 }).catch(() => {});
       const s3TargetKey = latestMeta.s3Key || latestMeta.s || (key.includes(":") ? key.split(":")[1] : key);
       if (s3TargetKey) {
-        await env.IPFS_KV.put(`tombstone_s3_${encodeURIComponent(s3TargetKey)}`, "1", { expirationTtl: 86400 * 30 }).catch(() => {});
+        await (env.CIVIDGE_KV || env.IPFS_KV).put(`tombstone_s3_${encodeURIComponent(s3TargetKey)}`, "1", { expirationTtl: 86400 * 30 }).catch(() => {});
       }
     }
   } catch (err) {
@@ -491,16 +491,16 @@ export async function onRequest(context) {
   let meta = {};
   let debugKvInfo = "none";
   let isDomainSpecific = false;
-  if (env && env.IPFS_KV) {
+  if (env && (env.CIVIDGE_KV || env.IPFS_KV)) {
     try {
       const currentHost = url.hostname.toLowerCase();
       // 1. カレントドメイン個別キー (例: "content-cache.pages.dev:filename") で優先照会
-      let kvRes = await env.IPFS_KV.getWithMetadata(`${currentHost}:${filename}`);
+      let kvRes = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(`${currentHost}:${filename}`);
       if (kvRes && kvRes.value) {
         debugKvInfo = `hit_current:${currentHost}:${filename}`;
       }
       if (!kvRes && filename !== rawFilename) {
-        kvRes = await env.IPFS_KV.getWithMetadata(`${currentHost}:${rawFilename}`);
+        kvRes = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(`${currentHost}:${rawFilename}`);
         if (kvRes && kvRes.value) {
           debugKvInfo = `hit_current_raw:${currentHost}:${rawFilename}`;
         }
@@ -508,14 +508,14 @@ export async function onRequest(context) {
       isDomainSpecific = Boolean(kvRes && kvRes.value);
       // 2. 見つからなければ従来のファイル名単体キーで照会
       if (!isDomainSpecific) {
-        let singleRes = await env.IPFS_KV.getWithMetadata(filename);
+        let singleRes = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(filename);
         if (singleRes && singleRes.value) {
           kvRes = singleRes;
           debugKvInfo = `hit_single:${filename}`;
         }
       }
       if ((!kvRes || !kvRes.value) && filename !== rawFilename) {
-        let singleRawRes = await env.IPFS_KV.getWithMetadata(rawFilename);
+        let singleRawRes = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(rawFilename);
         if (singleRawRes && singleRawRes.value) {
           kvRes = singleRawRes;
           debugKvInfo = `hit_single_raw:${rawFilename}`;
@@ -642,10 +642,10 @@ export async function onRequest(context) {
   }
 
   // 3. KV に実データ（blobKey または blob_<filename>）が直接格納されている場合は即時配信
-  if (env && env.IPFS_KV) {
+  if (env && (env.CIVIDGE_KV || env.IPFS_KV)) {
     try {
       const blobKey = meta.blobKey || ("blob_" + filename);
-      const directData = await env.IPFS_KV.get(blobKey, "arrayBuffer");
+      const directData = await (env.CIVIDGE_KV || env.IPFS_KV).get(blobKey, "arrayBuffer");
       if (directData) {
         const headers = new Headers();
         headers.set("Access-Control-Allow-Origin", "*");
@@ -750,7 +750,7 @@ export async function onRequest(context) {
 
 
   if (!upstreamResponse || !upstreamResponse.ok) {
-    const hasKv = Boolean(env && env.IPFS_KV);
+    const hasKv = Boolean(env && (env.CIVIDGE_KV || env.IPFS_KV));
     return renderNotFoundResponse(request, 60, `upstream_failed:hasKv=${hasKv}:kvInfo=${debugKvInfo}:cid=${targetCid}:cand=${candidates.join(",")}`);
   }
 

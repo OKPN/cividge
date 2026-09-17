@@ -114,7 +114,7 @@ const i18nDict = {
     kuboAutoPin: "Filebase容量解放時にKuboへ自動Pin留め",
     kuboGuideSummary: "推奨運用・外出先から接続する場合（任意）",
     kvApiEndpointLabel: "KV 台帳 API エンドポイント URL",
-    kvApiEndpointHelp: "※ 各自の Cloudflare Worker を指定可能。未入力時は自サイトの /api/ipfs-kv を試行します。",
+    kvApiEndpointHelp: "※ 各自の Cloudflare Worker を指定可能。未入力時は自サイトの /api/cividge-kv を試行します。",
     kvApiTokenLabel: "KV API トークン (API Token)",
     kvApiTokenHelp: "※ トークン未設定時は中央KVを汚さず、安全な IPFS CID 直リン（/i/CID/name）として動作します。",
     r2AccountLabel: "Account ID",
@@ -324,7 +324,7 @@ const i18nDict = {
     kuboGuideSummary: "Recommended operation and remote access (optional)",
     kuboGuideBody: "<p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">What does this do?</strong><br>It uses your PC or server as an IPFS node and pins a CID before Filebase releases capacity. As long as Kubo remains online and retains the pin, you preserve a copy of that CID. This is a preservation layer, not your only backup.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Minimum setup</strong><br>1. Install and start Kubo. 2. At home keep <code>http://127.0.0.1:5001</code>. 3. Enable automatic pinning only after <strong>🔌 Test connection</strong> succeeds. When Kubo is offline, Cividge safely pauses Filebase FIFO to avoid data loss.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Delivery and caching</strong><br>Cividge delivery URLs use edge caching, so cached visits reduce load on Filebase and IPFS nodes. Initial visits and cache misses still access an upstream. Kubo RPC is for pin operations; it does not by itself make Kubo the permanent first delivery origin.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Safe remote access</strong><br>Keep the API bound to <code>127.0.0.1:5001</code>; never expose it directly to the internet. For remote pinning, use an HTTPS endpoint available only inside your Tailnet, such as <strong>Tailscale Serve</strong>. Do not use <strong>0.0.0.0:5001</strong>, a public reverse proxy, or router port forwarding.</p>",
     kvApiEndpointLabel: "KV registry API endpoint URL",
-    kvApiEndpointHelp: "You can specify your own Cloudflare Worker. When blank, Cividge tries this site's /api/ipfs-kv.",
+    kvApiEndpointHelp: "You can specify your own Cloudflare Worker. When blank, Cividge tries this site's /api/cividge-kv.",
     kvApiTokenLabel: "KV API token",
     kvApiTokenHelp: "Without a token, it avoids writing to the shared KV and uses a safe direct IPFS CID link (/i/CID/name).",
     r2AccountLabel: "Account ID",
@@ -903,7 +903,10 @@ function getCustomKvWorkerUrl() {
 function getKvApiEndpoint() {
   const customUrl = getCustomKvWorkerUrl();
   if (customUrl) {
-    return customUrl.endsWith("/api/ipfs-kv") ? customUrl : `${customUrl}/api/ipfs-kv`;
+    if (customUrl.endsWith("/api/cividge-kv") || customUrl.endsWith("/api/ipfs-kv")) {
+      return customUrl;
+    }
+    return `${customUrl}/api/cividge-kv`;
   }
   return "";
 }
@@ -916,8 +919,8 @@ function getKvDeliveryBaseDomain() {
   }
   const customUrl = getCustomKvWorkerUrl();
   if (customUrl) {
-    // 末尾の /api/ipfs-kv があれば除去して配信オリジンを取得
-    return customUrl.replace(/\/api\/ipfs-kv\/?$/, "");
+    // 末尾の /api/cividge-kv または /api/ipfs-kv があれば除去して配信オリジンを取得
+    return customUrl.replace(/\/api\/(cividge-kv|ipfs-kv)\/?$/, "");
   }
   return (typeof window !== "undefined" ? window.location.origin : "").replace(/\/$/, "");
 }
@@ -6208,7 +6211,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
       if (obKvStatus) obKvStatus.textContent = "⚠️ Worker URL と Admin API Token を入力してください。";
       return;
     }
-    const apiEndpoint = kvUrl.endsWith("/api/ipfs-kv") ? kvUrl : `${kvUrl}/api/ipfs-kv`;
+    const apiEndpoint = (kvUrl.endsWith("/api/cividge-kv") || kvUrl.endsWith("/api/ipfs-kv")) ? kvUrl : `${kvUrl}/api/cividge-kv`;
     const originalText = obKvConnectBtn.textContent;
     obKvConnectBtn.disabled = true;
     obKvConnectBtn.textContent = "🔄 KV 接続を確認中...";
@@ -6222,7 +6225,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
       // 初回は同じ Worker をそのまま配信エッジとして利用できる。
       // 利用者が既に選んだ独自ドメインがある場合は上書きしない。
       if (!getSelectedR2Domain()) {
-        const workerDeliveryDomain = kvUrl.replace(/\/api\/ipfs-kv\/?$/, "");
+        const workerDeliveryDomain = kvUrl.replace(/\/api\/(cividge-kv|ipfs-kv)\/?$/, "");
         const domains = getR2DomainList();
         if (!domains.includes(workerDeliveryDomain)) {
           domains.push(workerDeliveryDomain);
@@ -8545,7 +8548,7 @@ const downloadSendToBatBtn = document.querySelector("#downloadSendToBatBtn");
 function getDedicatedUploadEndpoint() {
   const customWorkerUrl = getCustomKvWorkerUrl();
   if (!customWorkerUrl) return "";
-  const baseDomain = customWorkerUrl.replace(/\/api\/ipfs-kv\/?$/, "").replace(/\/$/, "");
+  const baseDomain = customWorkerUrl.replace(/\/api\/(cividge-kv|ipfs-kv)\/?$/, "").replace(/\/$/, "");
   return `${baseDomain}/api/upload`;
 }
 
