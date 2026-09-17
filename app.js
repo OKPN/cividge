@@ -1083,6 +1083,54 @@ function clearCivitaiTemporaryTransfer(provider, key) {
 }
 const { checkKuboOnline, checkKuboPinned, pinToKubo, getKuboPinnedCids, unpinFromKubo } = createKuboClient(getKuboRpcEndpoint);
 
+// 🏠 Kubo Pin 同期タスク追跡 & せっかち防止（離脱・リロードガード）
+const activeKuboPins = new Set();
+
+window.addEventListener("beforeunload", (e) => {
+  if (activeKuboPins.size > 0) {
+    e.preventDefault();
+    e.returnValue = "🏠 Kubo への Pin 同期処理が実行中です。ページを離れる・更新すると同期や台帳反映が中断される可能性があります。";
+    return e.returnValue;
+  }
+});
+
+// 🏠 Kubo 実態と KV 台帳の自己修復（Auto-Heal / Reconciliation）
+// せっかちなリロードやブラウザ終了で KV 更新が取り残された場合でも、Kubo 側の実体 Pin に合わせて KV 台帳を非同期自動修復
+async function healKuboPinnedKvRecords(itemsToHeal) {
+  if (!itemsToHeal || itemsToHeal.length === 0 || !hasAdminAccess()) return;
+  for (const item of itemsToHeal) {
+    try {
+      const key = item.rawKey || item.Key;
+      const cid = item.cid || getStoredIpfsCid(key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null);
+      if (!key || !cid) continue;
+      const meta = item.metadata || {};
+      console.log(`🏠 [Auto-Heal] Kubo実態に合わせてKVレコードを修復更新: ${key} (${cid}) -> pinned`);
+      await registerKvCid(
+        key,
+        cid,
+        item.Size || meta.size || 0,
+        meta.mime || "",
+        item.s3Key || meta.s3Key || key,
+        item.password || meta.password || "",
+        null,
+        item.ttl || meta.ttl || 0,
+        item.expiresAt || meta.expiresAt || null,
+        Boolean(meta.unpinned || !item.isFromS3),
+        "pinned",
+        meta.allowedHost || null,
+        false,
+        meta.thumbnailKey || null,
+        meta.width || null,
+        meta.height || null,
+        item.civitaiTemporary
+      );
+      if (item.metadata) item.metadata.kuboStatus = "pinned";
+    } catch (e) {
+      console.warn(`🏠 [Auto-Heal] 自己修復に失敗: ${item.Key}`, e);
+    }
+  }
+}
+
 // 🪦 墓標（Unpin予約キュー）の回収処理
 async function drainKuboTombstones() {
   if (!hasAdminAccess()) return; // KV台帳連携がない場合は墓標キューの回収を行わない
@@ -5119,6 +5167,7 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
 
               // KuboがオンラインならPin試行
               if (isKuboAvailable && kuboStatus !== "pinned") {
+                activeKuboPins.add(kvData.cid);
                 try {
                   const pinRes = await pinToKubo(kvData.cid);
                   if (pinRes.success) {
@@ -5129,6 +5178,8 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
                   }
                 } catch (pErr) {
                   console.warn(`🏠 Kubo Pin通信エラー:`, pErr);
+                } finally {
+                  activeKuboPins.delete(kvData.cid);
                 }
               }
 
@@ -6467,7 +6518,7 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       isKuboOnline = checkRes.online;
       if (isKuboOnline) {
         // 🏠 Kubo がオンラインの場合、現在の実際の Pin リストを取得して KV 側の誤認（Pin されていないのに保持中表示）を訂正
-        actualKuboPinnedSet = await getKuboPinnedCids(1500);
+        actualKuboPinnedSet = await getKuboPinnedCids(2500);
       }
     }
 
@@ -6480,6 +6531,7 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
 
     // 🔗 同一 CID 状態統合（CID State Unification） & 実体 Kubo 状態同期:
     // IPFSでは同一CID＝同一実体。同じCIDを持つ別名ファイル同士で Filebase保持状態・Kubo保持状態を完全同期
+    const itemsToAutoHeal = [];
     if (isFilebase && contents.length > 0) {
       const cidStatusMap = new Map();
       for (const item of contents) {
@@ -6489,8 +6541,13 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
         // Kuboがオンラインかつ実Pinリストが取得できている場合、実際のKubo実態を優先
         if (actualKuboPinnedSet) {
           const reallyPinnedOnKubo = actualKuboPinnedSet.has(c);
+          const currentMetaStatus = item.metadata?.kuboStatus;
           if (item.metadata) {
             item.metadata.kuboStatus = reallyPinnedOnKubo ? "pinned" : "not_pinned";
+          }
+          // 🚑 自己修復判定: Kubo上にPinが存在するのに、KV台帳が pinned になっていないレコードを修復キューに登録
+          if (reallyPinnedOnKubo && currentMetaStatus !== "pinned") {
+            itemsToAutoHeal.push(item);
           }
         }
 
@@ -6515,6 +6572,18 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     storageCachedContents = contents;
     renderCurrentStoragePage();
+
+    // 🚑 Kubo実態とKV台帳の自己修復（Auto-Heal）を実行（非同期・画面描画ブロックなし）
+    if (itemsToAutoHeal.length > 0) {
+      const seenKeys = new Set();
+      const uniqueItemsToHeal = itemsToAutoHeal.filter(item => {
+        const k = item.rawKey || item.Key;
+        if (!k || seenKeys.has(k)) return false;
+        seenKeys.add(k);
+        return true;
+      });
+      healKuboPinnedKvRecords(uniqueItemsToHeal);
+    }
 
     // 🪐 IPFS ガベージコレクション検知: S3から削除済み（残留中）のファイルがIPFS上から消失していたら自動でKVから掃除
     if (isFilebase) {
@@ -7402,6 +7471,7 @@ r2FileList?.addEventListener("click", async (e) => {
     }
 
     try {
+      activeKuboPins.add(cid);
       const pinRes = await pinToKubo(cid);
       if (pinRes.success) {
         target.textContent = "同期中...";
@@ -7409,44 +7479,59 @@ r2FileList?.addEventListener("click", async (e) => {
 
         // バックグラウンドで完了をポーリング検知
         const pollInterval = setInterval(async () => {
-          const isPinned = await checkKuboPinned(cid, 1000);
-          if (isPinned) {
-            clearInterval(pollInterval);
-            console.log(`🏠 Kubo P2P同期完了を検知: ${key}`);
-            const kvData = await fetchKvRecord(key);
-            if (kvData) {
-              const meta = kvData.metadata || {};
-              await registerKvCid(
-                key,
-                cid,
-                meta.size || 0,
-                meta.mime || "",
-                meta.s3Key || key,
-                "",
-                null,
-                meta.ttl || 0,
-                meta.expiresAt || null,
-                Boolean(meta.unpinned),
-                "pinned"
-              );
+          try {
+            const isPinned = await checkKuboPinned(cid, 1000);
+            if (isPinned) {
+              clearInterval(pollInterval);
+              activeKuboPins.delete(cid);
+              console.log(`🏠 Kubo P2P同期完了を検知: ${key}`);
+              const kvData = await fetchKvRecord(key);
+              if (kvData) {
+                const meta = kvData.metadata || {};
+                await registerKvCid(
+                  key,
+                  cid,
+                  meta.size || 0,
+                  meta.mime || "",
+                  meta.s3Key || key,
+                  "",
+                  null,
+                  meta.ttl || 0,
+                  meta.expiresAt || null,
+                  Boolean(meta.unpinned),
+                  "pinned"
+                );
+              }
+              await fetchAndRenderR2Files();
             }
-            await fetchAndRenderR2Files();
+          } catch (pErr) {
+            console.warn(`Kubo poll error for ${cid}:`, pErr);
           }
         }, 3000);
 
-        // 3分経過したら定期ポーリング停止（次回リロード時等に再判定）
-        setTimeout(() => clearInterval(pollInterval), 180000);
+        // 3分経過したら定期ポーリング停止（タイムアウト時もガード解除＆UI復元）
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          activeKuboPins.delete(cid);
+          if (target && target.textContent === "同期中...") {
+            target.disabled = false;
+            target.textContent = origText;
+            target.title = "同期に時間がかかっています。後ほど一覧を更新してください";
+          }
+        }, 180000);
 
         await showCustomAlert(
-          `自宅 Kubo ノードへ P2P Pin留め要求を送信しました！\n\nKuboがバックグラウンドで世界中のIPFSノードからブロックを取得・同期しています。\n完了すると自動的に『🏠 Kubo: 保持中』へ変わります。`,
+          `自宅 Kubo ノードへ P2P Pin留め要求を送信しました！\n\nKuboがバックグラウンドで世界中のIPFSノードからブロックを取得・同期しています。\n完了すると自動的に『🏠 Kubo: 保持中』へ変わります。\n\n※ P2P同期中はページを更新（リロード）せずそのままお待ちください。`,
           "📡 P2P 同期開始"
         );
       } else {
+        activeKuboPins.delete(cid);
         await showCustomAlert(`Kubo Pin要求に失敗しました: ${pinRes.error}`, "❌ エラー");
         target.disabled = false;
         target.textContent = origText;
       }
     } catch (err) {
+      activeKuboPins.delete(cid);
       await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
       target.disabled = false;
       target.textContent = origText;
@@ -7490,9 +7575,14 @@ r2FileList?.addEventListener("click", async (e) => {
       if (currentKuboStatus !== "pinned" && isKuboAutoPin && cid) {
         const kuboCheck = await checkKuboOnline(1500);
         if (kuboCheck.online) {
-          const pinRes = await pinToKubo(cid);
-          if (pinRes.success) {
-            currentKuboStatus = "pinned";
+          activeKuboPins.add(cid);
+          try {
+            const pinRes = await pinToKubo(cid);
+            if (pinRes.success) {
+              currentKuboStatus = "pinned";
+            }
+          } finally {
+            activeKuboPins.delete(cid);
           }
         }
       }
