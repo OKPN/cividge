@@ -5160,11 +5160,12 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
     let currentTotalBytes = contents.reduce((acc, cur) => acc + (cur.Size || 0), 0);
 
     // 🛡️ バッファ安全設計: 新規ファイルを足しても上限の 85% 未満なら解放不要（750MB以上のバッファを常時担保）
+    // （※ 容量に余裕がある平常時は Kubo 疎通チェックを行わず即座に完了する）
     if (currentTotalBytes + requiredBytes <= limitBytes * 0.85) {
       return;
     }
 
-    // 🏠 Kubo 自動ピン留め設定の確認（外出先・Kuboオフライン時はファイル消失防止のためFIFO削除を安全にスキップ）
+    // 🏠 Kubo 自動ピン留め設定の確認（外出先・Kuboオフライン時はファイル消失防止のため安全に中断）
     const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
     let isKuboAvailable = false;
     if (isKuboAutoPin) {
@@ -5172,6 +5173,13 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
       isKuboAvailable = kuboCheck.online;
       if (!isKuboAvailable) {
         console.warn("⚠️ 自宅 Kubo がオフラインのため、Filebase FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
+        if (requiredBytes > 0) {
+          const isEn = getAppLanguage() === "en";
+          const errMsg = isEn
+            ? "Filebase storage limit (85%) reached. Upload paused because local Kubo node is unreachable (prevents existing file loss). Please connect to Tailscale or start Kubo."
+            : "Filebaseの容量上限（85%）に達しています。自宅Kuboノードへの接続が確認できないため、過去ファイルの消失を防ぐためにアップロードを中断しました。Tailscale接続またはKubo起動をご確認ください。";
+          throw new Error(errMsg);
+        }
         return;
       }
       console.log("🏠 自宅 Kubo ノード検出: アンピン対象ファイルをローカルKuboへ救出Pin開始");
@@ -5186,26 +5194,89 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
       return true;
     }).sort((a, b) => new Date(a.LastModified || 0) - new Date(b.LastModified || 0));
 
-    const filesToUnpin = [];
+    const candidates = [];
     let freedBytes = 0;
+    let simulatedTotal = currentTotalBytes;
 
     for (const file of eligibleFiles) {
-      filesToUnpin.push(file.Key);
+      candidates.push(file.Key);
       freedBytes += (file.Size || 0);
-      currentTotalBytes -= (file.Size || 0);
+      simulatedTotal -= (file.Size || 0);
 
       // OGP 用サムネイルは親動画と同じ実体ライフサイクル。単独で FIFO 回収しない。
       const thumbnailKey = getVideoThumbnailKey(file.Key);
       const thumbnail = thumbnailKey ? contents.find(item => item.Key === thumbnailKey) : null;
       if (thumbnail) {
-        filesToUnpin.push(thumbnail.Key);
+        candidates.push(thumbnail.Key);
         freedBytes += (thumbnail.Size || 0);
-        currentTotalBytes -= (thumbnail.Size || 0);
+        simulatedTotal -= (thumbnail.Size || 0);
       }
 
       // 十分な空き容量（上限の70%以下までゆったり解放し、次回の連続アップロード用バッファを確保）
-      if (currentTotalBytes + requiredBytes <= limitBytes * 0.70) {
+      if (simulatedTotal + requiredBytes <= limitBytes * 0.70) {
         break;
+      }
+    }
+
+    if (candidates.length === 0) return;
+
+    // 🛡️ 安全実行順序:
+    // 1. Kubo自動Pin有効時: Filebaseから削除する「前」に、まずKuboへPin留めを成功させる！
+    // 2. Pin成功確認後（またはKubo無効時）にのみ、Filebase S3 DeleteObject を実行する！
+    const filesToUnpin = [];
+    const kvUpdates = [];
+
+    for (const targetKey of candidates) {
+      let cid = null;
+      let meta = {};
+      let kuboStatus = "not_pinned";
+
+      try {
+        const kvData = await fetchKvRecord(targetKey);
+        if (kvData && kvData.found) {
+          cid = kvData.cid || null;
+          meta = kvData.metadata || {};
+          kuboStatus = meta.kuboStatus || "not_pinned";
+        }
+      } catch (kvErr) {
+        console.warn(`KV record lookup failed for ${targetKey}:`, kvErr);
+      }
+
+      if (!cid) {
+        cid = getStoredIpfsCid(targetKey);
+      }
+
+      const isThumb = isGeneratedVideoThumbnailKey(targetKey);
+
+      // Kuboへ事前にPin留め（サムネイル以外かつ未Pinの場合）
+      if (isKuboAvailable && isKuboAutoPin && cid && !isThumb && kuboStatus !== "pinned") {
+        activeKuboPins.add(cid);
+        try {
+          const pinRes = await pinToKubo(cid);
+          if (pinRes.success) {
+            kuboStatus = "pinned";
+            console.log(`🏠 Kubo 事前救出Pin成功: ${targetKey} (${cid})`);
+          } else {
+            console.warn(`🏠 Kubo Pin失敗: ${targetKey}:`, pinRes.error);
+            if (requiredBytes > 0) {
+              throw new Error(`自宅KuboへのPin退避に失敗したため、ファイル消失を防ぐためアンピンを中断しました: ${targetKey} (${pinRes.error})`);
+            }
+            continue; // 一覧自動チェック時はこのファイルをスキップして保護
+          }
+        } catch (pErr) {
+          console.warn(`🏠 Kubo Pin通信エラー:`, pErr);
+          if (requiredBytes > 0) {
+            throw new Error(`自宅KuboへのPin通信エラーのためアンピンを中断しました: ${targetKey} (${pErr.message})`);
+          }
+          continue;
+        } finally {
+          activeKuboPins.delete(cid);
+        }
+      }
+
+      filesToUnpin.push(targetKey);
+      if (cid) {
+        kvUpdates.push({ key: targetKey, cid, meta, kuboStatus });
       }
     }
 
@@ -5223,54 +5294,32 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
         }));
       }
 
-      // KV 側のメタデータを unpinned: true に更新（7日間キャッシュ & マルチゲートウェイ配信へ切り替え）
-      for (const unpinnedKey of filesToUnpin) {
+      // KV 側のメタデータを unpinned: true に更新（マルチゲートウェイ配信へ切り替え）
+      for (const update of kvUpdates) {
         try {
-          const kvData = await fetchKvRecord(unpinnedKey);
-          if (kvData) {
-            if (kvData.found && kvData.cid) {
-              let kuboStatus = kvData.metadata?.kuboStatus || "not_pinned";
-
-              // KuboがオンラインならPin試行
-              if (isKuboAvailable && kuboStatus !== "pinned") {
-                activeKuboPins.add(kvData.cid);
-                try {
-                  const pinRes = await pinToKubo(kvData.cid);
-                  if (pinRes.success) {
-                    kuboStatus = "pinned";
-                    console.log(`🏠 Kubo Pin成功: ${unpinnedKey} (${kvData.cid})`);
-                  } else {
-                    console.warn(`🏠 Kubo Pin失敗: ${unpinnedKey}:`, pinRes.error);
-                  }
-                } catch (pErr) {
-                  console.warn(`🏠 Kubo Pin通信エラー:`, pErr);
-                } finally {
-                  activeKuboPins.delete(kvData.cid);
-                }
-              }
-
-              await registerKvCid(
-                unpinnedKey,
-                kvData.cid,
-                kvData.metadata?.size || 0,
-                kvData.metadata?.mime || "",
-                kvData.metadata?.s3Key || unpinnedKey,
-                "", // パスワードは既存のものがKV側で維持されるか、必要に応じて保持
-                null,
-                kvData.metadata?.ttl || 0,
-                kvData.metadata?.expiresAt || null,
-                true, // unpinned: true
-                kuboStatus
-              );
-            }
-          }
+          await registerKvCid(
+            update.key,
+            update.cid,
+            update.meta?.size || 0,
+            update.meta?.mime || "",
+            update.meta?.s3Key || update.key,
+            "",
+            null,
+            update.meta?.ttl || 0,
+            update.meta?.expiresAt || null,
+            true, // unpinned: true
+            update.kuboStatus
+          );
         } catch (kvErr) {
-          console.warn(`Failed to update unpinned status in KV for ${unpinnedKey}:`, kvErr);
+          console.warn(`Failed to update unpinned status in KV for ${update.key}:`, kvErr);
         }
       }
     }
   } catch (err) {
     console.warn("Filebase FIFO ensureStorageCapacity error:", err);
+    if (requiredBytes > 0) {
+      throw err;
+    }
   }
 }
 
@@ -5694,7 +5743,10 @@ async function handleBatchUpload(targetProvider) {
     for (let i = 0; i < targets.length; i++) {
       const result = targets[i];
       if (statusText) statusText.textContent = `${providerLabel} アップロード中 (${i + 1}/${targets.length})`;
-      await uploadImage(result, targetProvider);
+      const uploadSuccess = await uploadImage(result, targetProvider);
+      if (!uploadSuccess) {
+        break;
+      }
       if (progressBar) progressBar.value = Math.round(((i + 1) / targets.length) * 100);
     }
     if (statusText) {
@@ -6552,7 +6604,11 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       const limitBytes = limitMb * 1024 * 1024;
       const currentOriginBytes = contents.filter(c => c.isFromS3).reduce((acc, cur) => acc + (cur.Size || 0), 0);
       if (currentOriginBytes > limitBytes) {
-        await ensureStorageCapacityFilebase(s3, bucketName, 0);
+        try {
+          await ensureStorageCapacityFilebase(s3, bucketName, 0);
+        } catch (fifoErr) {
+          console.debug("Passive FIFO check skipped:", fifoErr);
+        }
       }
     }
 
