@@ -254,3 +254,24 @@ npx wrangler pages deploy dist --project-name=my-content-cache
 3. **KuboフォールバックがOFFの場合の扱い**:
    - ユーザーが意図して「Kubo自動Pin」チェックをOFFにしている場合は、Kubo疎通NGであっても通常のFilebase FIFO（古いファイル削除）を実行してアップロードを継続する。
 
+---
+
+## 🐛 [バグ修正] CID遅延解決時の未定義変数による配信ドメイン意図しない上書きバグの根絶
+
+### 1. 現象と再現条件
+- **現象**: 動画ファイル等の期限切れ削除や一覧の再描画が行われた際、全く無関係のファイル（例: `https://testunko.pages.dev/x7hjsnoh.webp`）の配信アドレスが、画面上部で現在選択されている初期アップロードアドレス（`content-relay.pages.dev`）に勝手に書き換わってしまう。
+- **根本原因**:
+  1. `renderCurrentStoragePage` 内で、CID未解決アイテムをバックグラウンドで解決する処理（`app.js:7052`）において、存在しない未定義変数 `fileInitialDomain` を参照していた（`fileInitialDomain || baseDomain`）。
+  2. 変数が `undefined` のため、常にフォールバックの `baseDomain`（現在プルダウンで選択されている初期アップロードアドレス）が採用された。
+  3. その結果、カードのDOM上のURLが書き換わっただけでなく、`registerKvCid` によって中央KV台帳の `allowedHost` まで現在の初期アドレスで上書き保存されてしまっていた。
+  4. 動画ファイル等が期限切れで削除された瞬間に一覧の再描画が走り、画面上にあった未キャッシュCIDファイルに対してこの非同期処理が直撃することで、無関係なファイルのドメインが書き換わる怪奇現象として観測された。
+
+### 2. 修正内容
+1. **カード固有ドメインの完全維持**:
+   - バックグラウンド解決時の公開URL生成を、カード固有の固定ドメイン（`fileDomain` / `rawAllowedHost`）を優先して解決するように修正。
+2. **中央KVの既存ドメイン死守**:
+   - `registerKvCid` に渡すホスト名を `preserveAllowedHost = rawAllowedHost || keyHost || fileDomain` とし、既存の配信ドメイン（`testunko.pages.dev` 等）を厳格に保持。初期アドレスで上書きされる脆弱性を根絶。
+3. **新DOMレイアウトへの追従**:
+   - CID動的挿入処理を、最新のレスポンシブレイアウト（`.item-cid-group` / `.item-details-row2`）に正しくマウントするよう最適化。
+
+

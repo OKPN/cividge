@@ -7074,8 +7074,9 @@ function renderCurrentStoragePage() {
               item.cid = resolvedCid;
               article.dataset.cid = resolvedCid;
 
-              // CID解決後も公開URLは配信ドメイン + ファイル名を維持する。
-              const newPublicUrl = getPublicDeliveryUrl(item.Key, "filebase", fileInitialDomain || baseDomain);
+              // CID解決後も公開URLはカード固有の固定配信ドメインを確実に維持する。
+              const targetDomain = fileDomain || (rawAllowedHost ? (rawAllowedHost.startsWith("http") ? rawAllowedHost : `https://${rawAllowedHost}`) : baseDomain);
+              const newPublicUrl = getPublicDeliveryUrl(item.Key, "filebase", targetDomain);
 
               const thumbImg = article.querySelector("img.thumb");
               if (thumbImg) thumbImg.src = newPublicUrl;
@@ -7089,27 +7090,43 @@ function renderCurrentStoragePage() {
                 domainBtn.title = `クリックして配信URLをコピー: ${newPublicUrl}`;
               }
 
-              // CID バッジを動的挿入
-              const nameRow = article.querySelector(".item-name-row");
-              if (nameRow && !article.querySelector(".copy-cid-btn")) {
+              // CID バッジを動的挿入（新レイアウト item-cid-group / item-details-row2 に対応）
+              if (!article.querySelector(".copy-cid-btn")) {
                 const shortCid = resolvedCid.length > 12 ? `${resolvedCid.slice(0, 6)}...${resolvedCid.slice(-4)}` : resolvedCid;
                 const badgeWrap = document.createElement("div");
+                badgeWrap.className = "item-cid-group";
                 badgeWrap.style.cssText = "display: inline-flex; align-items: center; gap: 3px;";
                 badgeWrap.innerHTML = `
                   <button type="button" class="copy-cid-btn" data-cid="${escapeHtml(resolvedCid)}" style="cursor: pointer; font-size: 10px; font-family: monospace; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="IPFS CID: ${escapeHtml(resolvedCid)} (クリックでコピー)">📦 ${escapeHtml(shortCid)} 📋</button>
                   <a href="https://cid.contact/cid/${encodeURIComponent(resolvedCid)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;" title="CID.contact でノード確認">🌐 ノード確認 ↗</a>
                 `;
-                const itemNameElem = nameRow.querySelector(".item-name");
-                if (itemNameElem && itemNameElem.nextSibling) {
-                  nameRow.insertBefore(badgeWrap, itemNameElem.nextSibling);
+                const row2 = article.querySelector(".item-details-row2");
+                if (row2) {
+                  row2.appendChild(badgeWrap);
                 } else {
-                  nameRow.appendChild(badgeWrap);
+                  const nameRow = article.querySelector(".item-name-group") || article.querySelector(".item-name-row");
+                  if (nameRow) nameRow.appendChild(badgeWrap);
                 }
               }
 
-              // 中央KVにもバックグラウンドで CID を登録・修復（既存レコードがある場合のみ更新）
+              // 中央KVにもバックグラウンドで CID を登録・修復（既存ドメインを絶対に初期アドレスで上書きしない）
               if (hasAdminAccess() && item.rawKey) {
-                registerKvCid(itemKey, resolvedCid, Number(item.Size || 0), item.metadata?.mime || "", s3TargetKey, item.password || "", null, item.ttl || 0, item.expiresAt || null, false, null, fileInitialDomain || baseDomain);
+                const preserveAllowedHost = rawAllowedHost || (itemKey.indexOf(":") > 0 ? itemKey.split(":")[0] : null) || targetDomain;
+                registerKvCid(
+                  itemKey,
+                  resolvedCid,
+                  Number(item.Size || 0),
+                  item.metadata?.mime || "",
+                  s3TargetKey,
+                  item.password || "",
+                  null,
+                  item.ttl || 0,
+                  item.expiresAt || null,
+                  false,
+                  item.metadata?.kuboStatus || null,
+                  preserveAllowedHost,
+                  false
+                );
               }
             }
           }
