@@ -5702,6 +5702,7 @@ function getStorageListLabels() {
       all: "全", items: "件", updated: "更新日:", expires: "期限切れ", remaining: "残り",
       day: "日", hour: "時間", protected: "パスワード保護", passphrase: "合言葉:",
       filebaseStored: "☁️ Filebase: 保持中", filebaseRemoved: "☁️ Filebase: 未保持",
+      filebaseRemovedTooltip: "Filebase実体は削除（アンピン）済みです。再保管するには元ファイルを再アップロードしてください",
       kuboOff: "🏠 Kubo: 未設定", kuboStored: "🏠 Kubo: 保持中", kuboMissing: "🏠 Kubo: 未保持",
       ipfsDrifting: "🌊 IPFS: 漂流中", delete: "削除", rename: "ファイル名を変更",
       nodeCheck: "🌐 ノード確認 ↗", workflow: "🧬 ワークフローあり", connectionError: "通信エラー:",
@@ -5712,6 +5713,7 @@ function getStorageListLabels() {
     all: "All", items: "items", updated: "Updated:", expires: "Expired", remaining: "Remaining",
     day: "d", hour: "h", protected: "Password protected", passphrase: "Passphrase:",
     filebaseStored: "☁️ Filebase: Stored", filebaseRemoved: "☁️ Filebase: Unpinned",
+    filebaseRemovedTooltip: "Object is unpinned from Filebase. Re-upload the original file to re-store.",
     kuboOff: "🏠 Kubo: Disabled", kuboStored: "🏠 Kubo: Pinned", kuboMissing: "🏠 Kubo: Not pinned",
     ipfsDrifting: "🌊 IPFS: Drifting", delete: "Delete", rename: "Rename file",
     nodeCheck: "🌐 Check nodes ↗", workflow: "🧬 Workflow found", connectionError: "Connection error:",
@@ -6782,7 +6784,7 @@ function renderCurrentStoragePage() {
 
       const fbBadgeHtml = isFromS3
         ? `<button type="button" class="unpin-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.filebaseStored}</button>`
-        : `<span style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500;">${labels.filebaseRemoved}</span>`;
+        : `<span style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; cursor: help;" title="${escapeHtml(labels.filebaseRemovedTooltip || "")}">${labels.filebaseRemoved}</span>`;
 
       let kuboBadgeHtml = "";
       if (!isKuboAutoPin) {
@@ -7566,11 +7568,12 @@ r2FileList?.addEventListener("click", async (e) => {
     const article = target.closest(".result-item");
     const cid = target.dataset.cid || article?.dataset?.cid || getStoredIpfsCid(key) || getStoredIpfsCid(s3Key);
 
-    if (!key) return;
-    const ok = await showCustomConfirm(
-      `ファイル '${key}' を Filebase から削除しますか？\n\n・Filebase から実体を削除（アンピン）します。\n・URL は維持され、IPFS/自宅Kuboから配信されます。`,
-      "☁️ Filebase 削除の確認"
-    );
+    const isEn = getAppLanguage() === "en";
+    const confirmMsg = isEn
+      ? `Unpin and remove '${key}' from Filebase?\n\n・The object will be removed from Filebase storage.\n・The public URL remains active and served via IPFS / local Kubo.\n・⚠️ Note: You cannot re-store it to Filebase unless you re-upload the original file.`
+      : `ファイル '${key}' を Filebase から削除（アンピン）しますか？\n\n・Filebase から実体を削除（アンピン）します。\n・URL は維持され、IPFS/自宅Kuboから配信されます。\n・⚠️ ※元ファイルを再度アップロードするまで、Filebase への再保管は行えません。`;
+    const confirmTitle = isEn ? "☁️ Unpin from Filebase" : "☁️ Filebase 削除の確認";
+    const ok = await showCustomConfirm(confirmMsg, confirmTitle);
     if (!ok) return;
 
     try {
