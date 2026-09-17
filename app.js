@@ -933,7 +933,7 @@ function hasAdminAccess() {
   return Boolean(token && custom);
 }
 
-async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null) {
+async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null, civitaiTemporary = undefined) {
   if (!key) return;
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
@@ -945,6 +945,9 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
   }
   try {
     const payload = { key, cid: cid || "", size, mime, s3Key: s3Key || key };
+    // Civitai 転送専用の短期置き場だけを、次回の明示更新で回収できるようにする。
+    // undefined は既存レコードの印を維持するため、通常のメタデータ更新では送らない。
+    if (civitaiTemporary !== undefined) payload.civitaiTemporary = Boolean(civitaiTemporary);
     if (thumbnailKey) payload.thumbnailKey = thumbnailKey;
     const numericWidth = Math.floor(Number(width));
     const numericHeight = Math.floor(Number(height));
@@ -1047,6 +1050,36 @@ async function deleteKvCid(key) {
 function getKuboRpcEndpoint() {
   const custom = (localStorage.getItem("kuboRpcUrl") || kuboRpcUrl?.value || "").trim().replace(/\/$/, "");
   return custom || "http://127.0.0.1:5001";
+}
+
+const CIVITAI_TEMP_TRANSFER_STORAGE_KEY = "civitaiTemporaryTransfers";
+
+function getCivitaiTemporaryTransfers() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CIVITAI_TEMP_TRANSFER_STORAGE_KEY) || "{}");
+    return raw && typeof raw === "object" ? raw : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function getCivitaiTemporaryTransfer(provider, key) {
+  if (!key) return null;
+  return getCivitaiTemporaryTransfers()[`${normalizeDeliveryProvider(provider)}:${key}`] || null;
+}
+
+function markCivitaiTemporaryTransfer(provider, key, expiresAt) {
+  if (!key || !expiresAt) return;
+  const records = getCivitaiTemporaryTransfers();
+  records[`${normalizeDeliveryProvider(provider)}:${key}`] = { expiresAt: Number(expiresAt) };
+  localStorage.setItem(CIVITAI_TEMP_TRANSFER_STORAGE_KEY, JSON.stringify(records));
+}
+
+function clearCivitaiTemporaryTransfer(provider, key) {
+  if (!key) return;
+  const records = getCivitaiTemporaryTransfers();
+  delete records[`${normalizeDeliveryProvider(provider)}:${key}`];
+  localStorage.setItem(CIVITAI_TEMP_TRANSFER_STORAGE_KEY, JSON.stringify(records));
 }
 const { checkKuboOnline, checkKuboPinned, pinToKubo, getKuboPinnedCids, unpinFromKubo } = createKuboClient(getKuboRpcEndpoint);
 
@@ -4626,7 +4659,11 @@ fileList?.addEventListener("click", async (event) => {
         state.results[index] = result;
       }
       const targetProvider = isR2Configured() ? "r2" : "filebase";
-      const success = await uploadImage(result, targetProvider);
+      const success = await uploadImage(result, targetProvider, null, {
+        // Civitai は intent を開いた時点でメディアを取り込むため、ここは共有用ではなく短期の踏み台にする。
+        ttlSeconds: 5 * 60,
+        civitaiTemporary: true,
+      });
       if (success && result.proxyUrl) {
         await fetchAndRenderR2Files();
         openCivitaiIntent(result.proxyUrl, result.name, preloadWindow);
@@ -5158,7 +5195,7 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
 }
 
 // --- S3 アップロード処理 (R2 / Filebase 独立対応) ---
-async function uploadImage(result, targetProvider = "r2", customPassword = null) {
+async function uploadImage(result, targetProvider = "r2", customPassword = null, uploadOptions = {}) {
   if (!result || !result.blob) return false;
 
   const isFilebase = targetProvider === "filebase";
@@ -5181,8 +5218,12 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
       : (pwdInput ? pwdInput.value.trim() : "");
 
     const ttlSelect = document.querySelector("#tempTtlSelect");
-    const ttlSeconds = ttlSelect ? Number(ttlSelect.value || 0) : 0;
+    const requestedTtl = ttlSelect ? Number(ttlSelect.value || 0) : 0;
+    const ttlSeconds = Number.isFinite(Number(uploadOptions.ttlSeconds))
+      ? Math.max(0, Number(uploadOptions.ttlSeconds))
+      : requestedTtl;
     const expiresAt = ttlSeconds > 0 ? (Date.now() + ttlSeconds * 1000) : null;
+    const civitaiTemporary = Boolean(uploadOptions.civitaiTemporary);
 
     const arrayBuffer = await result.blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
@@ -5279,6 +5320,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
           result.hasPassword = Boolean(password);
           result.ttl = ttlSeconds;
           result.expiresAt = expiresAt;
+          result.civitaiTemporary = civitaiTemporary;
 
           // 新名 -> 既存のS3実体キー、という別名マッピングを作る。旧URLは維持される。
           await registerKvCid(
@@ -5297,8 +5339,10 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
             true,
             getVideoThumbnailKey(duplicate.key),
             imageDimensions?.width,
-            imageDimensions?.height
+            imageDimensions?.height,
+            civitaiTemporary
           );
+          if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
           storeIpfsCid(result.name, duplicate.cid);
           storeIpfsCid(duplicate.key, duplicate.cid);
           result.proxyUrl = getSelectedDeliveryUrl(result);
@@ -5376,6 +5420,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
     result.hasPassword = Boolean(password);
     result.ttl = ttlSeconds;
     result.expiresAt = expiresAt;
+    result.civitaiTemporary = civitaiTemporary;
 
     const baseDomain = (getSelectedR2Domain(targetProvider) || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
 
@@ -5389,7 +5434,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
       }
       // CID の有無に関わらず、KV にメタデータ（パスワード含む）を登録（※一般ユーザー時は自動スキップ）
       // 🌐 選択されている配信ドメインのみを allowedHost として渡し、指定ドメイン外からのアクセスを404遮断
-      await registerKvCid(result.name, ipfsCid || "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height);
+      await registerKvCid(result.name, ipfsCid || "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
       
       if (hasAdminAccess()) {
         const deliveryBase = getKvDeliveryBaseDomain();
@@ -5413,13 +5458,15 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null)
     } else {
       // ⚡ Cloudflare R2: 保護・期限付きに加え、画像は解像度ヘッダー配信用に台帳登録する。
       if (password || ttlSeconds > 0 || imageDimensions) {
-        await registerKvCid(result.name, "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height);
+        await registerKvCid(result.name, "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
         result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       } else {
         result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       }
       setFileStoredDomain(result.name, baseDomain);
     }
+
+    if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
 
     // 🎬 動画の場合は先頭フレームサムネイル（.thumb.webp）を裏で自動生成・保存
     // Misskey / Twitter / Discord 等の OGP カード用ポスター画像として活用
@@ -5734,7 +5781,7 @@ storageTabFilebase?.addEventListener("click", () => {
 
 reloadR2FilesButton?.addEventListener("click", () => {
   storageCurrentPage = 1;
-  fetchAndRenderR2Files();
+  fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers: true });
 });
 
 // 🚀 初回オンボーディング（設定・接続案内カード）の描画
@@ -6125,7 +6172,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
   });
 }
 
-async function fetchAndRenderR2Files() {
+async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } = {}) {
   if (!r2FileList) return;
   const fetchGeneration = ++storageFetchGeneration;
   const requestedProvider = activeStorageTab;
@@ -6246,8 +6293,9 @@ async function fetchAndRenderR2Files() {
             cid: kvCid || getStoredIpfsCid(matchedS3.Key),
             password: kvItem.metadata?.password || null,
             passwordHash: kvItem.metadata?.passwordHash || null,
-            expiresAt: kvItem.metadata?.expiresAt || null,
+            expiresAt: kvItem.metadata?.expiresAt || getCivitaiTemporaryTransfer("filebase", matchedS3.Key)?.expiresAt || null,
             ttl: kvItem.metadata?.ttl || 0,
+            civitaiTemporary: Boolean(kvItem.metadata?.civitaiTemporary || kvItem.metadata?.ct || getCivitaiTemporaryTransfer("filebase", matchedS3.Key)),
             metadata: kvItem.metadata || {},
           });
           if (kvCid) {
@@ -6268,8 +6316,9 @@ async function fetchAndRenderR2Files() {
             cid: kvCid,
             password: kvItem.metadata?.password || null,
             passwordHash: kvItem.metadata?.passwordHash || null,
-            expiresAt: kvItem.metadata?.expiresAt || null,
+            expiresAt: kvItem.metadata?.expiresAt || getCivitaiTemporaryTransfer("filebase", rawKey)?.expiresAt || null,
             ttl: kvItem.metadata?.ttl || 0,
+            civitaiTemporary: Boolean(kvItem.metadata?.civitaiTemporary || kvItem.metadata?.ct || getCivitaiTemporaryTransfer("filebase", rawKey)),
             metadata: kvItem.metadata || {},
           });
           if (kvCid) {
@@ -6290,6 +6339,8 @@ async function fetchAndRenderR2Files() {
             LastModified: s3Item.LastModified,
             isFromS3: true,
             cid: getStoredIpfsCid(s3Item.Key),
+            expiresAt: getCivitaiTemporaryTransfer("filebase", s3Item.Key)?.expiresAt || null,
+            civitaiTemporary: Boolean(getCivitaiTemporaryTransfer("filebase", s3Item.Key)),
             metadata: {},
           });
         }
@@ -6317,11 +6368,27 @@ async function fetchAndRenderR2Files() {
           isFromS3: true,
           password: meta.password || null,
           passwordHash: meta.passwordHash || null,
-          expiresAt: meta.expiresAt || null,
+          expiresAt: meta.expiresAt || getCivitaiTemporaryTransfer("r2", item.Key)?.expiresAt || null,
           ttl: meta.ttl || 0,
+          civitaiTemporary: Boolean(meta.civitaiTemporary || meta.ct || getCivitaiTemporaryTransfer("r2", item.Key)),
           metadata: meta,
         };
       });
+    }
+
+    // Civitai転送専用の踏み台は、利用者が押す「更新」の時だけ後始末する。
+    // 起動・タブ切替・再描画では削除しないため、通常の一覧更新に追加の書き込みはない。
+    if (cleanupExpiredCivitaiTransfers) {
+      const nowMs = Date.now();
+      const expiredCivitaiItems = contents
+        .filter(item => item.civitaiTemporary && item.expiresAt && nowMs > Number(item.expiresAt))
+        .slice(0, 20);
+      if (expiredCivitaiItems.length > 0) {
+        const cleanedKeys = await cleanupExpiredCivitaiTransferItems(expiredCivitaiItems, contents, s3, bucketName, requestedProvider);
+        if (cleanedKeys.size > 0) {
+          contents = contents.filter(item => !cleanedKeys.has(item.rawKey || item.Key));
+        }
+      }
     }
 
     // ⏳ 期限切れのカードは一覧上では非表示にする。
@@ -6444,6 +6511,43 @@ async function fetchAndRenderR2Files() {
     console.error("Storage fetch error:", error);
     r2FileList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)}</span>`;
   }
+}
+
+async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bucketName, provider) {
+  const cleanedKeys = new Set();
+  const isFilebase = normalizeDeliveryProvider(provider) === "filebase";
+
+  for (const item of expiredItems) {
+    const key = item.rawKey || item.Key;
+    const s3Key = item.s3Key || item.Key;
+    const cid = item.cid || item.metadata?.cid || item.metadata?.c || "";
+    if (!key) continue;
+
+    try {
+      // Filebaseでは別名/CID共有中の実体を消さない。R2も同じキーを使う別リンクがあれば保守的に残す。
+      const hasSibling = isFilebase && allItems.some(other => {
+        const otherKey = other.rawKey || other.Key;
+        if (otherKey === key) return false;
+        return (s3Key && other.s3Key === s3Key) || (cid && other.cid === cid);
+      });
+
+      const thumbnailKey = getVideoThumbnailKey(s3Key);
+      await deleteKvCid(key);
+      if (!hasSibling && s3 && bucketName && s3Key && item.isFromS3) {
+        if (thumbnailKey) await deleteKvCid(thumbnailKey);
+        const objects = [s3Key, thumbnailKey].filter(Boolean).map(Key => ({ Key }));
+        await s3.send(objects.length === 1
+          ? new DeleteObjectCommand({ Bucket: bucketName, Key: s3Key })
+          : new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }));
+      }
+      clearCivitaiTemporaryTransfer(provider, s3Key);
+      clearCivitaiTemporaryTransfer(provider, key);
+      cleanedKeys.add(key);
+    } catch (err) {
+      console.warn("Civitai temporary transfer cleanup failed:", key, err);
+    }
+  }
+  return cleanedKeys;
 }
 
 // 📄 現在のページに該当するストレージカード群をDOM描画
