@@ -6459,14 +6459,13 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       }
     }
 
-    // ⏳ 期限切れのカードは一覧上では非表示にする。
-    // 実際のリンク削除・最後の CID の pin 解放は配信 Worker が期限後の最初のアクセス時に行う。
-    // 一覧を開くだけで KV/S3 を書き換えないため、Cron も管理画面の常時起動も不要。
+    // ⏳ 期限切れアイテムの自動回収（最後のリンクなら S3 実体も削除し、一覧から非表示化）
     if (contents.length > 0) {
       const nowMs = Date.now();
       const expiredItems = contents.filter(item => item.expiresAt && nowMs > Number(item.expiresAt));
       if (expiredItems.length > 0) {
-        console.log("⏳ 期限切れファイルを一覧から非表示にしました（配信URLへの次回アクセス時に回収）", expiredItems.map(i => i.Key));
+        console.log("⏳ 期限切れファイルを検知・回収開始:", expiredItems.map(i => i.Key));
+        cleanupExpiredStorageItems(expiredItems, contents, s3, bucketName, requestedProvider);
         const expiredKeySet = new Set(expiredItems.map(i => i.rawKey || i.Key));
         contents = contents.filter(i => !expiredKeySet.has(i.rawKey || i.Key));
       }
@@ -6631,6 +6630,46 @@ async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bu
       cleanedKeys.add(key);
     } catch (err) {
       console.warn("Civitai temporary transfer cleanup failed:", key, err);
+    }
+  }
+  return cleanedKeys;
+}
+
+// ⏳ 有効期限切れストレージアイテムの安全な回収（最後のリンクなら S3 実体も削除）
+async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName, provider) {
+  const cleanedKeys = new Set();
+  const isFilebase = normalizeDeliveryProvider(provider) === "filebase";
+
+  for (const item of expiredItems) {
+    const key = item.rawKey || item.Key;
+    const s3Key = item.s3Key || item.Key;
+    const cid = item.cid || item.metadata?.cid || item.metadata?.c || "";
+    if (!key) continue;
+
+    try {
+      // Filebaseでは別名/CID共有中の実体を消さない。R2も同じキーを使う別リンクがあれば保守的に残す。
+      const hasSibling = isFilebase && allItems.some(other => {
+        const otherKey = other.rawKey || other.Key;
+        if (otherKey === key) return false;
+        return (s3Key && other.s3Key === s3Key) || (cid && other.cid === cid);
+      });
+
+      console.log(`⏳ 期限切れアイテムを回収: ${key} (別名リンク有無: ${hasSibling})`);
+      const thumbnailKey = getVideoThumbnailKey(s3Key);
+      await deleteKvCid(key);
+
+      // 最後のリンク（hasSibling なし）なら、S3 実体およびサムネイルも削除
+      if (!hasSibling && s3 && bucketName && s3Key && item.isFromS3) {
+        if (thumbnailKey) await deleteKvCid(thumbnailKey);
+        const objects = [s3Key, thumbnailKey].filter(Boolean).map(Key => ({ Key }));
+        await s3.send(objects.length === 1
+          ? new DeleteObjectCommand({ Bucket: bucketName, Key: s3Key })
+          : new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }));
+        console.log(`🗑️ 最後のリンクが期限切れのため S3 実体も削除しました: ${s3Key}`);
+      }
+      cleanedKeys.add(key);
+    } catch (err) {
+      console.warn("Expired storage item cleanup failed:", key, err);
     }
   }
   return cleanedKeys;
@@ -6872,25 +6911,6 @@ function renderCurrentStoragePage() {
       }
     }
 
-    // Filebaseに実体だけがありKV台帳レコードがない場合は、取得済みCIDで台帳を自己修復する。
-    // 以前のWorker URL設定不備でアップロード済みになったファイルを、再アップロードせず公開可能にする。
-    if (isFilebase && item.isFromS3 && !item.rawKey && itemCid && hasAdminAccess()) {
-      registerKvCid(
-        itemKey,
-        itemCid,
-        Number(item.Size || 0),
-        item.metadata?.mime || "",
-        item.s3Key || item.Key,
-        item.password || "",
-        null,
-        item.ttl || 0,
-        item.expiresAt || null,
-        false,
-        null,
-        fileDomain,
-        true
-      ).catch(error => console.warn("Failed to repair Filebase KV mapping:", error));
-    }
 
     // 🪐 Filebase かつ CID が未取得のアイテムについて、バックグラウンドで S3 から CID を自動解決して即時反映
     if (isFilebase && !itemCid && item.isFromS3) {
@@ -6950,8 +6970,8 @@ function renderCurrentStoragePage() {
                 }
               }
 
-              // 中央KVにもバックグラウンドで CID を登録・修復
-              if (hasAdminAccess()) {
+              // 中央KVにもバックグラウンドで CID を登録・修復（既存レコードがある場合のみ更新）
+              if (hasAdminAccess() && item.rawKey) {
                 registerKvCid(itemKey, resolvedCid, Number(item.Size || 0), item.metadata?.mime || "", s3TargetKey, item.password || "", null, item.ttl || 0, item.expiresAt || null, false, null, fileInitialDomain || baseDomain);
               }
             }
