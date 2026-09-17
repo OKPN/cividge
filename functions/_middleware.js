@@ -396,7 +396,7 @@ function setImageDimensionHeaders(headers, meta = {}) {
 
 // 期限切れリンクの安全な回収（KV削除＋最後のリンクならKubo・S3墓標作成）
 async function cleanupExpiredAlias(env, request, key, expectedCid) {
-  if (!env?.IPFS_KV || !key || !expectedCid) return;
+  if (!(env?.CIVIDGE_KV || env?.IPFS_KV) || !key || !expectedCid) return;
 
   try {
     const latest = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(key);

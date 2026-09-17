@@ -152,21 +152,22 @@ export async function onRequestPost(context) {
     let targetCid = null;
 
     // R2 バケットバインディングがある場合
+    const kv = env.CIVIDGE_KV || env.IPFS_KV;
     if (env.R2_BUCKET && (url.searchParams.get("storage") === "r2" || request.headers.get("X-Storage-Backend") === "r2")) {
       await env.R2_BUCKET.put(shortKey, fileBuffer, {
         httpMetadata: { contentType },
         customMetadata: { size: String(fileBuffer.byteLength) },
       });
     } else {
-      // デフォルト: IPFS_KV に直接実データを保持 (超高速・無料・即時配信)
-      if (env.IPFS_KV) {
-        await env.IPFS_KV.put(blobKey, fileBuffer);
+      // デフォルト: CIVIDGE_KV に直接実データを保持 (超高速・無料・即時配信)
+      if (kv) {
+        await kv.put(blobKey, fileBuffer);
       }
     }
 
     // KV にルーティング登録
-    if (env.IPFS_KV) {
-      await env.IPFS_KV.put(shortKey, targetCid || shortKey, {
+    if (kv) {
+      await kv.put(shortKey, targetCid || shortKey, {
         metadata: {
           blobKey,
           size: fileBuffer.byteLength,

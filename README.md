@@ -83,9 +83,14 @@ cd cividge-kv-worker
 npx wrangler login
 ```
 
-Create a Workers KV namespace in Cloudflare, then bind it as `IPFS_KV` in `wrangler.toml`:
+Create a Workers KV namespace in Cloudflare, then bind it as `CIVIDGE_KV` (and `IPFS_KV` for backward compatibility) in `wrangler.toml`:
 
 ```toml
+[[kv_namespaces]]
+binding = "CIVIDGE_KV"
+id = "<your-kv-namespace-id>"
+
+# Backward compatibility alias
 [[kv_namespaces]]
 binding = "IPFS_KV"
 id = "<your-kv-namespace-id>"
@@ -128,6 +133,11 @@ npx wrangler login
 Bind the **same** Workers KV namespace in this repository's `wrangler.toml`:
 
 ```toml
+[[kv_namespaces]]
+binding = "CIVIDGE_KV"
+id = "<your-kv-namespace-id>"
+
+# Backward compatibility alias
 [[kv_namespaces]]
 binding = "IPFS_KV"
 id = "<your-kv-namespace-id>"

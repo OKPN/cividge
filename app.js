@@ -6027,7 +6027,7 @@ ${onboarding.kvUpdateComment}</code></pre>
                 </li>
                 <li><strong>${onboarding.kvNamespace}</strong>
                   <pre><code>npx wrangler login
-npx wrangler kv namespace create IPFS_KV</code></pre>
+npx wrangler kv namespace create CIVIDGE_KV</code></pre>
                 </li>
                 <li><strong>${onboarding.kvSecrets}</strong>
                   <pre><code>npx wrangler secret put ADMIN_API_TOKEN
