@@ -7,10 +7,11 @@
 - **統合メディア台帳の正式リネーム（`ipfs-kv` ➔ `cividge-kv`、完全互換移行）**:
   - **背景**: 当初はIPFS専用のCID名札として命名された `ipfs-kv` であったが、現在ではR2・Filebase双方の短縮URL・有効期限（TTL）・閲覧パスワード・配信ドメイン制限を司る「統合メディア台帳」に進化しており、実態に即した `cividge-kv`（Workerリポジトリ名 `cividge-kv-worker` と統一）へ正式改名を実施。
   - **バインディング（KV Namespace）**:
-    - `cividge-kv-worker` および `cividge`（Pages Functions）において、`env.CIVIDGE_KV` と `env.IPFS_KV` の両バインディングを同一Namespace ID（`ff45707014424ab3afac57fda8c305de`）で並行サポートし、コード内でも `env.CIVIDGE_KV || env.IPFS_KV` でフォールバック。
+    - `cividge-kv-worker` および `cividge`（Pages Functions）双方の `wrangler.toml` において、`env.CIVIDGE_KV` と `env.IPFS_KV` の両バインディングを同一Namespace ID（`ff45707014424ab3afac57fda8c305de`）で並行サポート。
+    - 各種コード（`delivery.js`, `_middleware.js` の `cleanupExpiredAlias`, `upload.js` の実体保存・ルーティング登録）内でも `env.CIVIDGE_KV || env.IPFS_KV` を徹底し、フォールバックを完備。
   - **API エンドポイント（両対応）**:
     - 新規に `/api/cividge-kv`（`cividge-kv.js`）を本線として配備し、旧 `/api/ipfs-kv` もエイリアス（re-export）として完全維持。
-    - フロントエンド（`app.js`）の接続先判定や正規表現を `/api/cividge-kv` / `/api/ipfs-kv` の両対応に更新。
+    - フロントエンド（`app.js`）の接続先判定、正規表現、オンボーディング新規作成手順を `/api/cividge-kv` / `CIVIDGE_KV` を第一推奨としつつ両対応に更新。
     - 既存設定・過去のブックマーク・外部スクリプトのいずれも壊さずダウンタイムゼロで安全に移行完了。
 
 - **S3削除用 墓標キュー（Tombstone Queue）による実体消し漏れの根絶**:
