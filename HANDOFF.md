@@ -1,8 +1,14 @@
 # Cividge 引き継ぎメモ
 
-更新日: 2026-09-15
+更新日: 2026-09-17
 
 ## 今回の改修
+
+- **静的 Pages リレー（307 Relay）の複数ホスト共存対応**:
+  - `STATIC_RELAY_PUBLIC_HOSTS` に複数ホスト（カンマ区切り）を登録した際、`delivery.js` の `length === 1` ハードコードにより全リレーが 404 になる不具合を修正。
+  - `/r/` リクエスト受信時、登録された全許可 Pages ホストを自動探索して KV 台帳の `<host>:<filename>` を解決するロジックへ刷新。
+  - 単体キー形式（`allowedHost` メタデータ保持）のファイルでも、アクセス元のリレーと安全に照合できるようフォールバックを修正。
+  - これにより `content-relay.pages.dev` を維持したまま `testunko.pages.dev` など任意のアドレスを安全に並行運用・追加可能にした。
 
 - Civitai Gallery のクリエイター選択では、内部状態の `__ALL__` / `__NEW__` を利用者名として保存・表示しない。
   - 上部の「すべて（新着順）」と「新着のみ」だけを特別項目として残す。
@@ -64,9 +70,18 @@
   - 動画実体を削除する時はサムネイルも同時に削除する。別名 URL だけを削除する場合は残る。
   - サムネイルには親動画と同じ有効期限を記録し、Filebase FIFO でも親動画と一緒にだけ回収する。
 
-## Pages URL を追加したい場合
+### 静的リレー（307 Relay / 推奨・無料無制限）を追加する場合
 
-Worker の `https://<worker>.<subdomain>.workers.dev` は、KV Worker の接続完了後にそのまま配信先として使える。Pages は必須ではない。
+関数（Functions）を使わず、Wrangler で静的 `_redirects` のみを配備して公開アドレスを取得する場合：
+
+1. 空フォルダに `_redirects` を作成（例: `/* https://ipfs-relay.k7m.f5.si/r/:splat 307`）。
+2. `npx wrangler pages project create <プロジェクト名> --production-branch main` でプロジェクト作成。
+3. `npx wrangler pages deploy <フォルダ> --project-name=<プロジェクト名>` でデプロイ。
+4. `cividge-kv-worker/wrangler.toml` の `STATIC_RELAY_PUBLIC_HOSTS` にカンマ区切りで追加し、Worker を再デプロイ（`npx wrangler deploy`）。
+   - 複数ホスト登録時も Worker 側で自動探索されるため、何個でも安全に追加可能。
+5. Cividge 画面の「Filebase 配信ドメイン」に取得した `https://<プロジェクト名>.pages.dev` を登録・選択。
+
+### フロントエンド（Functions含む全体）を Pages に追加・再配備する場合
 
 任意で `https://my-content-cache.pages.dev` のような URL を追加する場合は、`cividge` リポジトリのルートで以下を実行する。
 
