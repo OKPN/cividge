@@ -4,6 +4,11 @@
 
 ## 今回の改修
 
+- Civitai Gallery のクリエイター選択では、内部状態の `__ALL__` / `__NEW__` を利用者名として保存・表示しない。
+  - 上部の「すべて（新着順）」と「新着のみ」だけを特別項目として残す。
+  - 旧 localStorage に混入した予約名は、次回読み込み時にクリエイター一覧から自動除去する。
+  - `app.js` の `getCivitaiUserList()` がこの互換クリーニングの責務を持つ。
+
 - `staging` の未コミットで壊れていた `app.js` / `index.html` は `main` と同じ内容へ戻した。
 - Filebase / R2 のクラウドストレージ設定を確認し、ストレージ画面の初回セットアップを段階式にした。
   - STEP 1 は KV Worker URL と Admin API Token を実際に API へ接続して検証する。

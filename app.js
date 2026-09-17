@@ -1550,6 +1550,12 @@ let civitaiPaletteFiles = []; // パレット用キャッシュ
 
 // --- 🎨 Civitai クリエイター・ギャラリー管理 ---
 
+const CIVITAI_RESERVED_SCOPES = new Set(["__ALL__", "__NEW__"]);
+
+function isCivitaiReservedScope(value) {
+  return CIVITAI_RESERVED_SCOPES.has(String(value || "").trim());
+}
+
 function getCivitaiUserList() {
   let list = [];
   try {
@@ -1557,8 +1563,19 @@ function getCivitaiUserList() {
   } catch (e) {
     list = [];
   }
+  if (!Array.isArray(list)) list = [];
+  // __ALL__ / __NEW__ はクリエイター名ではなく、プルダウンの内部的な表示範囲。
+  // 旧版が選択状態を誤ってリストへ混ぜた場合も、ここで静かに掃除する。
+  const cleaned = [...new Set(list
+    .filter(value => typeof value === "string")
+    .map(value => value.trim())
+    .filter(value => value && !isCivitaiReservedScope(value)))];
+  if (cleaned.length !== list.length || cleaned.some((value, index) => value !== list[index])) {
+    list = cleaned;
+    localStorage.setItem("civitaiUserList", JSON.stringify(list));
+  }
   const legacy = (localStorage.getItem("civitaiUsername") || "").trim();
-  if (legacy && !list.includes(legacy)) {
+  if (legacy && !isCivitaiReservedScope(legacy) && !list.includes(legacy)) {
     list.unshift(legacy);
     localStorage.setItem("civitaiUserList", JSON.stringify(list));
   }
