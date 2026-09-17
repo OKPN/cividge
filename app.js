@@ -1167,6 +1167,48 @@ async function drainKuboTombstones() {
   }
 }
 
+// 🪦 S3実体削除用の墓標（Tombstone）回収処理
+async function drainS3Tombstones(s3, bucketName) {
+  if (!hasAdminAccess() || !s3 || !bucketName) return;
+  const token = getAdminApiToken();
+  const endpoint = getKvApiEndpoint();
+
+  try {
+    const sep = endpoint.includes("?") ? "&" : "?";
+    const headers = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(`${endpoint}${sep}tombstones_s3=1`, { headers });
+    if (!res.ok) return;
+    const data = await res.json();
+    const tombstones = data.tombstonesS3 || [];
+    if (tombstones.length === 0) return;
+
+    console.log(`🪦 S3墓標回収開始: ${tombstones.length}件のS3実体削除キューを処理中...`);
+    for (const s3Key of tombstones) {
+      try {
+        const thumbnailKey = getVideoThumbnailKey(s3Key);
+        const objects = [s3Key, thumbnailKey].filter(Boolean).map(Key => ({ Key }));
+        await s3.send(objects.length === 1
+          ? new DeleteObjectCommand({ Bucket: bucketName, Key: s3Key })
+          : new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }));
+        console.log(`🗑️ S3墓標に従い実体を削除しました: ${s3Key}`);
+
+        // KVから墓標を消去
+        await fetch(`${endpoint}${sep}tombstone_s3=${encodeURIComponent(s3Key)}`, {
+          method: "DELETE",
+          headers,
+        });
+        console.log(`🪦 S3墓標回収完了: ${s3Key}`);
+      } catch (err) {
+        console.warn(`🪦 S3墓標回収エラー (${s3Key}):`, err);
+      }
+    }
+  } catch (e) {
+    console.warn("drainS3Tombstones error:", e);
+  }
+}
+
 async function fetchKvFiles() {
   // 🛡️ KV台帳連携が有効でない場合、一覧取得はスキップ（相乗り・漏洩防止）
   if (!hasAdminAccess()) {
@@ -6471,6 +6513,12 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
         const expiredKeySet = new Set(expiredItems.map(i => i.rawKey || i.Key));
         contents = contents.filter(i => !expiredKeySet.has(i.rawKey || i.Key));
       }
+    }
+
+    // 🪦 墓標（Tombstone）の非同期回収（KuboのアンピンおよびWorker等で先行失効したS3実体の完全消去）
+    drainKuboTombstones();
+    if (isFilebase && s3 && bucketName) {
+      drainS3Tombstones(s3, bucketName);
     }
 
     // Filebase FIFO 自動容量解放チェック (一覧更新時に現在容量が上限を超えている場合)

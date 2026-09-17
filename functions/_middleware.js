@@ -394,6 +394,44 @@ function setImageDimensionHeaders(headers, meta = {}) {
   }
 }
 
+// 期限切れリンクの安全な回収（KV削除＋最後のリンクならKubo・S3墓標作成）
+async function cleanupExpiredAlias(env, request, key, expectedCid) {
+  if (!env?.IPFS_KV || !key || !expectedCid) return;
+
+  try {
+    const latest = await env.IPFS_KV.getWithMetadata(key);
+    const latestMeta = latest?.metadata || {};
+    const latestExpiresAt = latestMeta.e ? latestMeta.e * 1000 : latestMeta.expiresAt;
+    if (!latest?.value || latest.value !== expectedCid || !latestExpiresAt || Date.now() <= Number(latestExpiresAt)) return;
+
+    if (latestMeta.blobKey) {
+      await env.IPFS_KV.delete(latestMeta.blobKey).catch(() => {});
+    }
+    await env.IPFS_KV.delete(key);
+
+    let cursor = undefined;
+    let isCidShared = false;
+    do {
+      const page = await env.IPFS_KV.list({ limit: 1000, ...(cursor ? { cursor } : {}) });
+      isCidShared = (page.keys || []).some((item) => {
+        if (item.name.startsWith("tombstone_") || item.name.startsWith("blob_")) return false;
+        return (item.metadata?.c || item.metadata?.cid) === expectedCid;
+      });
+      cursor = page.list_complete === false ? page.cursor : undefined;
+    } while (!isCidShared && cursor);
+
+    if (!isCidShared) {
+      await env.IPFS_KV.put(`tombstone_${expectedCid}`, "1", { expirationTtl: 86400 * 30 }).catch(() => {});
+      const s3TargetKey = latestMeta.s3Key || latestMeta.s || (key.includes(":") ? key.split(":")[1] : key);
+      if (s3TargetKey) {
+        await env.IPFS_KV.put(`tombstone_s3_${encodeURIComponent(s3TargetKey)}`, "1", { expirationTtl: 86400 * 30 }).catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.warn("Expired alias cleanup in middleware failed:", err);
+  }
+}
+
 export async function onRequest(context) {
   const { request, env } = context;
 
@@ -497,6 +535,10 @@ export async function onRequest(context) {
   // ⏳ 時限アップロードの有効期限チェック（期限切れは即座に404、短縮キー e にも対応）
   const expiresTimestamp = meta.e ? (meta.e * 1000) : meta.expiresAt;
   if (expiresTimestamp && Date.now() > Number(expiresTimestamp)) {
+    const currentHost = url.hostname.toLowerCase();
+    const resolvedKvKey = isDomainSpecific ? `${currentHost}:${filename}` : filename;
+    const cleanup = cleanupExpiredAlias(env, request, resolvedKvKey, targetCid);
+    context.waitUntil?.(cleanup) || cleanup;
     return renderNotFoundResponse(request, 60, "expired");
   }
 
