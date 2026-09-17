@@ -830,39 +830,132 @@ input[type="range"] {
     display: flex !important;
     flex-wrap: wrap !important;
     align-items: flex-start !important;
-    gap: 12px !important;
-    padding: 12px 14px !important;
+    gap: 10px !important;
+    padding: 10px 12px !important;
+  }
+
+  .result-item .r2-file-checkbox {
+    align-self: flex-start !important;
+    margin-top: 14px !important;
+    margin-right: 0 !important;
+    flex-shrink: 0 !important;
   }
 
   .result-item .thumb-link,
   .file-item .thumb-link {
-    flex-shrink: 0;
+    flex-shrink: 0 !important;
+  }
+
+  .result-item .thumb,
+  .file-item .thumb {
+    width: 48px !important;
+    height: 48px !important;
+    border-radius: 6px !important;
   }
 
   .result-item > div:not(.result-actions),
   .file-item > div:not(.item-actions-col) {
-    flex: 1 1 calc(100% - 74px) !important;
+    flex: 1 1 0% !important;
     min-width: 0 !important;
+  }
+
+  .result-item .item-details-col {
+    gap: 3px !important;
+  }
+
+  .result-item .item-details-row1,
+  .result-item .item-details-row2 {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 3px !important;
+    width: 100% !important;
+  }
+
+  .result-item .item-name-group {
+    gap: 4px 6px !important;
+  }
+
+  .result-item .item-name {
+    font-size: 13px !important;
+  }
+
+  .result-item .item-basic-meta {
+    font-size: 10.5px !important;
+    margin-top: 0 !important;
+  }
+
+  .result-item .item-storage-tier,
+  .result-item .item-cid-group {
+    display: flex !important;
+    width: 100% !important;
+    margin-top: 1px !important;
   }
 
   .result-item .result-actions,
   .file-item .item-actions-col {
     width: 100% !important;
-    margin-top: 6px !important;
+    margin-top: 4px !important;
     padding-top: 8px !important;
     border-top: 1px dashed rgba(255, 255, 255, 0.08) !important;
     display: grid !important;
-    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)) !important;
-    gap: 8px !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 6px !important;
     margin-left: 0 !important;
   }
 
-  .result-item .result-actions .ghost-button,
-  .file-item .item-actions-col .ghost-button {
+  .result-item .result-actions select.r2-file-ttl-select {
     width: 100% !important;
-    min-height: 36px !important;
+    height: 30px !important;
+    min-height: 30px !important;
+    padding: 0 6px !important;
+    font-size: 11px !important;
+    box-sizing: border-box !important;
+    border-radius: 4px !important;
+  }
+
+  .result-item .card-domain-badge-wrapper {
+    display: flex !important;
+    width: 100% !important;
+    gap: 4px !important;
+    align-items: center !important;
+  }
+
+  .result-item .card-domain-badge-wrapper .card-domain-badge {
+    flex: 1 1 auto !important;
+    max-width: calc(100% - 32px) !important;
+    min-width: 0 !important;
+    height: 30px !important;
+    justify-content: flex-start !important;
     padding: 0 8px !important;
-    font-size: 11.5px !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  .result-item .card-domain-badge-wrapper .add-domain-alias-btn {
+    flex: 0 0 26px !important;
+    width: 26px !important;
+    min-width: 26px !important;
+    max-width: 26px !important;
+    height: 30px !important;
+    min-height: 30px !important;
+    padding: 0 !important;
+    font-size: 13px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+  }
+
+  .result-item .result-actions .ghost-button:not(.add-domain-alias-btn),
+  .file-item .item-actions-col .ghost-button:not(.add-domain-alias-btn) {
+    width: 100% !important;
+    height: 30px !important;
+    min-height: 30px !important;
+    padding: 0 6px !important;
+    font-size: 11px !important;
     box-sizing: border-box !important;
     display: inline-flex !important;
     align-items: center !important;
@@ -898,6 +991,96 @@ input[type="range"] {
 /* ==========================================================================
    Civitai ギャラリー ビジュアルグリッド & ウォッチャーUI
    ========================================================================== */
+.civitai-panel-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.civitai-heading-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.civitai-unread-badge-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.civitai-heading-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.civitai-select-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0 8px;
+  height: 38px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+}
+
+.civitai-actions-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 640px) {
+  .civitai-panel-heading {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .civitai-heading-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+  }
+  .civitai-heading-controls {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    gap: 8px;
+  }
+  .civitai-select-group {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+  }
+  .civitai-select-group select {
+    flex: 1;
+    min-width: 0;
+  }
+  .civitai-actions-group {
+    display: flex;
+    width: 100%;
+    gap: 8px;
+  }
+  .civitai-actions-group > button,
+  .civitai-actions-group > a {
+    flex: 1;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    box-sizing: border-box;
+  }
+}
+
 #civitaiGalleryList.civitai-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));

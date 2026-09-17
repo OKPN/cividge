@@ -1952,19 +1952,18 @@ function createCivitaiStatsHtml(stats) {
       const lastSeenId = Number(lastSeenMap[username] || 0);
       const newestId = items.length > 0 ? Number(items[0].id) : 0;
       if (lastSeenId === 0) {
-        if (newestId > 0) {
-          lastSeenMap[username] = newestId;
-          saveCivitaiLastSeenMap(lastSeenMap);
-        }
+        newItemsCount = items.length;
       } else if (newestId > lastSeenId) {
         newItemsCount = items.filter(it => Number(it.id) > lastSeenId).length;
       }
     } else {
       list.forEach(u => {
         const lastSeenId = Number(lastSeenMap[u] || 0);
-        if (lastSeenId > 0) {
-          const uItems = items.filter(it => it._creator === u && Number(it.id) > lastSeenId);
+        const uItems = items.filter(it => (it._creator || it.username || "") === u);
+        if (lastSeenId === 0) {
           newItemsCount += uItems.length;
+        } else {
+          newItemsCount += uItems.filter(it => Number(it.id) > lastSeenId).length;
         }
       });
     }
@@ -2127,6 +2126,28 @@ function createCivitaiStatsHtml(stats) {
         }
       });
     });
+
+    // ✨ 案A: 「新着のみ」または個別クリエイターで画面に表示されたアイテムを自動既読化
+    // （現在の画面ではそのまま閲覧でき、次回「更新」を押した時や次回アクセス時に表示されなくなる）
+    if (visibleItems.length > 0) {
+      const updatedLastSeen = getCivitaiLastSeenMap();
+      let hasUpdate = false;
+      const targetCreators = (!isAll) ? [username] : (isNewOnlyScope ? list : []);
+      targetCreators.forEach(creator => {
+        const creatorItems = visibleItems.filter(it => (it._creator || it.username || "") === creator);
+        if (creatorItems.length > 0) {
+          const highest = creatorItems.reduce((max, it) => Math.max(max, Number(it.id) || 0), 0);
+          const current = Number(updatedLastSeen[creator] || 0);
+          if (highest > current) {
+            updatedLastSeen[creator] = highest;
+            hasUpdate = true;
+          }
+        }
+      });
+      if (hasUpdate) {
+        saveCivitaiLastSeenMap(updatedLastSeen);
+      }
+    }
 
     checkAllCivitaiCreatorsUnread();
 
@@ -6789,20 +6810,20 @@ function renderCurrentStoragePage() {
     const hasPassword = Boolean(item.password || item.metadata?.passwordHash || item.metadata?.password);
     const plainPwd = item.password || item.metadata?.password;
     const pwdBadgeHtml = hasPassword
-      ? `<span class="password-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;" title="${escapeHtml(labels.protected)}">🔒 ${plainPwd ? `${labels.passphrase} ${escapeHtml(plainPwd)}` : labels.protected}</span>`
+      ? `<span class="password-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;" title="${escapeHtml(labels.protected)}">🔒 ${plainPwd ? `${labels.passphrase} ${escapeHtml(plainPwd)}` : labels.protected}</span>`
       : "";
 
     let ttlBadgeHtml = "";
     if (item.expiresAt) {
       const msRemaining = Number(item.expiresAt) - Date.now();
       if (msRemaining <= 0) {
-        ttlBadgeHtml = `<span style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;" title="${escapeHtml(labels.expires)}">⚠️ ${escapeHtml(labels.expires)}</span>`;
+        ttlBadgeHtml = `<span style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;" title="${escapeHtml(labels.expires)}">⚠️ ${escapeHtml(labels.expires)}</span>`;
       } else {
         const hoursRemaining = Math.max(1, Math.ceil(msRemaining / (1000 * 3600)));
         const days = Math.floor(hoursRemaining / 24);
         const remHours = hoursRemaining % 24;
         const timeText = days > 0 ? `${days}${labels.day}${remHours > 0 ? " " + remHours + labels.hour : ""}` : `${hoursRemaining}${labels.hour}`;
-        ttlBadgeHtml = `<span class="ttl-countdown-badge" style="background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.5); font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">⏳ ${escapeHtml(labels.remaining)} ${timeText}</span>`;
+        ttlBadgeHtml = `<span class="ttl-countdown-badge" style="background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;">⏳ ${escapeHtml(labels.remaining)} ${timeText}</span>`;
       }
     }
 
@@ -6900,19 +6921,26 @@ function renderCurrentStoragePage() {
       <a href="${escapeHtml(publicUrl)}" target="_blank" rel="noopener noreferrer" class="thumb-link" title="別タブで開く">
         ${thumbHtml}
       </a>
-      <div style="flex: 1; min-width: 0;">
-        <div class="item-name-row" style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-          <span class="item-name" style="font-weight: 600; word-break: break-all;">${escapeHtml(itemDisplayName)}</span>
-          ${renameBtnHtml}
-          ${cidBadgeHtml}
-          <span style="color: #64748b; font-size: 11px; white-space: nowrap;">${formatBytes(item.Size || 0)}</span>
-          ${pwdBadgeHtml}
-          ${ttlBadgeHtml}
-          <span class="r2-wf-badge-placeholder" data-key="${escapeHtml(itemKey)}"></span>
+      <div class="item-details-col" style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+        <!-- 上段: ファイル名 ＆ 容量・日時 -->
+        <div class="item-details-row1" style="display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;">
+          <div class="item-name-group" style="display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <span class="item-name" style="font-weight: 600; word-break: break-all;">${escapeHtml(itemDisplayName)}</span>
+            ${renameBtnHtml}
+            <span class="r2-wf-badge-placeholder" data-key="${escapeHtml(itemKey)}"></span>
+            ${pwdBadgeHtml}
+          </div>
+          <div class="item-meta item-basic-meta" style="color: var(--muted); font-size: 11px; display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <span style="color: #94a3b8; font-weight: 600;">${formatBytes(item.Size || 0)}</span>
+            <span style="opacity: 0.5;">•</span>
+            <span>${escapeHtml(labels.updated)} ${escapeHtml(dateStr)}</span>
+            ${ttlBadgeHtml ? `<span style="opacity: 0.5;">•</span>${ttlBadgeHtml}` : ""}
+          </div>
         </div>
-        <div class="item-meta" style="color: var(--muted); margin-top: 5px; font-size: 11px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-          <span>${escapeHtml(labels.updated)} ${escapeHtml(dateStr)}</span>
-          ${storageTierHtml}
+        <!-- 下段: 保管ステータス (FB/Kubo) ＆ CID・ノード確認 -->
+        <div class="item-details-row2" style="display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;">
+          ${storageTierHtml ? `<div class="item-storage-tier" style="display: inline-flex;">${storageTierHtml}</div>` : ""}
+          ${cidBadgeHtml ? `<div class="item-cid-group" style="display: inline-flex;">${cidBadgeHtml}</div>` : ""}
         </div>
       </div>
       <div class="result-actions" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
@@ -6926,7 +6954,7 @@ function renderCurrentStoragePage() {
       if (hasWf) {
         const placeholder = article.querySelector('.r2-wf-badge-placeholder');
         if (placeholder) {
-          placeholder.innerHTML = `<span class="meta-badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 600;">${labels.workflow}</span>`;
+          placeholder.innerHTML = `<span class="meta-badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; padding: 1px 5px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 2px;" title="${escapeHtml(labels.workflow)}">🧬 WF</span>`;
         }
       }
     });
