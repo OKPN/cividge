@@ -81,6 +81,14 @@
    - 複数ホスト登録時も Worker 側で自動探索されるため、何個でも安全に追加可能。
 5. Cividge 画面の「Filebase 配信ドメイン」に取得した `https://<プロジェクト名>.pages.dev` を登録・選択。
 
+#### 💡 [次回改修メモ・改善案] オンボーディング画面（UI）の案内簡略化
+現状、オンボーディング画面（`app.js: L5972` 付近）の「公開用 pages.dev リレーを作る」説明で `git clone https://github.com/OKPN/cividge.git` を案内しているが、リポジトリ全体の clone は不要（牛刀）。
+利用者のハードルを下げるため、次回改修時に以下の「空フォルダ＋1行デプロイ」の案内にシンプル化すると良い：
+- **手順1**: 適当な空フォルダを作り、`_redirects` ファイルを作成（Filebase: `/* https://<裏Worker>/r/:splat 307` / R2: `/* https://<裏R2>/:splat?r 307`）。
+- **手順2**: ターミナルで `npx wrangler pages project create <名前> --production-branch main` ➔ `npx wrangler pages deploy <フォルダ> --project-name=<名前>` を実行。
+- **手順3**: 生成された `https://<名前>.pages.dev` を入力欄に登録。
+*(※ これにより、Git の知識がない一般ユーザーでも 1 分で迷わず看板アドレスを作成可能になる)*
+
 ### フロントエンド（Functions含む全体）を Pages に追加・再配備する場合
 
 任意で `https://my-content-cache.pages.dev` のような URL を追加する場合は、`cividge` リポジトリのルートで以下を実行する。
