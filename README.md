@@ -68,6 +68,13 @@ The frontend repository (`cividge`) and the delivery/registry Worker repository 
 
 > Do not register the same delivery domain for both R2 and Filebase. URLs are `delivery-domain/file-name`; sharing a domain makes same-name objects ambiguous.
 
+### 🤖 For AI Coding Agents (Codex, Claude, etc.)
+
+This repository includes official agent skills in [`.codex/skills/`](.codex/skills/) to automate safe builds, deployments, and public relay creation without breaking existing routes:
+
+- **`cividge-deploy`**: Safely pulls latest code, enforces `npm run build`, and deploys to Cloudflare Pages or Workers with automated curl health verification.
+- **`cloudflare-pages-relay`**: Deploys function-free, disposable `pages.dev` 307 relays and registers them into the multi-relay worker without exposing origin domains.
+
 ## 1. Deploy the KV delivery and management Worker
 
 ```bash
