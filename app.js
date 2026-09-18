@@ -186,6 +186,9 @@ const i18nDict = {
     sendToSecurityTitle: "🔐 個人専用バッチを生成しますか？",
     sendToSecurityConfirm: "この BAT ファイルには投稿専用の UPLOAD_TOKEN が平文で含まれます。自分の Windows アカウントだけで保管・使用してください。\n\nメール、チャット、Git リポジトリ、共有フォルダへ渡してはいけません。\n紛失・共有した場合は、Worker の UPLOAD_TOKEN を再発行して、古いバッチを削除してください。",
     sendToSecurityProceed: "理解して生成",
+    sharexSecurityTitle: "🔐 ShareX 設定ファイルを生成しますか？",
+    sharexSecurityConfirm: "この .sxcu ファイルには投稿専用の UPLOAD_TOKEN が平文で含まれます。自分の端末・アカウントだけで保管・使用してください。\n\nメール、チャット、Discord、Git リポジトリ、共有フォルダへ渡してはいけません。\n他人に渡すと、あなたのストレージに画像を勝手にアップロードされる危険があります。\n紛失・共有した場合は、Worker の UPLOAD_TOKEN を再発行してください。",
+    sharexSecurityProceed: "理解してダウンロード",
     civitaiDeleteConfirm: "登録クリエイター「{name}」をウォッチリストから削除しますか？",
     civitaiLastOneError: "最低1件のクリエイター登録が必要です。",
     btnAdd: "追加",
@@ -408,6 +411,9 @@ const i18nDict = {
     sendToSecurityTitle: "🔐 Generate a personal batch file?",
     sendToSecurityConfirm: "This BAT file contains your upload-only UPLOAD_TOKEN in plain text. Store and use it only under your own Windows account.\n\nNever share it in email, chat, a Git repository, or a shared folder.\nIf it is lost or shared, rotate the Worker's UPLOAD_TOKEN and delete old batch files.",
     sendToSecurityProceed: "I understand — generate",
+    sharexSecurityTitle: "🔐 Generate ShareX config file?",
+    sharexSecurityConfirm: "This .sxcu file contains your upload-only UPLOAD_TOKEN in plain text. Store and use it only on your own device and account.\n\nNever share it in email, chat, Discord, Git repositories, or public links.\nIf shared, others can upload files to your storage without permission.\nIf compromised, rotate the Worker's UPLOAD_TOKEN immediately.",
+    sharexSecurityProceed: "I understand — download",
     civitaiDeleteConfirm: "Remove creator \"{name}\" from your watch list?",
     civitaiLastOneError: "At least one creator must be kept.",
     btnAdd: "Add",
@@ -9143,6 +9149,15 @@ downloadSharexBtn?.addEventListener("click", async () => {
     alert("⚠️ 投稿専用 API トークンが Worker と一致していません。正しい UPLOAD_TOKEN を入力してください。");
     return;
   }
+
+  const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
+  const confirmed = await showCustomConfirm(
+    dict.sharexSecurityConfirm || "この .sxcu ファイルには投稿専用の UPLOAD_TOKEN が平文で含まれます。自分の端末・アカウントだけで保管・使用してください。\n\nメール、チャット、Discord、Git リポジトリ、共有フォルダへ渡してはいけません。\n他人に渡すと、あなたのストレージに画像を勝手にアップロードされる危険があります。\n紛失・共有した場合は、Worker の UPLOAD_TOKEN を再発行してください。",
+    dict.sharexSecurityTitle || "🔐 ShareX 設定ファイルを生成しますか？",
+    dict.sharexSecurityProceed || "理解してダウンロード",
+    dict.btnCancel || "キャンセル",
+  );
+  if (!confirmed) return;
 
   const endpoint = getDedicatedUploadEndpoint();
   const selectedDomain = getSelectedUploadReturnDomain();
