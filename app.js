@@ -6968,7 +6968,7 @@ function renderCurrentStoragePage() {
       const s3Provider = isFilebase ? "filebase" : "r2";
       thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}" loading="lazy" onerror="this.onerror=null; if(window.loadFallbackImageFromS3){window.loadFallbackImageFromS3(this, '${escapeHtml(itemKey)}', '${escapeHtml(s3TargetKey)}', '${s3Provider}');}else{this.parentElement.innerHTML='<div class=\\'thumb format-badge\\'>${escapeHtml(ext.toUpperCase() || 'IMG')}</div>';}">`;
     } else if (isVideo) {
-      thumbHtml = `<video class="thumb" src="${escapeHtml(publicUrl)}#t=0.5" preload="metadata" muted playsinline style="object-fit: cover; pointer-events: none;"></video>`;
+      thumbHtml = `<video class="thumb" src="${escapeHtml(publicUrl)}#t=0.5" preload="none" muted playsinline style="object-fit: cover; pointer-events: none;"></video>`;
     } else {
       thumbHtml = `<div class="thumb format-badge">${escapeHtml(ext.toUpperCase() || "FILE")}</div>`;
     }
