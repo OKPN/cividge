@@ -497,7 +497,10 @@
                     <input id="dedicatedUploadApiUrl" type="text" readonly style="font-family: monospace; font-size: 11px; background: #111215; height: 32px;" value="">
                   </label>
                   <label class="field" style="margin: 0;">
-                    <span style="font-size: 11px; color: var(--muted);">🔑 投稿専用 API トークン</span>
+                    <span style="display: flex; justify-content: space-between; align-items: center;">
+                      <span style="font-size: 11px; color: var(--muted);">🔑 投稿専用 API トークン</span>
+                      <span id="uploadTokenStatusBadge" style="font-size: 10.5px; color: var(--muted);" data-i18n="uploadTokenStatusUnknown">⚪ 未検証</span>
+                    </span>
                     <input id="uploadApiToken" type="password" placeholder="Worker の UPLOAD_TOKEN を入力" style="font-family: monospace; font-size: 11px; height: 32px;" spellcheck="false" autocomplete="off">
                     <span style="font-size: 10px; color: var(--muted); line-height: 1.3;">※ 管理用トークンではなく、外部投稿だけを許可する <code>UPLOAD_TOKEN</code> を使います。BAT にはこのトークンが保存されるため、他人へ渡さないでください。</span>
                   </label>

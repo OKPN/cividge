@@ -160,6 +160,11 @@ const i18nDict = {
     uploadNamingOriginal: "元の名前を維持 (100文字自動切り詰め)",
     uploadNamingRandom: "完全ランダム英数字 (名前秘匿)",
     uploadNamingDateRandom: "日付＋ランダム (20260918_xxxxxx)",
+    uploadTokenStatusUnknown: "⚪ 未検証",
+    uploadTokenStatusChecking: "🟡 検証中...",
+    uploadTokenStatusValid: "🟢 トークン一致 (認証成功)",
+    uploadTokenStatusInvalid: "🔴 トークン不一致 (Worker設定と異なります)",
+    uploadTokenStatusNeedWorker: "⚠️ Worker URL 未設定",
     uploadApiNote: "※ 本APIで投稿されたファイルは Filebase(IPFS) または R2 に保存され、選択した配信用ドメインの短縮URLが発行されます。",
     sendToUninstallNote: "※「送る」から解除・削除したい場合: <code>Win + R</code> ➜ <code>shell:sendto</code> で開くフォルダからバッチを削除してください。",
     passwordBadge: "🔒 パスワード保護",
@@ -377,6 +382,11 @@ const i18nDict = {
     uploadNamingOriginal: "Keep original name (auto 100-char limit)",
     uploadNamingRandom: "Random alphanumeric (hide original name)",
     uploadNamingDateRandom: "Date + random (20260918_xxxxxx)",
+    uploadTokenStatusUnknown: "⚪ Not verified",
+    uploadTokenStatusChecking: "🟡 Checking...",
+    uploadTokenStatusValid: "🟢 Token valid (Authenticated)",
+    uploadTokenStatusInvalid: "🔴 Token mismatch (Invalid token)",
+    uploadTokenStatusNeedWorker: "⚠️ Worker URL not configured",
     uploadApiNote: "※ Files uploaded via this API are stored in Filebase (IPFS) or R2 with a short URL for the selected domain.",
     sendToUninstallNote: "※ To remove from 'Send To': Press <code>Win + R</code> ➜ type <code>shell:sendto</code> and delete the batch file.",
     passwordBadge: "🔒 Password Protected",
@@ -8800,7 +8810,83 @@ function getDedicatedUploadFullUrl() {
   return url.toString();
 }
 
-// UIの同期・トークン未設定ガード
+const uploadTokenStatusBadge = document.querySelector("#uploadTokenStatusBadge");
+let isUploadTokenVerified = false;
+let uploadTokenVerifyTimer = null;
+
+// 🔑 Worker と通信して UPLOAD_TOKEN の正誤を検証
+async function verifyUploadToken() {
+  const token = getUploadApiToken();
+  const endpoint = getDedicatedUploadEndpoint();
+  const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
+
+  if (!endpoint) {
+    if (uploadTokenStatusBadge) {
+      uploadTokenStatusBadge.innerHTML = `<span style="color: var(--muted);">${dict.uploadTokenStatusNeedWorker}</span>`;
+    }
+    isUploadTokenVerified = false;
+    updateDedicatedUploadApiUI();
+    return;
+  }
+
+  if (!token) {
+    if (uploadTokenStatusBadge) {
+      uploadTokenStatusBadge.innerHTML = `<span style="color: var(--muted);">${dict.uploadTokenStatusUnknown}</span>`;
+    }
+    isUploadTokenVerified = false;
+    updateDedicatedUploadApiUI();
+    return;
+  }
+
+  if (uploadTokenStatusBadge) {
+    uploadTokenStatusBadge.innerHTML = `<span style="color: #f59e0b;">${dict.uploadTokenStatusChecking}</span>`;
+  }
+
+  try {
+    const res = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+      },
+    });
+
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.valid || data.success) {
+        if (uploadTokenStatusBadge) {
+          uploadTokenStatusBadge.innerHTML = `<span style="color: #22c55e; font-weight: 600;">${dict.uploadTokenStatusValid}</span>`;
+        }
+        isUploadTokenVerified = true;
+      } else {
+        if (uploadTokenStatusBadge) {
+          uploadTokenStatusBadge.innerHTML = `<span style="color: #ef4444; font-weight: 600;">${dict.uploadTokenStatusInvalid}</span>`;
+        }
+        isUploadTokenVerified = false;
+      }
+    } else {
+      if (uploadTokenStatusBadge) {
+        uploadTokenStatusBadge.innerHTML = `<span style="color: #ef4444; font-weight: 600;">${dict.uploadTokenStatusInvalid}</span>`;
+      }
+      isUploadTokenVerified = false;
+    }
+  } catch (err) {
+    if (uploadTokenStatusBadge) {
+      uploadTokenStatusBadge.innerHTML = `<span style="color: #ef4444;">⚠️ 通信エラー</span>`;
+    }
+    isUploadTokenVerified = false;
+  }
+
+  updateDedicatedUploadApiUI();
+}
+
+function scheduleUploadTokenVerify(delayMs = 400) {
+  if (uploadTokenVerifyTimer) clearTimeout(uploadTokenVerifyTimer);
+  uploadTokenVerifyTimer = setTimeout(() => {
+    verifyUploadToken();
+  }, delayMs);
+}
+
+// UIの同期・トークン未設定＆不一致ガード
 function updateDedicatedUploadApiUI() {
   if (!dedicatedUploadApiUrlInput) return;
   const token = getUploadApiToken();
@@ -8810,13 +8896,21 @@ function updateDedicatedUploadApiUI() {
   dedicatedUploadApiUrlInput.value = getDedicatedUploadFullUrl();
 
   if (uploadTokenNotice) {
-    uploadTokenNotice.style.display = hasToken && hasEndpoint ? "none" : "block";
-    uploadTokenNotice.innerHTML = !hasEndpoint
-      ? "⚠️ <strong>KV Worker URL が必要です:</strong> 「クラウドストレージ接続設定」で、自分の KV Worker URL を保存してください。"
-      : "⚠️ <strong>投稿専用 API トークンが必要です:</strong> Worker に設定した <code>UPLOAD_TOKEN</code> を入力すると、URLコピー・curl例・Windows「送る」登録を利用できます。";
+    if (!hasEndpoint) {
+      uploadTokenNotice.style.display = "block";
+      uploadTokenNotice.innerHTML = "⚠️ <strong>KV Worker URL が必要です:</strong> 「クラウドストレージ接続設定」で、自分の KV Worker URL を保存してください。";
+    } else if (!hasToken) {
+      uploadTokenNotice.style.display = "block";
+      uploadTokenNotice.innerHTML = "⚠️ <strong>投稿専用 API トークンが必要です:</strong> Worker に設定した <code>UPLOAD_TOKEN</code> を入力すると、URLコピー・curl例・Windows「送る」登録を利用できます。";
+    } else if (!isUploadTokenVerified) {
+      uploadTokenNotice.style.display = "block";
+      uploadTokenNotice.innerHTML = "❌ <strong>トークンが Worker と一致していません:</strong> 入力されたトークンでは認証に失敗しました。Worker の <code>UPLOAD_TOKEN</code> と完全一致しているか確認してください。";
+    } else {
+      uploadTokenNotice.style.display = "none";
+    }
   }
 
-  const isReady = hasToken && hasEndpoint;
+  const isReady = isUploadTokenVerified && hasEndpoint;
   if (copyUploadApiUrlBtn) copyUploadApiUrlBtn.disabled = !isReady;
   if (copyCurlCmdBtn) copyCurlCmdBtn.disabled = !isReady;
   if (downloadSendToBatBtn) downloadSendToBatBtn.disabled = !isReady;
@@ -8832,7 +8926,10 @@ r2DomainSelect?.addEventListener("change", () => {
   populateUploadReturnDomainSelect();
   updateDedicatedUploadApiUI();
 });
-kvWorkerUrl?.addEventListener("input", updateDedicatedUploadApiUI);
+kvWorkerUrl?.addEventListener("input", () => {
+  updateDedicatedUploadApiUI();
+  scheduleUploadTokenVerify(400);
+});
 if (uploadNamingRuleSelect) {
   uploadNamingRuleSelect.value = localStorage.getItem("uploadNamingRule") || "original";
   uploadNamingRuleSelect.addEventListener("change", () => {
@@ -8845,13 +8942,14 @@ if (uploadApiTokenInput) {
     const token = uploadApiTokenInput.value.trim();
     if (token) localStorage.setItem("uploadApiToken", token);
     else localStorage.removeItem("uploadApiToken");
-    updateDedicatedUploadApiUI();
+    scheduleUploadTokenVerify(400);
   });
 }
 
 setTimeout(() => {
   populateUploadReturnDomainSelect();
   updateDedicatedUploadApiUI();
+  scheduleUploadTokenVerify(200);
 }, 250);
 
 copyUploadApiUrlBtn?.addEventListener("click", async () => {
@@ -8895,6 +8993,10 @@ downloadSendToBatBtn?.addEventListener("click", async () => {
   const token = getUploadApiToken();
   if (!token) {
     alert("⚠️ 投稿専用 API トークンが未入力です。Worker の UPLOAD_TOKEN を入力してから登録してください。");
+    return;
+  }
+  if (!isUploadTokenVerified) {
+    alert("⚠️ 投稿専用 API トークンが Worker と一致していません。正しい UPLOAD_TOKEN を入力してください。");
     return;
   }
 
@@ -9035,6 +9137,10 @@ downloadSharexBtn?.addEventListener("click", async () => {
   const token = getUploadApiToken();
   if (!token) {
     alert("⚠️ 投稿専用 API トークンが未入力です。Worker の UPLOAD_TOKEN を入力してからダウンロードしてください。");
+    return;
+  }
+  if (!isUploadTokenVerified) {
+    alert("⚠️ 投稿専用 API トークンが Worker と一致していません。正しい UPLOAD_TOKEN を入力してください。");
     return;
   }
 
