@@ -178,7 +178,8 @@ h2 {
   font-size: 13px;
 }
 
-.dropzone.has-files span:last-child {
+.dropzone.has-files span[data-i18n="orClick"],
+.dropzone.has-files .drop-limit-hint {
   display: none;
 }
 
