@@ -423,5 +423,34 @@ npx wrangler pages deploy dist --project-name=my-content-cache
 3. **無駄な Pin 通信のスキップ**:
    - ソート後、容量が目標値に達するまでファイルを走査。
    - 既に Kubo Pin 済みのファイルは `pinToKubo` を呼ばずに即座にアンピン対象リストへ投入。
-   - Kubo 未 Pin のファイルのみ、これまで通り `pinToKubo` を実行して成功を確認した上でアンピン対象リストへ投入。
 
+
+---
+
+## 📸 [新機能] 外部投稿アコーディオンにおける ShareX 設定ファイル (.sxcu) ダウンロード機能
+
+### 1. 背景と狙い
+- **課題**:
+  - `cividge-kv-worker/upload.js` による外部投稿API（マルチパートPOST受付）は完成していたが、ShareX にカスタムアップローダーとして手動登録する場合、JSON構文の作成やヘッダー・URLの指定で打ち間違いが発生しやすく、ハードルが高かった。
+  - スクリーンショット撮影時、個人名や元ファイル名が漏洩するのを防ぐため、ファイル名を「元の名前」「完全ランダム」「日付＋ランダム」から選んでアップロードしたい需要があった。
+- **解決策**:
+  - `index.html` の「🚀 外部投稿 / Windows「送る」連携」アコーディオン内に、**ファイル名命名ルール選択UI** と **「📥 ShareX 設定ファイル (.sxcu)」ダウンロードボタン** を追加。
+  - アコーディオン内で選択された「ストレージ（Filebase/R2）」「配信ドメイン」「トークン」「ファイル名ルール」を動的に埋め込んだ `.sxcu` ファイルをブラウザ上で即座に生成・ダウンロード可能にする。
+  - ユーザーはダウンロードしたファイルをダブルクリックするだけで、ShareX への登録が完了する。
+
+### 2. 仕様
+- **UI要素**:
+  - `#uploadNamingRuleSelect`: ファイル名命名規則
+    - `original`: 元の名前を維持（100文字自動切り詰め） ➔ `X-Upload-Filename: {filename}`
+    - `random`: 完全ランダム英数字 ➔ `X-Upload-Filename: {rand:8}.{ext}`
+    - `date_random`: 日付＋ランダム ➔ `X-Upload-Filename: {year}{month}{day}_{rand:6}.{ext}`
+  - `#downloadSharexBtn`: `📥 ShareX 設定ファイル (.sxcu)`
+- **生成される .sxcu の構造**:
+  - `DestinationType`: `ImageUploader, TextUploader, FileUploader`
+  - `RequestMethod`: `POST`
+  - `RequestURL`: `https://<Worker>/api/upload?storage=<filebase|r2>&domain=<配信ドメイン>`
+  - `Headers`: `Authorization: Bearer <UPLOAD_TOKEN>`, `X-Upload-Filename: <ルールに応じた構文>`
+  - `Body`: `MultipartFormData`
+  - `FileFormName`: `file`
+  - `URL`: `{json:url}`
+  - `ErrorMessage`: `{json:error}`

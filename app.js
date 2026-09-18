@@ -155,6 +155,11 @@ const i18nDict = {
     btnCopyUrl: "📋 URLをコピー",
     btnCopyCurl: "💻 curl例をコピー",
     btnDownloadSendTo: "📥 Windows「送る」登録バッチ",
+    btnDownloadSharex: "📥 ShareX 設定 (.sxcu)",
+    uploadNamingRuleLabel: "🏷️ ファイル名ルール (ShareX等):",
+    uploadNamingOriginal: "元の名前を維持 (100文字自動切り詰め)",
+    uploadNamingRandom: "完全ランダム英数字 (名前秘匿)",
+    uploadNamingDateRandom: "日付＋ランダム (20260918_xxxxxx)",
     uploadApiNote: "※ 本APIで投稿されたファイルは Filebase(IPFS) または R2 に保存され、選択した配信用ドメインの短縮URLが発行されます。",
     sendToUninstallNote: "※「送る」から解除・削除したい場合: <code>Win + R</code> ➜ <code>shell:sendto</code> で開くフォルダからバッチを削除してください。",
     passwordBadge: "🔒 パスワード保護",
@@ -367,6 +372,11 @@ const i18nDict = {
     btnCopyUrl: "📋 Copy URL",
     btnCopyCurl: "💻 Copy curl",
     btnDownloadSendTo: "📥 Windows 'Send To' Batch",
+    btnDownloadSharex: "📥 ShareX Config (.sxcu)",
+    uploadNamingRuleLabel: "🏷️ Filename rule (ShareX etc):",
+    uploadNamingOriginal: "Keep original name (auto 100-char limit)",
+    uploadNamingRandom: "Random alphanumeric (hide original name)",
+    uploadNamingDateRandom: "Date + random (20260918_xxxxxx)",
     uploadApiNote: "※ Files uploaded via this API are stored in Filebase (IPFS) or R2 with a short URL for the selected domain.",
     sendToUninstallNote: "※ To remove from 'Send To': Press <code>Win + R</code> ➜ type <code>shell:sendto</code> and delete the batch file.",
     passwordBadge: "🔒 Password Protected",
@@ -8714,15 +8724,16 @@ civitaiGalleryList?.addEventListener("click", async (event) => {
 });
 
 // --- 🚀 外部投稿 / Windows「送る」連携ロジック ---
-// --- 🚀 外部投稿 / Windows「送る」連携ロジック ---
 const uploadStorageSelect = document.querySelector("#uploadStorageSelect");
 const uploadReturnDomainSelect = document.querySelector("#uploadReturnDomainSelect");
+const uploadNamingRuleSelect = document.querySelector("#uploadNamingRuleSelect");
 const dedicatedUploadApiUrlInput = document.querySelector("#dedicatedUploadApiUrl");
 const uploadApiTokenInput = document.querySelector("#uploadApiToken");
 const uploadTokenNotice = document.querySelector("#uploadTokenNotice");
 const copyUploadApiUrlBtn = document.querySelector("#copyUploadApiUrlBtn");
 const copyCurlCmdBtn = document.querySelector("#copyCurlCmdBtn");
 const downloadSendToBatBtn = document.querySelector("#downloadSendToBatBtn");
+const downloadSharexBtn = document.querySelector("#downloadSharexBtn");
 
 // 外部投稿は、利用者自身が設定した Worker だけを対象にする。
 function getDedicatedUploadEndpoint() {
@@ -8809,6 +8820,7 @@ function updateDedicatedUploadApiUI() {
   if (copyUploadApiUrlBtn) copyUploadApiUrlBtn.disabled = !isReady;
   if (copyCurlCmdBtn) copyCurlCmdBtn.disabled = !isReady;
   if (downloadSendToBatBtn) downloadSendToBatBtn.disabled = !isReady;
+  if (downloadSharexBtn) downloadSharexBtn.disabled = !isReady;
 }
 
 uploadStorageSelect?.addEventListener("change", () => {
@@ -8821,6 +8833,12 @@ r2DomainSelect?.addEventListener("change", () => {
   updateDedicatedUploadApiUI();
 });
 kvWorkerUrl?.addEventListener("input", updateDedicatedUploadApiUI);
+if (uploadNamingRuleSelect) {
+  uploadNamingRuleSelect.value = localStorage.getItem("uploadNamingRule") || "original";
+  uploadNamingRuleSelect.addEventListener("change", () => {
+    localStorage.setItem("uploadNamingRule", uploadNamingRuleSelect.value);
+  });
+}
 if (uploadApiTokenInput) {
   uploadApiTokenInput.value = localStorage.getItem("uploadApiToken") || "";
   uploadApiTokenInput.addEventListener("input", () => {
@@ -9007,6 +9025,75 @@ if ($errors.Count -gt 0) {
   const a = document.createElement("a");
   a.href = downloadUrl;
   a.download = batFileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(downloadUrl), 10000);
+});
+
+downloadSharexBtn?.addEventListener("click", async () => {
+  const token = getUploadApiToken();
+  if (!token) {
+    alert("⚠️ 投稿専用 API トークンが未入力です。Worker の UPLOAD_TOKEN を入力してからダウンロードしてください。");
+    return;
+  }
+
+  const endpoint = getDedicatedUploadEndpoint();
+  const selectedDomain = getSelectedUploadReturnDomain();
+  const selectedStorage = getSelectedUploadStorage();
+  const namingRule = uploadNamingRuleSelect?.value || "original";
+
+  if (!endpoint) {
+    alert("⚠️ 投稿APIエンドポイントが未設定です。KV Worker URL を設定してください。");
+    return;
+  }
+
+  const url = new URL(endpoint);
+  if (selectedStorage) {
+    url.searchParams.set("storage", selectedStorage);
+  }
+  if (selectedDomain) {
+    url.searchParams.set("domain", selectedDomain);
+  }
+
+  let filenamePattern = "{filename}";
+  if (namingRule === "random") {
+    filenamePattern = "{rand:8}.{ext}";
+  } else if (namingRule === "date_random") {
+    filenamePattern = "{year}{month}{day}_{rand:6}.{ext}";
+  }
+
+  let domainHost = "";
+  try {
+    const parsed = new URL(selectedDomain.startsWith("http") ? selectedDomain : `https://${selectedDomain}`);
+    domainHost = parsed.hostname || selectedDomain;
+  } catch (e) {
+    domainHost = selectedDomain || "Cividge";
+  }
+  const storageLabel = selectedStorage === "r2" ? "R2" : "Filebase";
+
+  const sxcuConfig = {
+    Version: "15.0.0",
+    Name: `Cividge (${storageLabel} - ${domainHost})`,
+    DestinationType: "ImageUploader, TextUploader, FileUploader",
+    RequestMethod: "POST",
+    RequestURL: url.toString(),
+    Headers: {
+      Authorization: `Bearer ${token}`,
+      "X-Upload-Filename": filenamePattern,
+    },
+    Body: "MultipartFormData",
+    FileFormName: "file",
+    URL: "{json:url}",
+    ErrorMessage: "{json:error}",
+  };
+
+  const jsonString = JSON.stringify(sxcuConfig, null, 2);
+  const blob = new Blob([jsonString], { type: "application/json;charset=utf-8" });
+  const downloadUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = downloadUrl;
+  a.download = `Cividge_${storageLabel}_${domainHost}.sxcu`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

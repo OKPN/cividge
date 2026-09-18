@@ -485,6 +485,14 @@
                     </select>
                   </label>
                   <label class="field" style="margin: 0;">
+                    <span style="font-size: 11px; color: var(--muted);" data-i18n="uploadNamingRuleLabel">🏷️ ファイル名ルール (ShareX等):</span>
+                    <select id="uploadNamingRuleSelect" style="font-size: 11px; height: 32px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8; border-radius: 6px; padding: 0 8px; outline: none; cursor: pointer;">
+                      <option value="original" selected data-i18n="uploadNamingOriginal">元の名前を維持 (100文字自動切り詰め)</option>
+                      <option value="random" data-i18n="uploadNamingRandom">完全ランダム英数字 (名前秘匿)</option>
+                      <option value="date_random" data-i18n="uploadNamingDateRandom">日付＋ランダム (20260918_xxxxxx)</option>
+                    </select>
+                  </label>
+                  <label class="field" style="margin: 0;">
                     <span style="font-size: 11px;" data-i18n="uploadApiUrl">投稿API エンドポイント URL</span>
                     <input id="dedicatedUploadApiUrl" type="text" readonly style="font-family: monospace; font-size: 11px; background: #111215; height: 32px;" value="">
                   </label>
@@ -500,6 +508,7 @@
                     <button class="ghost-button" id="copyUploadApiUrlBtn" type="button" style="font-size: 11px; padding: 4px 8px; min-height: 30px;" data-i18n="btnCopyUrl">📋 URLをコピー</button>
                     <button class="ghost-button" id="copyCurlCmdBtn" type="button" style="font-size: 11px; padding: 4px 8px; min-height: 30px;" data-i18n="btnCopyCurl">💻 curl例をコピー</button>
                     <button class="ghost-button" id="downloadSendToBatBtn" type="button" style="font-size: 11px; padding: 4px 8px; min-height: 30px; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;" data-i18n="btnDownloadSendTo">📥 Windows「送る」登録バッチ</button>
+                    <button class="ghost-button" id="downloadSharexBtn" type="button" style="font-size: 11px; padding: 4px 8px; min-height: 30px; border-color: rgba(167, 139, 250, 0.4); color: #a78bfa;" data-i18n="btnDownloadSharex">📥 ShareX 設定 (.sxcu)</button>
                   </div>
                   <span style="font-size: 10px; color: var(--muted); line-height: 1.3;" data-i18n="uploadApiNote">
                     ※ 本APIで投稿されたファイルは Filebase(IPFS) または R2 に保存され、選択した配信用ドメインの短縮URLが発行されます。
