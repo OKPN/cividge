@@ -277,6 +277,14 @@ npm run build
 npm run preview
 ```
 
+## Documentation and Guides
+
+- [Storage Selection & Operations Guide](docs/STORAGE_SELECTION_GUIDE.md) — R2 vs Filebase vs Kubo selection criteria, gotchas (Egress, credit card, bandwidth limits), and workflow recommendations.
+- [Security & Cache Runbook](docs/SECURITY_AND_CACHE_RUNBOOK.md) — Edge defense SOP against cache buster DoS and zero-trust configuration.
+- [Free R2 + Pages CDN Guide](docs/FREE_R2_PAGES_CDN_GUIDE.md) — Zero-egress setup combining Cloudflare R2 and Pages.
+- [System Invariants (INVARIANTS.md)](INVARIANTS.md) — Non-negotiable system rules and design constraints.
+- [Specification (SPEC.md)](SPEC.md) — Core lifecycle contracts.
+
 ## Related repository
 
 - [cividge-kv-worker](https://github.com/OKPN/cividge-kv-worker) — KV registry, delivery, and cache management Worker
@@ -284,3 +292,4 @@ npm run preview
 ## License
 
 MIT License © 2026 OKPN
+

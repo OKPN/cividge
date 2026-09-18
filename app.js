@@ -46,7 +46,17 @@ const i18nDict = {
     siteTitle: "Cividge",
     eyebrow: "ブラウザで変換し、自分のストレージへ直接保存・配信",
     whatIsSiteSummary: "❓ どのようなサイト？",
-    whatIsSiteBody: `<strong>Civitai Bridge（Cividge）</strong>は、ブラウザ内でメディアを変換し、自分の Cloudflare R2 または Filebase（IPFS）へ保存・配信する個人用アップローダです。<br><span style="display: inline-block; margin-top: 6px; font-size: 12px; color: #a5b4fc;">必要に応じて KV Worker により別名 URL・期限・閲覧パスワードを管理でき、Kubo ノードは IPFS コンテンツの保全先として利用できます。接続情報はこのブラウザの localStorage に保存されます。</span>`,
+    whatIsSiteBody: `<strong>Civitai Bridge（Cividge）</strong>は、ブラウザ内でメディアを変換し、自分の Cloudflare R2 または Filebase（IPFS）へ保存・配信する個人用アップローダです。<br><span style="display: inline-block; margin-top: 6px; font-size: 12px; color: #a5b4fc;">必要に応じて KV Worker により別名 URL・期限・閲覧パスワードを管理でき、Kubo ノードは IPFS コンテンツの保全先として利用できます。接続情報はこのブラウザの localStorage に保存されます。</span>
+<details style="margin-top: 10px; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 6px; padding: 6px 10px;">
+  <summary style="cursor: pointer; font-weight: 600; color: #38bdf8; font-size: 12px;">💡 ストレージの選択基準・運用のコツ（R2 vs Filebase vs Kubo）</summary>
+  <div style="margin-top: 6px; font-size: 11.5px; line-height: 1.55; color: #cbd5e1;">
+    <ul style="margin: 0; padding-left: 18px;">
+      <li><strong>Cloudflare R2</strong>: ダウンロード転送量（Egress）が<strong>完全無料・無制限</strong>。大量閲覧（バズ）や重い動画（〜128MB）に最適。※クレカ必須、10GBを超えると自動従量課金（上限キャップ不可）のため不要ファイルは定期削除推奨。</li>
+      <li><strong>Filebase（IPFS）</strong>: クレカ不要で安全。画像（1〜2MB）を長期間安定配信するのに最適。※無料枠は容量5GB・転送月10GB（実質5GB目安）のため、重い動画やバズるファイルはR2かKubo併用を推奨。</li>
+      <li><strong>自宅 Kubo 連携</strong>: 20MB超の動画や人気ファイルは共有前にKuboへピン留め（Pin）すると、Filebase帯域消費が<strong>ゼロ</strong>になります（※初回のみ自宅の上り回線に少し注意）。</li>
+    </ul>
+  </div>
+</details>`,
     inputFiles: "入力ファイル",
     addFolder: "フォルダを追加",
     dropText: "ファイルやフォルダをここにドロップ",
@@ -264,6 +274,17 @@ const i18nDict = {
             <div style="font-size: 11.5px; color: var(--muted);">Browse public creator posts with the Civitai API, collect media URLs, and share work through delivery links you control.</div>
           </div>
         </div>
+
+        <details style="margin-top: 10px; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 6px; padding: 6px 10px;">
+          <summary style="cursor: pointer; font-weight: 600; color: #38bdf8; font-size: 12px;">💡 Storage Selection Guide & Operational Tips (R2 vs Filebase vs Kubo)</summary>
+          <div style="margin-top: 6px; font-size: 11.5px; line-height: 1.55; color: #cbd5e1;">
+            <ul style="margin: 0; padding-left: 18px;">
+              <li><strong>Cloudflare R2</strong>: Zero egress cost (100% free downloads). Best for viral traffic and heavy videos (up to 128MB). *Credit card required; automatic pay-as-you-go above 10GB free tier (no cap mechanism).*</li>
+              <li><strong>Filebase (IPFS)</strong>: No credit card required. Best for standard images (1–2MB) and decentralized preservation. *Free tier includes 5GB storage & 10GB/month transfer.*</li>
+              <li><strong>Self-hosted Kubo Node</strong>: Pinning heavy videos (>20MB) to your Kubo node before sharing completely bypasses Filebase egress quotas via public gateways.</li>
+            </ul>
+          </div>
+        </details>
 
         <div style="margin-top: 14px; padding: 10px 12px; background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 11.5px; color: var(--muted);">
           <strong style="color: #fbbf24;">📌 Independent tool notice:</strong><br>
