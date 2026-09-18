@@ -553,3 +553,43 @@ npx wrangler pages deploy dist --project-name=my-content-cache
 ### 2. システム不変条件（INVARIANTS.md）の体系化
 - 両リポジトリに `INVARIANTS.md` を配置し、システムが絶対に満たすべきルール（台帳存在時の 404 キャッシュ禁止、参照残存時のアンピン禁止、全件走査必須、サムネイル preload、128MB 上限）を成文化。
 - コード内の該当箇所に `See: [INV-xxx]` コメントを付与し、将来の改修による誤破壊を永久防止。
+
+---
+
+## 🛡️ [転送枠保護・ルーティング最適化] Filebase Egress 温存 ＆ IPFS ゲートウェイ動的優先制御
+
+### 1. 課題と背景
+- **Filebase のダウンロード帯域（Egress）制限**:
+  - Filebase は保管（Pin）には非常に寛容だが、ダウンロード帯域（Egress）枠に上限が存在する。
+  - 調査の結果、以下の2つの帯域浪費要因が特定された：
+    1. **アップロード直後の無条件全量フェッチ（ウォームアップ）**: アップロード完了 300ms 後にブラウザが `fetch(proxyUrl)` を発行し、まだ誰も閲覧していないファイルの全量を Filebase IPFS からダウンロードしていた（1ファイルあたり100%消費）。
+    2. **上流ゲートウェイの固定順序**: ピン状態に関係なく `ipfs.filebase.io` が最優先されていたため、自宅 Kubo にデータが保全されている場合でも常に Filebase の帯域を消費していた。
+
+### 2. 改修内容と設計
+
+#### ① フロントエンド側: アップロード直後の全量ウォームアップフェッチを完全停止
+- **改修内容 (`app.js`)**:
+  - アップロード完了直後に走っていた `fetch(result.proxyUrl)` を撤廃。
+  - 初回アクセス者（SNS共有やMisskeyでの閲覧時）がアクセスした際にオンデマンドでエッジキャッシュに載せる方式に統一。
+- **効果**:
+  - アップロードしただけで誰も見ないファイルの Filebase ダウンロード帯域消費が **ゼロ** に。
+
+#### ② Worker側: Kubo / Filebase のピン状態に応じた動的優先ルーティング (`delivery.js` / `[INV-DELIVERY-003]`)
+- **改修内容 (`delivery.js`)**:
+  - KV 台帳のフラグ（`flags & 2`: `kuboStatus:pinned`、`flags & 1`: `unpinned`）を判定し、上流ゲートウェイの問い合わせ順序を動的に制御：
+    1. **自宅 Kubo 保全済み (`kuboStatus === "pinned"`)**:
+       - 優先順: 公共GW（`dweb.link`, `ipfs.io`, `gateway.pinata.cloud`, `4everland.io`） ➔ 末尾に `ipfs.filebase.io`（保険）
+       - **効果**: 公共GWが DHT 経由で自宅 Kubo からブロックを取り寄せるため、**Filebase のダウンロード帯域消費はゼロ**。
+    2. **Filebase 解放済み（アンピン / `unpinned: true`）**:
+       - 優先順: 公共GWのみ（ランダム分散）
+       - **効果**: Filebase を候補から完全除外（無駄な 404 問い合わせを防止）。
+    3. **初期アップロード状態（Filebase Pin のみ）**:
+       - 優先順: `ipfs.filebase.io` ➔ 公共GW
+       - **効果**: 実体が確実に存在する Filebase から高速に初回取得。
+    4. **専用ゲートウェイ連携**:
+       - 環境変数 `KUBO_GATEWAY_URL`（自宅 Cloudflare Tunnel 等）が指定されている場合は最優先で直叩き。
+
+### 3. メリット
+- **追加インフラ・スキーマ変更ゼロ**: 既存の KV 台帳ビットフラグをそのまま利用。
+- **Filebase Egress の恒久的大幅削減**: 自宅 Kubo に同期される運用において、Filebase 転送枠の消費が劇的に抑制される。
+

@@ -5705,13 +5705,9 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       }
       result.proxyUrl = getSelectedDeliveryUrl(result) || result.proxyUrl;
 
-      // 🚀 エッジキャッシュ事前ウォームアップ（初回読み出し高速化）:
-      // アップロード直後に裏で1回フェッチを投げてCloudflareエッジにキャッシュを載せておく
-      if (result.proxyUrl && !password) {
-        setTimeout(() => {
-          fetch(result.proxyUrl, { method: "GET", mode: "no-cors" }).catch(() => {});
-        }, 300);
-      }
+      // 🛡️ Filebase 帯域保護（Egress 温存）:
+      // アップロード直後の全量ウォームアップフェッチは Filebase のダウンロード帯域を
+      // 無条件に100%消費するため行わない。実際の初回アクセス時にオンデマンドでエッジキャッシュさせる。
       setFileStoredDomain(result.name, baseDomain);
     } else {
       // ⚡ Cloudflare R2: 保護・期限付きに加え、画像は解像度ヘッダー配信用に台帳登録する。
