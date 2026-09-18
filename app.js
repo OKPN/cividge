@@ -1508,17 +1508,13 @@ function createCardDomainBadgeHtml(currentUrl, extraClass = "") {
     currentDomain = getSelectedR2Domain() ? new URL(getSelectedR2Domain()).hostname : "未設定";
   }
 
-  let icon = "🌐 ";
-  if (currentDomain.includes(".pages.dev")) icon = "⚡ ";
-  else if (currentDomain.includes(".r2.dev")) icon = "📦 ";
-
   let clean = currentDomain;
   if (clean.length > 22) clean = clean.slice(0, 20) + "..";
 
   return `
     <div class="card-domain-badge-wrapper ${extraClass}" style="display: inline-flex; align-items: center; gap: 4px;">
       <button type="button" class="card-domain-badge copy-card-url-btn" data-url="${escapeHtml(currentUrl)}" title="クリックして配信 URL をコピー：${escapeHtml(currentUrl)}" style="height: 28px; font-size: 11px; max-width: 150px; background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 4px; padding: 0 7px; display: inline-flex; align-items: center; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;" target="_blank" rel="noopener noreferrer" href="${escapeHtml(currentUrl)}">
-        ${icon}${escapeHtml(clean)}
+        ${escapeHtml(clean)}
       </button>
       <button type="button" class="ghost-button add-domain-alias-btn" title="このファイルの配信ドメインを増やして別カードを作成（同一CID）" style="height: 28px; width: 28px; min-width: 28px; padding: 0; font-size: 14px; font-weight: bold; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); display: inline-flex; align-items: center; justify-content: center; border-radius: 4px;">＋</button>
     </div>
@@ -1582,13 +1578,7 @@ function renderR2DomainSelect() {
     domains.forEach(domain => {
       const opt = document.createElement("option");
       opt.value = domain;
-      let icon = "🌐 ";
-      if (domain.includes(".pages.dev")) {
-        icon = "⚡ ";
-      } else if (domain.includes(".r2.dev")) {
-        icon = "📦 ";
-      }
-      opt.textContent = `${icon}${domain}`;
+      opt.textContent = domain;
       if (domain === selectedDomain) opt.selected = true;
       selectElem.append(opt);
     });
@@ -7534,10 +7524,7 @@ r2FileList?.addEventListener("click", async (e) => {
     availableDomains.forEach(d => {
       const opt = document.createElement("option");
       opt.value = d;
-      let icon = "🌐 ";
-      if (d.includes(".pages.dev")) icon = "⚡ ";
-      else if (d.includes(".r2.dev")) icon = "📦 ";
-      opt.textContent = `${icon}${d}`;
+      opt.textContent = d;
       domainSelect.appendChild(opt);
     });
 
@@ -8449,15 +8436,12 @@ function showDomainAliasDialog(currentKey, currentDomain, domainList) {
     domainSelect.innerHTML = "";
     let firstOtherDomain = null;
     domainList.forEach(domain => {
-      let icon = "🌐 ";
-      if (domain.includes(".pages.dev")) icon = "⚡ ";
-      else if (domain.includes(".r2.dev")) icon = "📦 ";
       let clean = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
       const isCurrent = currentDomain && domain.toLowerCase() === currentDomain.toLowerCase();
       if (!isCurrent && !firstOtherDomain) firstOtherDomain = domain;
       const opt = document.createElement("option");
       opt.value = domain;
-      opt.textContent = `${icon}${clean}${isCurrent ? " (現在のドメイン)" : ""}`;
+      opt.textContent = `${clean}${isCurrent ? " (現在のドメイン)" : ""}`;
       domainSelect.appendChild(opt);
     });
 
