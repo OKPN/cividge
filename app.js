@@ -4381,7 +4381,7 @@ function updateRenamePreview() {
   });
 
   previewName = previewName.replace(/[\\/:*?"<>|]/g, "-");
-  previewText.textContent = `${previewName}.${ext}`;
+  previewText.textContent = truncateFilename(`${previewName}.${ext}`, 100);
 }
 
 // --- インプレース描画 (Unified File Card) ---
@@ -8458,6 +8458,38 @@ function generateRandomString(length) {
   return result;
 }
 
+// ファイル名を最大100文字に制限し、超過時は安全に切り詰めて短縮ハッシュを付与
+function truncateFilename(filename, maxLength = 100) {
+  if (!filename || typeof filename !== "string") return filename || "";
+  const fullChars = Array.from(filename);
+  if (fullChars.length <= maxLength) return filename;
+
+  const dotIndex = filename.lastIndexOf(".");
+  let ext = "";
+  let baseStr = filename;
+  if (dotIndex > 0 && dotIndex < filename.length - 1) {
+    ext = filename.slice(dotIndex);
+    baseStr = filename.slice(0, dotIndex);
+  }
+
+  let hash = "";
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    const rand = new Uint8Array(4);
+    crypto.getRandomValues(rand);
+    hash = Array.from(rand, b => b.toString(36).padStart(2, "0")).join("").slice(0, 6);
+  } else {
+    hash = Math.random().toString(36).slice(2, 8);
+  }
+
+  const suffix = `_${hash}${ext}`;
+  const suffixChars = Array.from(suffix);
+  const allowedBaseCharsCount = Math.max(1, maxLength - suffixChars.length);
+  const baseChars = Array.from(baseStr);
+  const truncatedBase = baseChars.slice(0, allowedBaseCharsCount).join("").replace(/[._\s-]+$/, "");
+
+  return `${truncatedBase}${suffix}`;
+}
+
 function createOutputName(originalName, mimeType, index = 0) {
   const dotIndex = originalName.lastIndexOf(".");
   const baseName = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
@@ -8497,7 +8529,8 @@ function createOutputName(originalName, mimeType, index = 0) {
     ? extensions[mimeType]
     : (originalExt || "bin");
 
-  return `${safeBase}.${ext}`;
+  // 🛡️ どんなプリセット・連番を重ねても、最終出力は厳格に100文字以内にサニタイズ
+  return truncateFilename(`${safeBase}.${ext}`, 100);
 }
 
 function createZip(entries) {
