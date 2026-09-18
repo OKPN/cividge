@@ -112,6 +112,7 @@ const i18nDict = {
     kuboUnknown: "⚪ 未確認",
     kuboEndpointHelp: "※ 自宅PCでは http://127.0.0.1:5001、外部/HTTPS時は Tailscale 等のエンドポイントを指定",
     kuboAutoPin: "Filebase容量解放時にKuboへ自動Pin留め",
+    kuboPrioritizePinnedLabel: "Kubo保管済みのファイルを優先して容量解放",
     kuboGuideSummary: "推奨運用・外出先から接続する場合（任意）",
     kvApiEndpointLabel: "KV 台帳 API エンドポイント URL",
     kvApiEndpointHelp: "※ 各自の Cloudflare Worker を指定可能。未入力時は自サイトの /api/cividge-kv を試行します。",
@@ -321,6 +322,7 @@ const i18nDict = {
     kuboUnknown: "⚪ Not checked",
     kuboEndpointHelp: "At home use http://127.0.0.1:5001; for remote HTTPS access use a Tailscale or similar endpoint.",
     kuboAutoPin: "Automatically pin to Kubo when Filebase releases capacity",
+    kuboPrioritizePinnedLabel: "Prioritize releasing files already pinned to Kubo",
     kuboGuideSummary: "Recommended operation and remote access (optional)",
     kuboGuideBody: "<p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">What does this do?</strong><br>It uses your PC or server as an IPFS node and pins a CID before Filebase releases capacity. As long as Kubo remains online and retains the pin, you preserve a copy of that CID. This is a preservation layer, not your only backup.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Minimum setup</strong><br>1. Install and start Kubo. 2. At home keep <code>http://127.0.0.1:5001</code>. 3. Enable automatic pinning only after <strong>🔌 Test connection</strong> succeeds. When Kubo is offline, Cividge safely pauses Filebase FIFO to avoid data loss.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Delivery and caching</strong><br>Cividge delivery URLs use edge caching, so cached visits reduce load on Filebase and IPFS nodes. Initial visits and cache misses still access an upstream. Kubo RPC is for pin operations; it does not by itself make Kubo the permanent first delivery origin.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Safe remote access</strong><br>Keep the API bound to <code>127.0.0.1:5001</code>; never expose it directly to the internet. For remote pinning, use an HTTPS endpoint available only inside your Tailnet, such as <strong>Tailscale Serve</strong>. Do not use <strong>0.0.0.0:5001</strong>, a public reverse proxy, or router port forwarding.</p>",
     kvApiEndpointLabel: "KV registry API endpoint URL",
@@ -517,6 +519,7 @@ const filebaseSecretKey = document.querySelector("#filebaseSecretKey");
 // 🏠 Kubo IPFS ノード接続設定要素
 const kuboRpcUrl = document.querySelector("#kuboRpcUrl");
 const kuboAutoPinCheck = document.querySelector("#kuboAutoPinCheck");
+const kuboPrioritizePinned = document.querySelector("#kuboPrioritizePinned");
 const kuboTestButton = document.querySelector("#kuboTestButton");
 const kuboWebUiLink = document.querySelector("#kuboWebUiLink");
 const kuboStatusIndicator = document.querySelector("#kuboStatusIndicator");
@@ -2238,6 +2241,8 @@ function loadSettings() {
   if (kuboRpcUrl) kuboRpcUrl.value = savedKuboUrl;
   const savedKuboAutoPin = localStorage.getItem("kuboAutoPin");
   if (kuboAutoPinCheck) kuboAutoPinCheck.checked = savedKuboAutoPin !== "false"; // デフォルトでON
+  const savedKuboPrioritizePinned = localStorage.getItem("kuboPrioritizePinned");
+  if (kuboPrioritizePinned) kuboPrioritizePinned.checked = savedKuboPrioritizePinned !== "false"; // デフォルトでON
 
   // 🛡️ KV台帳・管理者トークン設定ロード
   const savedKvUrl = localStorage.getItem("kvWorkerUrl") || "";
@@ -2338,6 +2343,7 @@ function buildAppExportPayload() {
   // Kubo
   const kUrl     = (localStorage.getItem("kuboRpcUrl") || kuboRpcUrl?.value || "").trim();
   const kAutoPin = localStorage.getItem("kuboAutoPin");
+  const kPrioritizePinned = localStorage.getItem("kuboPrioritizePinned");
 
   // KV Worker
   const kvUrl    = (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim();
@@ -2368,6 +2374,7 @@ function buildAppExportPayload() {
 
   if (kUrl) payload.ku = kUrl;
   if (kAutoPin !== null) payload.kp = (kAutoPin !== "false");
+  if (kPrioritizePinned !== null) payload.kpp = (kPrioritizePinned !== "false");
 
   if (kvUrl) payload.kv = kvUrl;
   if (kvToken) payload.kt = kvToken;
@@ -2439,6 +2446,10 @@ function applyAppImportPayload(payload) {
   if (payload.kp !== undefined) {
     localStorage.setItem("kuboAutoPin", String(payload.kp));
     if (kuboAutoPinCheck) kuboAutoPinCheck.checked = Boolean(payload.kp);
+  }
+  if (payload.kpp !== undefined) {
+    localStorage.setItem("kuboPrioritizePinned", String(payload.kpp));
+    if (kuboPrioritizePinned) kuboPrioritizePinned.checked = Boolean(payload.kpp);
   }
 
   // 1.4 KV台帳 Worker & トークン
@@ -2637,6 +2648,9 @@ function saveR2SettingsAuto() {
   if (kuboAutoPinCheck) {
     localStorage.setItem("kuboAutoPin", kuboAutoPinCheck.checked ? "true" : "false");
   }
+  if (kuboPrioritizePinned) {
+    localStorage.setItem("kuboPrioritizePinned", kuboPrioritizePinned.checked ? "true" : "false");
+  }
 
   // 🛡️ KV台帳Worker URL & APIトークン自動保存
   const customKv = kvWorkerUrl?.value?.trim() || "";
@@ -2723,6 +2737,7 @@ filebaseSecretKey?.addEventListener("input", saveR2SettingsAuto);
 
 kuboRpcUrl?.addEventListener("input", saveR2SettingsAuto);
 kuboAutoPinCheck?.addEventListener("change", saveR2SettingsAuto);
+kuboPrioritizePinned?.addEventListener("change", saveR2SettingsAuto);
 
 kvWorkerUrl?.addEventListener("input", saveR2SettingsAuto);
 adminApiToken?.addEventListener("input", saveR2SettingsAuto);
@@ -2856,6 +2871,7 @@ cfClearButton?.addEventListener("click", () => {
 
   localStorage.removeItem("kuboRpcUrl");
   localStorage.removeItem("kuboAutoPin");
+  localStorage.removeItem("kuboPrioritizePinned");
   localStorage.removeItem("kvWorkerUrl");
   localStorage.removeItem("adminApiToken");
 
@@ -2870,6 +2886,7 @@ cfClearButton?.addEventListener("click", () => {
 
   if (kuboRpcUrl) kuboRpcUrl.value = "http://127.0.0.1:5001";
   if (kuboAutoPinCheck) kuboAutoPinCheck.checked = true;
+  if (kuboPrioritizePinned) kuboPrioritizePinned.checked = true;
   if (kuboStatusIndicator) kuboStatusIndicator.textContent = "⚪ 未確認";
 
   if (kvWorkerUrl) kvWorkerUrl.value = "";
@@ -5167,7 +5184,10 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
 
     // 🏠 Kubo 自動ピン留め設定の確認（外出先・Kuboオフライン時はファイル消失防止のため安全に中断）
     const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
+    const isKuboPrioritizePinned = localStorage.getItem("kuboPrioritizePinned") !== "false";
     let isKuboAvailable = false;
+    let kuboPinnedSet = null;
+
     if (isKuboAutoPin) {
       const kuboCheck = await checkKuboOnline(1500);
       isKuboAvailable = kuboCheck.online;
@@ -5183,16 +5203,38 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
         return;
       }
       console.log("🏠 自宅 Kubo ノード検出: アンピン対象ファイルをローカルKuboへ救出Pin開始");
+      if (isKuboPrioritizePinned) {
+        try {
+          kuboPinnedSet = await getKuboPinnedCids(1500);
+          if (kuboPinnedSet && kuboPinnedSet.size > 0) {
+            console.log(`🏠 Kubo 保管済みCIDリスト取得成功 (${kuboPinnedSet.size} 件)。保管済みファイルを優先してFilebase容量解放します。`);
+          }
+        } catch (e) {
+          console.warn("Kubo Pin済みリスト取得失敗（通常ソートにフォールバック）:", e);
+        }
+      }
     }
 
     console.log(`🪐 Filebase FIFO 発動: 現在容量 ${formatBytes(currentTotalBytes)} + 新規 ${formatBytes(requiredBytes)} > 上限 ${formatBytes(limitBytes)} (85%)`);
 
-    // 保護対象（pinned_ で始まるもの）を除外し、古い順（LastModified 昇順）にソート
+    // 保護対象（pinned_ で始まるもの）を除外し、ソート
+    // isKuboPrioritizePinned が有効かつ kuboPinnedSet がある場合は、Kubo保管済みを最優先にし、それぞれ古い順（LastModified 昇順）にする
     const eligibleFiles = contents.filter(item => {
       if (item.Key?.startsWith("pinned_")) return false; // 📌永続化は保護
       if (isGeneratedVideoThumbnailKey(item.Key)) return false; // 親動画と一体でのみ回収する
       return true;
-    }).sort((a, b) => new Date(a.LastModified || 0) - new Date(b.LastModified || 0));
+    }).sort((a, b) => {
+      if (isKuboPrioritizePinned && kuboPinnedSet) {
+        const cidA = getStoredIpfsCid(a.Key);
+        const cidB = getStoredIpfsCid(b.Key);
+        const isPinnedA = cidA ? (kuboPinnedSet.has(cidA) ? 1 : 0) : 0;
+        const isPinnedB = cidB ? (kuboPinnedSet.has(cidB) ? 1 : 0) : 0;
+        if (isPinnedA !== isPinnedB) {
+          return isPinnedB - isPinnedA; // Kubo保管済み(1)を先頭にする
+        }
+      }
+      return new Date(a.LastModified || 0) - new Date(b.LastModified || 0);
+    });
 
     const candidates = [];
     let freedBytes = 0;
@@ -5222,7 +5264,7 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
 
     // 🛡️ 安全実行順序:
     // 1. Kubo自動Pin有効時: Filebaseから削除する「前」に、まずKuboへPin留めを成功させる！
-    // 2. Pin成功確認後（またはKubo無効時）にのみ、Filebase S3 DeleteObject を実行する！
+    // 2. Pin成功確認後（またはKubo無効時、すでにKubo保管済み時）にのみ、Filebase S3 DeleteObject を実行する！
     const filesToUnpin = [];
     const kvUpdates = [];
 
@@ -5247,9 +5289,10 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
       }
 
       const isThumb = isGeneratedVideoThumbnailKey(targetKey);
+      const isAlreadyKuboPinned = cid && kuboPinnedSet && kuboPinnedSet.has(cid);
 
       // Kuboへ事前にPin留め（サムネイル以外かつ未Pinの場合）
-      if (isKuboAvailable && isKuboAutoPin && cid && !isThumb && kuboStatus !== "pinned") {
+      if (isKuboAvailable && isKuboAutoPin && cid && !isThumb && kuboStatus !== "pinned" && !isAlreadyKuboPinned) {
         activeKuboPins.add(cid);
         try {
           const pinRes = await pinToKubo(cid);
@@ -5272,6 +5315,9 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
         } finally {
           activeKuboPins.delete(cid);
         }
+      } else if (isAlreadyKuboPinned) {
+        kuboStatus = "pinned";
+        console.log(`🏠 Kubo 保管済み確認（Pinスキップ）: ${targetKey} (${cid})`);
       }
 
       filesToUnpin.push(targetKey);

@@ -395,10 +395,14 @@
                             ※ 自宅PCでは <code>http://127.0.0.1:5001</code>、外部/HTTPS時は Tailscale 等のエンドポイントを指定
                           </span>
                         </label>
-                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px;">
+                        <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 2px;">
                           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11.5px; color: #e2e8f0;">
                             <input type="checkbox" id="kuboAutoPinCheck" checked style="width: 14px; height: 14px; accent-color: #a78bfa; cursor: pointer;">
                             <span data-i18n="kuboAutoPin">Filebase容量解放時にKuboへ自動Pin留め</span>
+                          </label>
+                          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11.5px; color: #e2e8f0;">
+                            <input type="checkbox" id="kuboPrioritizePinned" checked style="width: 14px; height: 14px; accent-color: #a78bfa; cursor: pointer;">
+                            <span data-i18n="kuboPrioritizePinnedLabel">Kubo保管済みのファイルを優先して容量解放</span>
                           </label>
                         </div>
                         <details style="margin-top: 4px; padding: 8px 9px; border: 1px solid rgba(167, 139, 250, 0.25); border-radius: 6px; color: var(--muted); font-size: 10.5px; line-height: 1.55;">

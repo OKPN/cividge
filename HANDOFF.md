@@ -389,4 +389,39 @@ npx wrangler pages deploy dist --project-name=my-content-cache
 3. **新DOMレイアウトへの追従**:
    - CID動的挿入処理を、最新のレスポンシブレイアウト（`.item-cid-group` / `.item-details-row2`）に正しくマウントするよう最適化。
 
+---
+
+## ⚡ [新機能] Filebase FIFO 時の「Kubo保管済みファイル優先解放」
+
+### 1. 背景と開発の狙い
+- **課題**:
+  - Filebase の容量解放（FIFO）実行時、クラウドの容量を空けるために古いファイルを Kubo（自宅ノード）へ Pin 留めしてから Filebase からアンピン（削除）する保全フローが存在する。
+  - しかし、容量不足時に複数ファイルを一度にまとめて Kubo へ新規 Pin しようとすると、ノードの負荷や IPFS ネットワークの探索待ちによりアップロード全体の待機時間が長期化したり、通信タイムアウト等でアップロードが中断されるリスクがあった。
+- **解決策**:
+  - 既にユーザー自身や過去の処理によって「自宅 Kubo ノードに Pin 留め完了しているファイル」が Filebase 上に存在する場合、そのファイルは自宅バックアップが 100% 確定している。
+  - したがって、**「既に Kubo に Pin 留めされているファイル」を最優先で Filebase のアンピン対象として選出**する。
+  - これにより、Kubo への新規 Pin 通信を完全にスキップできるため、**容量解放がミリ秒単位で爆速完了**し、データ消失リスクもゼロでクラウド容量を安全に明け渡すことが可能になる。
+
+### 2. UI および設定仕様
+- **配置場所**:
+  - `index.html` の `#kuboAutoPin`（Filebase容量解放時にKuboへ自動Pin留め）チェックボックスの直下。
+- **表記（ユーザー指定: 🏠マーク・「推奨」なし）**:
+  - 日本語: `Kubo保管済みのファイルを優先して容量解放`
+  - 英語: `Prioritize releasing files already pinned to Kubo`
+- **動作**:
+  - チェックボックス ID: `#kuboPrioritizePinned`
+  - デフォルト値: `true` (ON)
+  - `localStorage` キー: `kuboPrioritizePinned` で設定を永続化。
+
+### 3. アルゴリズム・処理フロー (`ensureStorageCapacityFilebase`)
+1. **Kubo Pin済みリストの一括取得**:
+   - Kubo がオンラインかつ `kuboPrioritizePinned` が有効な場合、`await getKuboPinnedCids(1500)` を1回だけ呼び出し、Kubo 側の Pin 済み CID を `Set` として保持。
+2. **優先ソート**:
+   - アンピン候補ファイル（`eligibleFiles`）を以下の優先順位でソート：
+     - **第1キー**: そのファイルの CID（`getStoredIpfsCid`）が Kubo に Pin 済みかどうか（Pin 済みが先頭）
+     - **第2キー**: 最終更新日時（`LastModified`）の古い順
+3. **無駄な Pin 通信のスキップ**:
+   - ソート後、容量が目標値に達するまでファイルを走査。
+   - 既に Kubo Pin 済みのファイルは `pinToKubo` を呼ばずに即座にアンピン対象リストへ投入。
+   - Kubo 未 Pin のファイルのみ、これまで通り `pinToKubo` を実行して成功を確認した上でアンピン対象リストへ投入。
 
