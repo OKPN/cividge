@@ -5893,7 +5893,7 @@ function getStorageListLabels() {
   if (getAppLanguage() !== "en") {
     return {
       all: "全", items: "件", updated: "更新日:", expires: "期限切れ", remaining: "残り",
-      day: "日", hour: "時間", protected: "パスワード保護", passphrase: "合言葉:",
+      day: "日", hour: "時間", minute: "分", protected: "パスワード保護", passphrase: "合言葉:",
       filebaseStored: "☁️ Filebase: 保持中", filebaseRemoved: "☁️ Filebase: 未保持",
       filebaseRemovedTooltip: "Filebase実体は削除（アンピン）済みです。再保管するには元ファイルを再アップロードしてください",
       kuboOff: "🏠 Kubo: 未設定", kuboStored: "🏠 Kubo: 保持中", kuboMissing: "🏠 Kubo: 未保持",
@@ -5904,7 +5904,7 @@ function getStorageListLabels() {
   }
   return {
     all: "All", items: "items", updated: "Updated:", expires: "Expired", remaining: "Remaining",
-    day: "d", hour: "h", protected: "Password protected", passphrase: "Passphrase:",
+    day: "d", hour: "h", minute: "m", protected: "Password protected", passphrase: "Passphrase:",
     filebaseStored: "☁️ Filebase: Stored", filebaseRemoved: "☁️ Filebase: Unpinned",
     filebaseRemovedTooltip: "Object is unpinned from Filebase. Re-upload the original file to re-store.",
     kuboOff: "🏠 Kubo: Disabled", kuboStored: "🏠 Kubo: Pinned", kuboMissing: "🏠 Kubo: Not pinned",
@@ -6950,10 +6950,22 @@ function renderCurrentStoragePage() {
       if (msRemaining <= 0) {
         ttlBadgeHtml = `<span style="background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;" title="${escapeHtml(labels.expires)}">⚠️ ${escapeHtml(labels.expires)}</span>`;
       } else {
-        const hoursRemaining = Math.max(1, Math.ceil(msRemaining / (1000 * 3600)));
-        const days = Math.floor(hoursRemaining / 24);
-        const remHours = hoursRemaining % 24;
-        const timeText = days > 0 ? `${days}${labels.day}${remHours > 0 ? " " + remHours + labels.hour : ""}` : `${hoursRemaining}${labels.hour}`;
+        const totalSeconds = Math.max(1, Math.floor(msRemaining / 1000));
+        let timeText = "";
+        if (totalSeconds >= 86400) {
+          // 1日以上: ◯日 ◯時間
+          const days = Math.floor(totalSeconds / 86400);
+          const remHours = Math.floor((totalSeconds % 86400) / 3600);
+          timeText = `${days}${labels.day}${remHours > 0 ? " " + remHours + labels.hour : ""}`;
+        } else if (totalSeconds >= 3600) {
+          // 1時間以上 24時間未満: ◯時間
+          const hours = Math.floor(totalSeconds / 3600);
+          timeText = `${hours}${labels.hour}`;
+        } else {
+          // 1時間未満: 59分からカウントダウン（1分未満は1分）
+          const minutes = Math.max(1, Math.floor(totalSeconds / 60));
+          timeText = `${minutes}${labels.minute}`;
+        }
         ttlBadgeHtml = `<span class="ttl-countdown-badge" style="background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;">⏳ ${escapeHtml(labels.remaining)} ${timeText}</span>`;
       }
     }
