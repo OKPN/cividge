@@ -8803,6 +8803,7 @@ function getDedicatedUploadFullUrl() {
   const endpoint = getDedicatedUploadEndpoint();
   const selectedDomain = getSelectedUploadReturnDomain();
   const selectedStorage = getSelectedUploadStorage();
+  const namingRule = uploadNamingRuleSelect?.value || "original";
 
   if (!endpoint) return "";
 
@@ -8812,6 +8813,9 @@ function getDedicatedUploadFullUrl() {
   }
   if (selectedDomain) {
     url.searchParams.set("domain", selectedDomain);
+  }
+  if (namingRule) {
+    url.searchParams.set("naming", namingRule);
   }
   return url.toString();
 }
@@ -8940,6 +8944,7 @@ if (uploadNamingRuleSelect) {
   uploadNamingRuleSelect.value = localStorage.getItem("uploadNamingRule") || "original";
   uploadNamingRuleSelect.addEventListener("change", () => {
     localStorage.setItem("uploadNamingRule", uploadNamingRuleSelect.value);
+    updateDedicatedUploadApiUI();
   });
 }
 if (uploadApiTokenInput) {
@@ -8977,6 +8982,7 @@ copyCurlCmdBtn?.addEventListener("click", async () => {
   const endpoint = getDedicatedUploadEndpoint();
   const selectedDomain = getSelectedUploadReturnDomain();
   const selectedStorage = getSelectedUploadStorage();
+  const namingRule = uploadNamingRuleSelect?.value || "original";
 
   const url = new URL(endpoint);
   if (selectedStorage) {
@@ -8984,6 +8990,9 @@ copyCurlCmdBtn?.addEventListener("click", async () => {
   }
   if (selectedDomain) {
     url.searchParams.set("domain", selectedDomain);
+  }
+  if (namingRule) {
+    url.searchParams.set("naming", namingRule);
   }
 
   let curlCmd = `curl -X POST "${url.toString()}"`;
@@ -9018,6 +9027,7 @@ downloadSendToBatBtn?.addEventListener("click", async () => {
   const endpoint = getDedicatedUploadEndpoint();
   const selectedDomain = getSelectedUploadReturnDomain();
   const selectedStorage = getSelectedUploadStorage();
+  const namingRule = uploadNamingRuleSelect?.value || "original";
 
   const url = new URL(endpoint);
   if (selectedStorage) {
@@ -9025,6 +9035,9 @@ downloadSendToBatBtn?.addEventListener("click", async () => {
   }
   if (selectedDomain) {
     url.searchParams.set("domain", selectedDomain);
+  }
+  if (namingRule) {
+    url.searchParams.set("naming", namingRule);
   }
 
   const endpointUrlStr = url.toString();
@@ -9176,12 +9189,8 @@ downloadSharexBtn?.addEventListener("click", async () => {
   if (selectedDomain) {
     url.searchParams.set("domain", selectedDomain);
   }
-
-  let filenamePattern = "{filename}";
-  if (namingRule === "random") {
-    filenamePattern = "{rand:8}.{ext}";
-  } else if (namingRule === "date_random") {
-    filenamePattern = "{year}{month}{day}_{rand:6}.{ext}";
+  if (namingRule) {
+    url.searchParams.set("naming", namingRule);
   }
 
   let domainHost = "";
@@ -9195,13 +9204,12 @@ downloadSharexBtn?.addEventListener("click", async () => {
 
   const sxcuConfig = {
     Version: "15.0.0",
-    Name: `Cividge (${storageLabel} - ${domainHost})`,
+    Name: `Cividge (${storageLabel} - ${domainHost} - ${namingRule})`,
     DestinationType: "ImageUploader, TextUploader, FileUploader",
     RequestMethod: "POST",
     RequestURL: url.toString(),
     Headers: {
       Authorization: `Bearer ${token}`,
-      "X-Upload-Filename": filenamePattern,
     },
     Body: "MultipartFormData",
     FileFormName: "file",
@@ -9214,7 +9222,7 @@ downloadSharexBtn?.addEventListener("click", async () => {
   const downloadUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = downloadUrl;
-  a.download = `Cividge_${storageLabel}_${domainHost}.sxcu`;
+  a.download = `Cividge_${storageLabel}_${domainHost}_${namingRule}.sxcu`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

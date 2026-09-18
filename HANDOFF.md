@@ -471,3 +471,23 @@ npx wrangler pages deploy dist --project-name=my-content-cache
 - **ダウンロード時のセキュリティ警告ダイアログ**:
   - Windows「送る」バッチと同様に、ShareX 設定ファイル（`.sxcu`）ダウンロード時にも `showCustomConfirm` モーダルを表示。
   - 「この .sxcu ファイルには投稿専用トークンが平文で含まれます。第三者に絶対に共有・公開しないでください」という警告にユーザーが同意（理解してダウンロード）した場合のみ、ファイル生成・ダウンロードを実行する安全防護を追加。
+
+---
+
+## 🛠️ [バグ修正] ShareX 構文エラー（Invalid function name: rand）の解消と Worker 命名ルール処理
+
+### 1. 発生した不具合
+- **エラー現象**: 生成された `.sxcu` ファイルを ShareX にインポート（またはダブルクリック登録）した際、`System.Exception: Invalid function name: rand` エラーが発生して登録に失敗する。
+- **原因**:
+  - ShareX の構文解析器（`ShareXCustomUploaderSyntaxParser`）には `{rand:8}` や `{ext}` といったマクロ関数が存在しない。
+  - `Headers` 内に `{rand:8}` を含めていたため、パース時に未定義関数として例外がスローされていた。
+
+### 2. 解決策
+- **命名ルールの処理を Worker（サーバー側）に集約**:
+  - クライアント側（ShareX）の構文マクロに頼るのを廃止し、Worker のアップロードエンドポイント URL クエリに `?naming=<random|original|date_random>` を付与する設計に変更。
+  - `Headers` から `X-Upload-Filename` を削除し、`Authorization: Bearer <UPLOAD_TOKEN>` のみに簡素化。
+  - これにより ShareX のパースエラーが 100% 解消し、標準的なダブルクリック登録・インポートが可能になった。
+- **Worker 側の対応 (`cividge-kv-worker/upload.js`)**:
+  - `url.searchParams.get("naming")`（またはヘッダー `X-Upload-Naming`）を判定し、`random`（デフォルト・6文字英数）、`original`（元ファイル名ベース・特殊文字サニタイズ）、`date_random`（`YYYYMMDD_xxxxxx.ext`）を確実にサーバー側で振り分けて短縮キー（`shortKey`）を生成。
+- **他機能との統一**:
+  - URLコピー、curl例、Windows「送る」バッチでも同様に `?naming=<rule>` を連動させ、全機能で統一された命名挙動を実現。
