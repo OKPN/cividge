@@ -1158,7 +1158,7 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
   }
 }
 
-async function deleteKvCid(key) {
+async function deleteKvCid(key, { makeTombstone = null } = {}) {
   if (!key) return;
   if (!hasAdminAccess()) {
     console.log(`[責任分離] 一般ユーザーモードのため、KV削除をスキップしました: ${key}`);
@@ -1172,7 +1172,11 @@ async function deleteKvCid(key) {
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
     }
-    await fetch(`${endpoint}${sep}key=${encodeURIComponent(key)}`, {
+    let url = `${endpoint}${sep}key=${encodeURIComponent(key)}`;
+    if (makeTombstone !== null && makeTombstone !== undefined) {
+      url += `&make_tombstone=${makeTombstone ? "1" : "0"}`;
+    }
+    await fetch(url, {
       method: "DELETE",
       headers,
     });
@@ -3178,8 +3182,13 @@ const handleDomainSelectionChange = (newDomain, provider = activeStorageTab) => 
   if (storageProvider === "filebase") updateFilebaseCompatibilityUi();
   updateR2Status();
   updateDomainCompatBadgeUi(storageProvider);
-  render();
-  if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
+  if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) {
+    if (storageCachedContents && storageCachedContents.length > 0) {
+      renderCurrentStoragePage();
+    } else {
+      fetchAndRenderR2Files();
+    }
+  }
 };
 
 r2DomainSelect?.addEventListener("change", (e) => {
@@ -9319,20 +9328,21 @@ r2FileList?.addEventListener("click", async (e) => {
       }
 
       try {
-        // 1. 対象リンクの KV マッピングを削除（バックエンドで墓標キュー tombstone_<cid> も自動登録）
-        await deleteKvCid(key);
+        const willDeleteAll = (siblingLinks.length === 0 || deleteOriginAlso);
+        // 1. 対象リンクの KV マッピングを削除（他で使われていなければ墓標発行指示）
+        await deleteKvCid(key, { makeTombstone: willDeleteAll });
 
         // 2. 「すべて抹消」が選択された場合、共有している兄弟リンクの KV も一括削除
         if (siblingLinks.length > 0 && deleteOriginAlso) {
           for (const sKey of siblingLinks) {
-            await deleteKvCid(sKey);
+            await deleteKvCid(sKey, { makeTombstone: false });
           }
         }
 
         // 3. 他に共有リンクがないか、あるいは「実体ごとすべて抹消」が選ばれた場合のみ S3 実体を削除
         if (deleteOriginAlso && s3 && bucketName && s3Key) {
           const thumbnailKey = getVideoThumbnailKey(s3Key);
-          if (thumbnailKey) await deleteKvCid(thumbnailKey);
+          if (thumbnailKey) await deleteKvCid(thumbnailKey, { makeTombstone: false });
           const keysToDelete = [s3Key, thumbnailKey].filter(Boolean);
           await safeDeleteS3Objects(s3, bucketName, keysToDelete);
         }
@@ -9381,20 +9391,21 @@ r2FileList?.addEventListener("click", async (e) => {
     }
 
     try {
+      const willDeleteAll = (siblingLinks.length === 0 || deleteOriginAlso);
       // 1. 対象リンクの KV マッピングを削除（エイリアスレコードの場合）
-      await deleteKvCid(key);
+      await deleteKvCid(key, { makeTombstone: willDeleteAll });
 
       // 2. 「すべて完全削除」が選択された場合、共有している兄弟リンクの KV も一括削除
       if (siblingLinks.length > 0 && deleteOriginAlso) {
         for (const sKey of siblingLinks) {
-          await deleteKvCid(sKey);
+          await deleteKvCid(sKey, { makeTombstone: false });
         }
       }
 
       // 3. 単独、または「すべて完全削除」の場合のみ S3 (R2) 実体を削除
       if (deleteOriginAlso && s3 && bucketName && resolvedS3Key) {
         const thumbnailKey = getVideoThumbnailKey(resolvedS3Key);
-        if (thumbnailKey) await deleteKvCid(thumbnailKey);
+        if (thumbnailKey) await deleteKvCid(thumbnailKey, { makeTombstone: false });
         const keysToDelete = [resolvedS3Key, thumbnailKey].filter(Boolean);
         await safeDeleteS3Objects(s3, bucketName, keysToDelete);
         keysToDelete.forEach(deleteR2Hash);
@@ -9460,7 +9471,7 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
 
       if (s3 && bucketName && s3KeysToDelete.size > 0) {
         const thumbnailKeys = Array.from(s3KeysToDelete).map(getVideoThumbnailKey).filter(Boolean);
-        for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey);
+        for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey, { makeTombstone: false });
         await safeDeleteS3Objects(s3, bucketName, [...s3KeysToDelete, ...thumbnailKeys]);
       }
 
@@ -9486,7 +9497,7 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
 
       if (s3 && bucketName && s3KeysToDelete.size > 0) {
         const thumbnailKeys = Array.from(s3KeysToDelete).map(getVideoThumbnailKey).filter(Boolean);
-        for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey);
+        for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey, { makeTombstone: false });
         await safeDeleteS3Objects(s3, bucketName, [...s3KeysToDelete, ...thumbnailKeys]);
         s3KeysToDelete.forEach(deleteR2Hash);
       }
