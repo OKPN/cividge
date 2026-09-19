@@ -1458,6 +1458,113 @@ async function findFilebaseObjectByCid(s3, bucketName, targetCid) {
   return null;
 }
 
+// ⚡ R2 疑似CID: Web Crypto API による高速 SHA-256 コンテンツハッシュ計算
+async function calculateContentHash(bytes) {
+  if (!crypto || !crypto.subtle || !bytes) return null;
+  try {
+    const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+  } catch (e) {
+    console.warn("Content hash calculation failed:", e);
+    return null;
+  }
+}
+
+function getR2HashMap() {
+  try {
+    return JSON.parse(localStorage.getItem("r2HashMap") || "{}");
+  } catch (e) {
+    return {};
+  }
+}
+
+function getStoredR2Hash(key) {
+  if (!key) return null;
+  const map = getR2HashMap();
+  return map[key] || null;
+}
+
+function storeR2Hash(key, hash) {
+  if (!key || !hash) return;
+  try {
+    const map = getR2HashMap();
+    map[key] = hash;
+    localStorage.setItem("r2HashMap", JSON.stringify(map));
+  } catch (e) {}
+}
+
+async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
+  if (!s3 || !bucketName || !targetHash) return null;
+
+  // 1. ローカルストレージキャッシュを検索
+  const map = getR2HashMap();
+  for (const [key, hash] of Object.entries(map)) {
+    if (hash === targetHash) {
+      return { key, hash: targetHash, size: targetSize || 0 };
+    }
+  }
+
+  // 2. KV 台帳の既存レコードからハッシュを検索
+  try {
+    const kvFiles = await fetchKvFiles();
+    for (const item of kvFiles) {
+      const h = item.metadata?.hash || item.metadata?.h_sha;
+      if (h === targetHash) {
+        const sKey = item.metadata?.s3Key || item.metadata?.k_s3 || item.name;
+        storeR2Hash(sKey, targetHash);
+        return { key: sKey, hash: targetHash, size: item.metadata?.size || targetSize || 0 };
+      }
+    }
+  } catch (e) {}
+
+  // 3. S3 バケット一覧からサイズ一致の未解決オブジェクトを HEAD 確認
+  let continuationToken = undefined;
+  do {
+    const page = await s3.send(new ListObjectsV2Command({
+      Bucket: bucketName,
+      MaxKeys: 1000,
+      ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+    }));
+    const objects = page.Contents || [];
+
+    for (const object of objects) {
+      if (getStoredR2Hash(object.Key) === targetHash) {
+        return { key: object.Key, hash: targetHash, size: object.Size || 0 };
+      }
+    }
+
+    // サイズが完全一致するものだけに絞り込み（無駄な HEAD リクエストを極小化）
+    const candidateObjects = objects.filter(object => {
+      if (getStoredR2Hash(object.Key)) return false;
+      return targetSize ? (object.Size === targetSize) : true;
+    });
+
+    const batchSize = 4;
+    for (let start = 0; start < candidateObjects.length; start += batchSize) {
+      const batch = candidateObjects.slice(start, start + batchSize);
+      const heads = await Promise.all(batch.map(async (object) => {
+        try {
+          const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: object.Key }));
+          const h = head?.Metadata?.hash || head?.$metadata?.httpHeaders?.["x-amz-meta-hash"] || null;
+          return { object, hash: h };
+        } catch (error) {
+          return { object, hash: null };
+        }
+      }));
+      for (const { object, hash } of heads) {
+        if (!hash) continue;
+        storeR2Hash(object.Key, hash);
+        if (hash === targetHash) return { key: object.Key, hash, size: object.Size || 0 };
+      }
+    }
+
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return null;
+}
+
 function normalizeHttpsOrigin(value) {
   try {
     const parsed = new URL((value || "").trim());
@@ -5583,9 +5690,11 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       ? `attachment; filename="${encodeURIComponent(result.name)}"`
       : "inline";
 
-    // 🧬 Filebase重複検査: 変換後のバイト列からCIDをローカル算出し、同じCIDの
-    // 既存実体があればPutObjectを実行しない。新しい公開名だけをKV台帳に追加する。
+    // 🧬 Filebase / R2 重複検査: 変換後のバイト列からCID/ハッシュを算出し、同じ中身の
+    // 既存実体があればPutObjectを実行しない。新しい公開名だけをKV台帳に追加する（スマートエイリアス）。
     let calculatedCid = null;
+    let calculatedHash = null;
+
     if (isFilebase) {
       calculatedCid = await calculateFilebaseCid(uploadBytes);
       if (calculatedCid) {
@@ -5639,6 +5748,61 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           return true;
         }
       }
+    } else {
+      // ⚡ R2 疑似CID（SHA-256）重複検査:
+      // 同一ハッシュの既存実体があれば PutObject を実行せず、既存実体を指す別名リンク（KV）を作成
+      calculatedHash = await calculateContentHash(uploadBytes);
+      if (calculatedHash) {
+        const duplicate = await findR2ObjectByHash(s3, bucketName, calculatedHash, uploadBytes.length);
+        if (duplicate) {
+          if (!hasAdminAccess()) {
+            throw new Error("同一内容のファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
+          }
+
+          const baseDomain = (getSelectedR2Domain("r2") || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
+          result.isUploaded = true;
+          result.uploadedProvider = "r2";
+          result.storageKey = duplicate.key;
+          result.duplicateOf = duplicate.key;
+          result.mime = contentType;
+          result.password = password;
+          result.hasPassword = Boolean(password);
+          result.ttl = ttlSeconds;
+          result.expiresAt = expiresAt;
+          result.civitaiTemporary = civitaiTemporary;
+
+          // 新名 -> 既存の R2 実体キー、という別名マッピングを登録（R2 容量を消費しない）
+          await registerKvCid(
+            result.name,
+            "r2",
+            uploadBytes.length,
+            contentType,
+            duplicate.key,
+            password,
+            null,
+            ttlSeconds,
+            expiresAt,
+            false,
+            null,
+            baseDomain,
+            true,
+            getVideoThumbnailKey(duplicate.key),
+            imageDimensions?.width,
+            imageDimensions?.height,
+            civitaiTemporary
+          );
+          if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
+          storeR2Hash(result.name, calculatedHash);
+          storeR2Hash(duplicate.key, calculatedHash);
+          result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
+          setFileStoredDomain(result.name, baseDomain);
+          paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
+          renderUrlPalette();
+
+          console.log(`⚡ R2 重複排除（疑似CID照合）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
+          return true;
+        }
+      }
     }
 
     // 🪐 Filebase (IPFS): 容量上限に近づいている場合、最も古い実体を自動アンピン (FIFO)
@@ -5654,6 +5818,9 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     if (expiresAt) {
       s3Metadata["expires-at"] = String(expiresAt);
       s3Metadata["ttl"] = String(ttlSeconds);
+    }
+    if (calculatedHash) {
+      s3Metadata["hash"] = calculatedHash;
     }
 
     const command = new PutObjectCommand({
@@ -5745,6 +5912,9 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       await registerKvCid(result.name, "r2", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
       result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       setFileStoredDomain(result.name, baseDomain);
+      if (calculatedHash) {
+        storeR2Hash(result.name, calculatedHash);
+      }
     }
 
     if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
