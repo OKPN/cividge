@@ -8204,9 +8204,10 @@ r2FileList?.addEventListener("click", async (e) => {
         const kvData = await fetchKvRecord(key);
         if (kvData) {
           const meta = kvData.metadata || {};
+          const isR2 = meta.backend === "r2" || meta.b === "r2" || kvData.value === "r2" || activeStorageTab === "r2";
           await registerKvCid(
             key,
-            cid,
+            isR2 ? "r2" : cid,
             meta.size || 0,
             meta.mime || "",
             meta.s3Key || key,
@@ -8215,7 +8216,15 @@ r2FileList?.addEventListener("click", async (e) => {
             meta.ttl || 0,
             meta.expiresAt || null,
             Boolean(meta.unpinned),
-            "not_pinned"
+            "not_pinned",
+            meta.allowedHost || null,
+            false,
+            meta.thumbnailKey || null,
+            meta.width || null,
+            meta.height || null,
+            Boolean(meta.civitaiTemporary),
+            meta.contentCid || meta.c_cid || (isR2 ? cid : null),
+            isR2 ? "r2" : null
           );
         }
         await fetchAndRenderR2Files();
