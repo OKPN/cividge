@@ -6559,6 +6559,16 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
         const kvCid = kvItem.metadata?.cid || getStoredIpfsCid(rawKey) || getStoredIpfsCid(displayName);
         const recordedS3Key = kvItem.metadata?.s3Key;
 
+        // 🪐 Filebase タブ: R2 ストレージ専用レコードは除外する
+        const isR2Entry = kvCid === "r2" ||
+          kvItem.metadata?.backend === "r2" ||
+          kvItem.metadata?.b === "r2" ||
+          kvItem.value === "r2" ||
+          (!kvCid && !s3KeyToItem.has(recordedS3Key) && !s3KeyToItem.has(rawKey) && !s3KeyToItem.has(displayName));
+        if (isR2Entry) {
+          continue;
+        }
+
         let matchedS3 = null;
         if (recordedS3Key && s3KeyToItem.has(recordedS3Key)) {
           matchedS3 = s3KeyToItem.get(recordedS3Key);
