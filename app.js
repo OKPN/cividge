@@ -1175,6 +1175,11 @@ async function deleteKvCid(key, { makeTombstone = null } = {}) {
     let url = `${endpoint}${sep}key=${encodeURIComponent(key)}`;
     if (makeTombstone !== null && makeTombstone !== undefined) {
       url += `&make_tombstone=${makeTombstone ? "1" : "0"}`;
+      if (makeTombstone) {
+        try {
+          localStorage.setItem("cividge_pending_tombstones", "true");
+        } catch (_) {}
+      }
     }
     await fetch(url, {
       method: "DELETE",
@@ -1244,6 +1249,10 @@ async function drainKuboTombstones() {
   const customRpc = (localStorage.getItem("kuboRpcUrl") || "").trim();
   if (!hasAdminAccess() || !customRpc) return;
 
+  // 🛡️ [INV-CORE-005] 手元保留フラグがない平時は Worker への墓標問い合わせ（kv.list() 1,000件枠）を完全スキップ（通信0回）
+  const hasPendingTombstones = localStorage.getItem("cividge_pending_tombstones") === "true";
+  if (!hasPendingTombstones) return;
+
   const now = Date.now();
   if (now - lastKuboDrainTime < 60000) return; // 少なくとも60秒に1回に制限
   lastKuboDrainTime = now;
@@ -1259,7 +1268,10 @@ async function drainKuboTombstones() {
     if (!res.ok) return;
     const data = await res.json();
     const tombstones = data.tombstones || [];
-    if (tombstones.length === 0) return;
+    if (tombstones.length === 0) {
+      try { localStorage.removeItem("cividge_pending_tombstones"); } catch (_) {}
+      return;
+    }
 
     console.log(`🪦 墓標回収（ゴーストUnpin）開始: ${tombstones.length}件の削除キューを処理中...`);
     for (const cid of tombstones) {
@@ -1275,6 +1287,8 @@ async function drainKuboTombstones() {
         console.warn(`🪦 墓標回収エラー (${cid}):`, err);
       }
     }
+    // 全件処理後に保留フラグをクリア
+    try { localStorage.removeItem("cividge_pending_tombstones"); } catch (_) {}
   } catch (e) {
     console.warn("drainKuboTombstones error:", e);
   }
@@ -1419,9 +1433,12 @@ function addOrUpdateLocalLedgerItem(provider, item) {
 // 🪦 墓標回収の1日1回（24時間）低頻度ガード
 const TOMBSTONE_DRAIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 async function maybeDrainTombstonesDaily() {
-  // 🛡️ [INV-CORE-004] 自宅Kuboが設定されていない環境、または管理者KV連携がない場合は走査を完全スキップ（空振り照会根絶）
+  // 🛡️ [INV-CORE-004] [INV-CORE-005] 自宅Kubo未設定、KV連携なし、または手元に保留墓標がない平時は完全スキップ（通信0回）
   const customRpc = (localStorage.getItem("kuboRpcUrl") || "").trim();
   if (!hasAdminAccess() || !customRpc) return;
+  const hasPendingTombstones = localStorage.getItem("cividge_pending_tombstones") === "true";
+  if (!hasPendingTombstones) return;
+
   const lastDrainStr = localStorage.getItem("cividge_last_tombstone_drain");
   const lastDrain = lastDrainStr ? Number(lastDrainStr) : 0;
   const now = Date.now();
@@ -7735,8 +7752,9 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
     saveLedgerToLocalStorage(requestedProvider, contents);
     renderCurrentStoragePage();
 
-    // 🌊 IPFS 漂流中ファイルの安否確認＆3ストライク自動整理（Filebase / R2 共通）
-    auditDriftingFiles(contents);
+    // [INV-CORE-004] 画面表示・描画時の裏側での漂流ファイル安否確認（auditDriftingFiles）自動発火
+    // および裏での勝手な deleteKvCid 連打（書き込み枠密輸）は完全撤去。
+    // 漂流ファイルの確認・整理はユーザーの明示操作（オプトイン）時のみとする。
   } catch (error) {
     if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     console.error("Storage fetch error:", error);
@@ -8331,28 +8349,9 @@ async function auditDriftingFiles(contents) {
 
     const elem = r2FileList?.querySelector(`.result-item[data-key="${CSS.escape(rawKey)}"]`);
     const badge = elem?.querySelector(`.drifting-badge-${CSS.escape(rawKey)}`);
-
-    if (result.shouldDelete) {
-      console.warn(`💀 漂流ファイルが3回連続で見つからないためKV台帳から自動整理: ${rawKey}`);
-      try {
-        await deleteKvCid(rawKey);
-        if (elem) {
-          elem.style.transition = "opacity 0.4s ease, transform 0.4s ease";
-          elem.style.opacity = "0";
-          elem.style.transform = "scale(0.95)";
-          setTimeout(() => {
-            elem.remove();
-            if (r2FileList.querySelectorAll(".result-item").length === 0) {
-              const lang = getAppLanguage();
-              const dict = i18nDict[lang] || i18nDict.ja;
-              r2FileList.innerHTML = `<span class="item-meta" style="padding: 18px; color: var(--muted); display: block; text-align: center;">${escapeHtml(dict.noFilesR2)}</span>`;
-            }
-          }, 400);
-        }
-      } catch (err) {
-        console.warn("Auto drift cleanup error:", err);
-      }
-    } else if (isAlive) {
+    // [INV-CORE-004] 読み取り・安否確認の裏で勝手に deleteKvCid()（書き込み枠密輸）を実行することを禁止。
+    // 3回失敗した場合でも勝手に削除せず、画面上に警告バッジを表示するのみに留める。
+    if (isAlive) {
       if (badge) {
         badge.textContent = labels.ipfsDriftingAlive;
         badge.style.background = "rgba(56, 189, 248, 0.15)";

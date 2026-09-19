@@ -6,7 +6,7 @@ export async function onRequestOptions() {
     status: 204,
     headers: {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Upload-Password, X-Custom-Domain, X-Storage-Backend",
     },
   });
@@ -45,6 +45,21 @@ function verifyAuth(request, env) {
   if (adminToken && clientToken === adminToken) return true;
   if (uploadToken && clientToken === uploadToken) return true;
   return false;
+}
+
+// 🔑 投稿専用 API トークンの疎通・一致検証ハンドラ
+export async function onRequestGet(context) {
+  const { request, env } = context;
+  if (!verifyAuth(request, env)) {
+    return new Response(JSON.stringify({ success: false, valid: false, error: "Unauthorized: Invalid or missing token" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" },
+    });
+  }
+  return new Response(JSON.stringify({ success: true, valid: true }), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" },
+  });
 }
 
 export async function onRequestPost(context) {
