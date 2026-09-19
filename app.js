@@ -6646,34 +6646,95 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
         }
       }
     } else {
-      // ⚡ Cloudflare R2 モード: KV メタデータも参照してパスワード保護情報を結合
-      let r2KvMap = new Map();
+      // ⚡ Cloudflare R2 モード: S3 実体と KV エイリアスを結合して各ドメインのカードを構築
+      const s3RawList = (response.Contents || []).map(item => ({
+        Key: item.Key,
+        Size: item.Size || 0,
+        LastModified: item.LastModified,
+      }));
+      const s3KeyToItem = new Map();
+      for (const s3Item of s3RawList) {
+        s3KeyToItem.set(s3Item.Key, s3Item);
+      }
+
+      let kvFiles = [];
       try {
-        const kvList = await fetchKvFiles();
-        for (const k of kvList) {
-          if (k.name) r2KvMap.set(k.name, k.metadata || {});
-        }
+        kvFiles = await fetchKvFiles();
       } catch (e) {
         console.warn("fetchKvFiles error in R2 mode:", e);
       }
 
-      contents = (response.Contents || []).map(item => {
-        const meta = r2KvMap.get(item.Key) || {};
-        return {
+      const consumedS3Keys = new Set();
+
+      // 1. R2 に属する KV レコード（ドメイン別エイリアスを含む）を走査してカード化
+      for (const kvItem of kvFiles) {
+        const rawKey = kvItem.name;
+        if (!rawKey || rawKey.startsWith("tombstone_") || rawKey.startsWith("blob_")) continue;
+
+        const colonIdx = rawKey.indexOf(":");
+        const displayName = (colonIdx > 0)
+          ? rawKey.substring(colonIdx + 1)
+          : rawKey;
+
+        const kvCid = kvItem.metadata?.cid || kvItem.metadata?.c || kvItem.value || "";
+        const hasIpfsCid = kvCid && kvCid !== "r2" && (kvCid.startsWith("Qm") || kvCid.startsWith("baf") || kvCid.length > 20);
+        if (hasIpfsCid) continue; // IPFS / Filebase 専用レコードは除外
+
+        const recordedS3Key = kvItem.metadata?.s3Key || kvItem.metadata?.k_s3;
+        let matchedS3 = null;
+        if (recordedS3Key && s3KeyToItem.has(recordedS3Key)) {
+          matchedS3 = s3KeyToItem.get(recordedS3Key);
+        } else if (s3KeyToItem.has(rawKey)) {
+          matchedS3 = s3KeyToItem.get(rawKey);
+        } else if (s3KeyToItem.has(displayName)) {
+          matchedS3 = s3KeyToItem.get(displayName);
+        }
+
+        // R2 明示レコード、または R2 バケット内の実体とマッチするレコードのみ対象
+        const isR2Record = kvCid === "r2" || kvItem.metadata?.backend === "r2" || kvItem.metadata?.b === "r2" || Boolean(matchedS3);
+        if (!isR2Record) continue;
+
+        if (matchedS3) {
+          consumedS3Keys.add(matchedS3.Key);
+        }
+
+        contents.push({
           storageProvider: "r2",
-          Key: item.Key,
-          s3Key: item.Key,
-          Size: item.Size || meta.size || 0,
-          LastModified: item.LastModified,
-          isFromS3: true,
-          password: meta.password || null,
-          passwordHash: meta.passwordHash || null,
-          expiresAt: meta.expiresAt || getCivitaiTemporaryTransfer("r2", item.Key)?.expiresAt || null,
-          ttl: meta.ttl || 0,
-          civitaiTemporary: Boolean(meta.civitaiTemporary || meta.ct || getCivitaiTemporaryTransfer("r2", item.Key)),
-          metadata: meta,
-        };
-      });
+          Key: displayName,
+          rawKey: rawKey,
+          s3Key: matchedS3 ? matchedS3.Key : (recordedS3Key || displayName),
+          Size: (matchedS3 && matchedS3.Size) || kvItem.metadata?.size || kvItem.metadata?.s || 0,
+          LastModified: (matchedS3 && matchedS3.LastModified) || (kvItem.metadata?.lastModified ? new Date(kvItem.metadata.lastModified) : null),
+          isFromS3: Boolean(matchedS3),
+          password: kvItem.metadata?.password || null,
+          passwordHash: kvItem.metadata?.passwordHash || null,
+          expiresAt: kvItem.metadata?.expiresAt || (kvItem.metadata?.e ? kvItem.metadata.e * 1000 : null) || getCivitaiTemporaryTransfer("r2", matchedS3 ? matchedS3.Key : displayName)?.expiresAt || null,
+          ttl: kvItem.metadata?.ttl || 0,
+          civitaiTemporary: Boolean(kvItem.metadata?.civitaiTemporary || kvItem.metadata?.ct || getCivitaiTemporaryTransfer("r2", matchedS3 ? matchedS3.Key : displayName)),
+          metadata: kvItem.metadata || {},
+        });
+      }
+
+      // 2. R2 バケットに存在するが KV に未登録の物理ファイルを追加
+      for (const s3Item of s3RawList) {
+        if (!consumedS3Keys.has(s3Item.Key)) {
+          contents.push({
+            storageProvider: "r2",
+            Key: s3Item.Key,
+            rawKey: s3Item.Key,
+            s3Key: s3Item.Key,
+            Size: s3Item.Size || 0,
+            LastModified: s3Item.LastModified,
+            isFromS3: true,
+            password: null,
+            passwordHash: null,
+            expiresAt: getCivitaiTemporaryTransfer("r2", s3Item.Key)?.expiresAt || null,
+            ttl: 0,
+            civitaiTemporary: Boolean(getCivitaiTemporaryTransfer("r2", s3Item.Key)),
+            metadata: {},
+          });
+        }
+      }
     }
 
     // Civitai転送専用の踏み台は、利用者が押す「更新」の時だけ後始末する。
@@ -7077,7 +7138,7 @@ function renderCurrentStoragePage() {
         ${r2CardTtlSelect}
         ${r2CardDomainBadge}
         ${!hasPassword ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Civitai の投稿画面を開く">🎨 Civitai</button>` : ""}
-        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-origin="1">${escapeHtml(dict.deleteNow)}</button>
+        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-origin="${item.isFromS3 ? '1' : '0'}">${escapeHtml(dict.deleteNow)}</button>
       `;
     }
 
@@ -7546,10 +7607,11 @@ r2FileList?.addEventListener("click", async (e) => {
     const s3Key = article?.dataset?.s3key || displayName || oldKey;
     const cid = article?.dataset?.cid || "";
     const size = Number(article?.dataset?.size || 0);
-    const currentDomain = article?.dataset?.allowedhost || "";
+    const isFilebase = activeStorageTab === "filebase";
+    const currentDomain = (article?.dataset?.allowedhost || "").replace(/^https?:\/\//, "").replace(/\/$/, "").split(":")[0];
 
-    const availableDomains = getR2DomainList().filter(d => {
-      const clean = d.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    const availableDomains = getR2DomainList(activeStorageTab).filter(d => {
+      const clean = d.replace(/^https?:\/\//, "").replace(/\/$/, "").split(":")[0];
       return clean.toLowerCase() !== currentDomain.toLowerCase();
     });
 
@@ -7626,9 +7688,10 @@ r2FileList?.addEventListener("click", async (e) => {
           }
         } catch (e) {}
 
+        const targetCid = isFilebase ? cid : "r2";
         await registerKvCid(
           newDomainKey,
-          cid,
+          targetCid,
           size,
           "",
           s3Key,
@@ -7643,7 +7706,7 @@ r2FileList?.addEventListener("click", async (e) => {
           getVideoThumbnailKey(s3Key)
         );
 
-        if (cid) {
+        if (cid && isFilebase) {
           storeIpfsCid(newDomainKey, cid);
         }
         setFileStoredDomain(newDomainKey, targetDomainUrl);
@@ -7992,17 +8055,58 @@ r2FileList?.addEventListener("click", async (e) => {
     }
 
     // Cloudflare R2 モードの場合
-    const confirmMsg = `ファイル '${key}' を R2 から削除しますか？`;
-    const ok = await showCustomConfirm(confirmMsg, "🗑️ R2 削除の確認", "削除する");
-    if (!ok) return;
+    const resolvedS3Key = target.dataset.s3key || target.closest(".result-item")?.dataset?.s3key || key;
+    const allItems = Array.from(r2FileList.querySelectorAll(".result-item"));
+    const siblingLinks = allItems
+      .filter(el => el.dataset.key !== key)
+      .filter(el => {
+        const elS3Key = el.dataset.s3key;
+        if (resolvedS3Key && elS3Key && elS3Key === resolvedS3Key) return true;
+        return false;
+      })
+      .map(el => el.dataset.key);
+
+    let deleteOriginAlso = false;
+
+    if (siblingLinks.length > 0) {
+      // 他のリンクと実体を共有している場合（エイリアスがある）
+      const siblingNames = siblingLinks.map(name => `'${name}'`).join("、");
+      const confirmMsg = `ファイル（リンク）'${key}' を削除しますか？\n\n⚠️ このファイルの実体は、以下の他のドメイン（エイリアス）とも共有されています：\n【共有中】: ${siblingNames}\n\n・[OK] を押すと、'${key}' のURLのみを削除（即座に404化）します。\n（他のリンク '${siblingLinks[0]}' などは引き続き閲覧できます）`;
+      const ok = await showCustomConfirm(confirmMsg, "⚠️ リンク削除の確認");
+      if (!ok) return;
+
+      deleteOriginAlso = await showCustomConfirm(
+        `【完全削除の確認】\n\nR2 バケット内の実体ファイルも完全に削除し、共有している他のリンク（${siblingNames}）もすべて無効化しますか？\n\n・[すべて完全削除]: 実体も含めてすべて完全削除\n・[リンクのみ削除]: '${key}' のリンクのみ削除（推奨）`,
+        "🗑️ 完全削除の確認",
+        "すべて完全削除",
+        "リンクのみ削除"
+      );
+    } else {
+      // 単独リンクの場合
+      const confirmMsg = `ファイル '${key}' を R2 から削除しますか？\n\n・URL は即座に 404 になり閲覧できなくなります。\n・R2 バケット内の実体も安全に消去されます。`;
+      const ok = await showCustomConfirm(confirmMsg, "🗑️ R2 削除の確認", "削除する");
+      if (!ok) return;
+      deleteOriginAlso = true;
+    }
 
     try {
-      if (s3 && bucketName && s3Key) {
-        const thumbnailKey = getVideoThumbnailKey(s3Key);
+      // 1. 対象リンクの KV マッピングを削除（エイリアスレコードの場合）
+      await deleteKvCid(key);
+
+      // 2. 「すべて完全削除」が選択された場合、共有している兄弟リンクの KV も一括削除
+      if (siblingLinks.length > 0 && deleteOriginAlso) {
+        for (const sKey of siblingLinks) {
+          await deleteKvCid(sKey);
+        }
+      }
+
+      // 3. 単独、または「すべて完全削除」の場合のみ S3 (R2) 実体を削除
+      if (deleteOriginAlso && s3 && bucketName && resolvedS3Key) {
+        const thumbnailKey = getVideoThumbnailKey(resolvedS3Key);
         if (thumbnailKey) await deleteKvCid(thumbnailKey);
-        const keysToDelete = [s3Key, thumbnailKey].filter(Boolean);
+        const keysToDelete = [resolvedS3Key, thumbnailKey].filter(Boolean);
         const command = keysToDelete.length === 1 ? new DeleteObjectCommand({
-          Bucket: bucketName, Key: s3Key,
+          Bucket: bucketName, Key: resolvedS3Key,
         }) : new DeleteObjectsCommand({
           Bucket: bucketName, Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
         });
@@ -8079,10 +8183,29 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
       }
 
     } else {
-      if (s3 && bucketName) {
-        const thumbnailKeys = keys.map(getVideoThumbnailKey).filter(Boolean);
+      // 選択されたキーの KV マッピングを削除（エイリアスレコードの場合）
+      for (const key of keys) {
+        await deleteKvCid(key);
+      }
+
+      // 未選択の残るアイテムの中に、同じ S3実体 を指している別名リンクがあるかチェック
+      const allItems = Array.from(r2FileList.querySelectorAll(".result-item"));
+      const remainingItems = allItems.filter(el => !keys.includes(el.dataset.key));
+      const remainingS3Keys = new Set(remainingItems.map(el => el.dataset.s3key).filter(Boolean));
+
+      // 選択された各アイテムに対応する S3Key のうち、残るリンクから参照されていない実体のみを R2 から削除
+      const s3KeysToDelete = new Set();
+      for (const cb of checkboxes) {
+        const itemS3Key = cb.closest(".result-item")?.dataset?.s3key || cb.dataset.key;
+        if (itemS3Key && !remainingS3Keys.has(itemS3Key)) {
+          s3KeysToDelete.add(itemS3Key);
+        }
+      }
+
+      if (s3 && bucketName && s3KeysToDelete.size > 0) {
+        const thumbnailKeys = Array.from(s3KeysToDelete).map(getVideoThumbnailKey).filter(Boolean);
         for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey);
-        const objects = [...keys, ...thumbnailKeys].map(Key => ({ Key }));
+        const objects = [...s3KeysToDelete, ...thumbnailKeys].map(Key => ({ Key }));
         const command = new DeleteObjectsCommand({
           Bucket: bucketName,
           Delete: { Objects: objects },
