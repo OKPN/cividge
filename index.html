@@ -715,8 +715,9 @@
         <div id="qrContainer" style="background: #ffffff; padding: 16px; border-radius: 12px; display: inline-block; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
           <canvas id="qrCanvas" style="display: block; margin: 0 auto;"></canvas>
         </div>
-        <div>
-          <button class="ghost-button" id="closeQrModalButton" type="button" style="width: 100%;">閉じる</button>
+        <div style="display: flex; gap: 8px; flex-direction: column;">
+          <button class="primary-button" id="copySyncUrlButton" type="button" style="width: 100%; min-height: 36px; font-size: 13px; background: #0284c7; border-color: #38bdf8;" data-i18n="btnCopySyncUrl">📋 引き継ぎURLをコピー</button>
+          <button class="ghost-button" id="closeQrModalButton" type="button" style="width: 100%; min-height: 36px;" data-i18n="btnClose">閉じる</button>
         </div>
       </div>
     </div>

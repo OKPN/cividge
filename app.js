@@ -1,4 +1,5 @@
 import QRCode from "qrcode";
+import * as fflate from "fflate";
 import encodeJxl, { init as initJxl } from "@jsquash/jxl/encode.js";
 import jxlWasmUrl from "@jsquash/jxl/codec/enc/jxl_enc.wasm?url";
 import { importer as importUnixFs } from "ipfs-unixfs-importer";
@@ -188,6 +189,8 @@ const i18nDict = {
     passwordBadge: "🔒 パスワード保護",
     qrModalTitle: "📱 スマホ/別端末でスキャン",
     qrModalSub: "スマホのカメラ等で下記QRコードを読み取ると、Civitaiウォッチリストや接続設定が安全に直接引き継がれます。",
+    btnCopySyncUrl: "📋 引き継ぎURLをコピー",
+    btnClose: "閉じる",
     civitaiGalleryHeading: "🎨 Civitai ギャラリー & クリエイターウォッチ",
     civitaiUsernameLabel: "👤 クリエイター:",
     civitaiAllCreators: "🌐 すべて (新着順)",
@@ -431,6 +434,8 @@ const i18nDict = {
     passwordBadge: "🔒 Password Protected",
     qrModalTitle: "📱 Scan with Mobile / Other Device",
     qrModalSub: "Scan this QR code with your mobile camera to securely transfer your Civitai watch list, connection settings, and preferences.",
+    btnCopySyncUrl: "📋 Copy Sync URL",
+    btnClose: "Close",
     civitaiGalleryHeading: "🎨 Civitai Gallery & Watcher",
     civitaiUsernameLabel: "👤 Creator:",
     civitaiAllCreators: "🌐 All (Newest)",
@@ -2564,6 +2569,34 @@ function generateRandom6DigitPin() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+// --- 🗜️ 同期ペイロード圧縮 & 解凍 (QRコード / 短縮URL用) ---
+function compressPayloadSync(str) {
+  try {
+    const buf = fflate.strToU8(str);
+    const def = fflate.deflateSync(buf, { level: 9 });
+    let bin = "";
+    for (let i = 0; i < def.length; i++) {
+      bin += String.fromCharCode(def[i]);
+    }
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  } catch (err) {
+    console.warn("compressPayloadSync fallback:", err);
+    return btoa(encodeURIComponent(str));
+  }
+}
+
+function decompressPayloadSync(b64url) {
+  let b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    u8[i] = bin.charCodeAt(i);
+  }
+  const inf = fflate.inflateSync(u8);
+  return fflate.strFromU8(inf);
+}
+
 // --- 📦 アプリ統合データのエクスポート & インポート (R2 / Civitai / 変換設定) ---
 
 function buildAppExportPayload() {
@@ -2595,8 +2628,10 @@ function buildAppExportPayload() {
   const selectedDomain = getSelectedR2Domain();
   const filebaseDomainList = getR2DomainList("filebase");
   const selectedFilebaseDomain = getSelectedR2Domain("filebase");
+  const storageProvider = localStorage.getItem("storageProvider") || "r2";
 
   const payload = { v: 4 };
+  if (storageProvider) payload.sp = storageProvider;
   if (accountId) payload.a = accountId;
   if (bucketName) payload.b = bucketName;
   if (accessKeyId) payload.k = accessKeyId;
@@ -2638,6 +2673,17 @@ function applyAppImportPayload(payload) {
   if (!payload || typeof payload !== "object") return false;
 
   let hasRestoredAny = false;
+
+  // 0. ストレージプロバイダー設定
+  if (payload.sp) {
+    localStorage.setItem("storageProvider", payload.sp);
+    if (payload.sp === "filebase") {
+      if (providerFilebase) providerFilebase.checked = true;
+    } else {
+      if (providerR2) providerR2.checked = true;
+    }
+    hasRestoredAny = true;
+  }
 
   // 1. R2 接続設定
   if (payload.a && payload.b && payload.k && payload.s) {
@@ -2812,15 +2858,41 @@ function checkAndApplyHashSync() {
 
     if (hash.startsWith("#sync=") || hash.startsWith("#cfg=")) {
       const prefix = hash.startsWith("#sync=") ? "#sync=" : "#cfg=";
-      const encoded = hash.replace(prefix, "");
-      if (encoded) {
+      const rawParam = hash.replace(prefix, "").trim();
+      if (rawParam) {
         let payload = null;
-        try {
-          payload = JSON.parse(decodeURIComponent(atob(encoded)));
-        } catch (e) {
+
+        // 1. 新方式: 圧縮形式 (プレフィックス "z." または deflate 解凍試行)
+        if (rawParam.startsWith("z.")) {
           try {
-            payload = JSON.parse(atob(encoded));
-          } catch (e2) {}
+            const jsonStr = decompressPayloadSync(rawParam.slice(2));
+            payload = JSON.parse(jsonStr);
+          } catch (e) {
+            console.warn("Deflate decompression failed with z. prefix:", e);
+          }
+        }
+
+        // 2. プレフィックスなし、または旧方式フォールバック
+        if (!payload) {
+          // まず deflate 試行
+          try {
+            const jsonStr = decompressPayloadSync(rawParam);
+            payload = JSON.parse(jsonStr);
+          } catch (e1) {
+            // 次に従来の Base64 / URIEncoded 復元を試行
+            const normalized = rawParam.replace(/ /g, "+");
+            try {
+              payload = JSON.parse(decodeURIComponent(atob(normalized)));
+            } catch (e2) {
+              try {
+                payload = JSON.parse(atob(normalized));
+              } catch (e3) {
+                try {
+                  payload = JSON.parse(decodeURIComponent(rawParam));
+                } catch (e4) {}
+              }
+            }
+          }
         }
 
         if (payload && applyAppImportPayload(payload)) {
@@ -3392,6 +3464,9 @@ cfClearButton?.addEventListener("click", () => {
 });
 
 // --- 📱 可視光スキャン（QRコード）同期ハンドラ ---
+let lastGeneratedSyncUrl = "";
+const copySyncUrlButton = document.querySelector("#copySyncUrlButton");
+
 async function openSyncQrModal() {
   saveR2SettingsAuto();
   const payload = buildAppExportPayload();
@@ -3403,13 +3478,14 @@ async function openSyncQrModal() {
 
   try {
     const jsonStr = JSON.stringify(payload);
-    const encoded = btoa(encodeURIComponent(jsonStr));
-    const syncUrl = `${window.location.origin}${window.location.pathname}#sync=${encoded}`;
+    const compressed = compressPayloadSync(jsonStr);
+    lastGeneratedSyncUrl = `${window.location.origin}${window.location.pathname}#sync=z.${compressed}`;
 
     if (qrCanvas) {
-      await QRCode.toCanvas(qrCanvas, syncUrl, {
-        width: 220,
-        margin: 1,
+      await QRCode.toCanvas(qrCanvas, lastGeneratedSyncUrl, {
+        width: 280,
+        margin: 2,
+        errorCorrectionLevel: "L", // 画面読み取りに最も適した大型ドット（超高認識率・低密度）
         color: {
           dark: "#0f172a",
           light: "#ffffff",
@@ -3423,6 +3499,21 @@ async function openSyncQrModal() {
     alert("QRコードの生成に失敗しました。");
   }
 }
+
+copySyncUrlButton?.addEventListener("click", async () => {
+  if (!lastGeneratedSyncUrl) return;
+  try {
+    await navigator.clipboard.writeText(lastGeneratedSyncUrl);
+    const originalText = copySyncUrlButton.textContent;
+    copySyncUrlButton.textContent = "✅ コピーしました！";
+    setTimeout(() => {
+      copySyncUrlButton.textContent = originalText;
+    }, 2000);
+  } catch (err) {
+    console.error("Clipboard copy failed:", err);
+    prompt("以下の引き継ぎURLをコピーしてください:", lastGeneratedSyncUrl);
+  }
+});
 
 cfShareQrButton?.addEventListener("click", openSyncQrModal);
 topbarSyncButton?.addEventListener("click", openSyncQrModal);
