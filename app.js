@@ -7328,7 +7328,7 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
         });
       }
 
-      // 2. R2 バケットに存在するが KV に未登録の物理ファイルを追加
+      // 2. R2 バケットに存在するが KV に未登録の物理ファイルを追加＆自動KV同期
       for (const s3Item of s3RawList) {
         if (!consumedS3Keys.has(s3Item.Key)) {
           const rawS3Cid = getStoredIpfsCid(s3Item.Key);
@@ -7350,6 +7350,31 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
             civitaiTemporary: Boolean(getCivitaiTemporaryTransfer("r2", s3Item.Key)),
             metadata: {},
           });
+
+          // ⚡ 未同期の物理R2ファイルをKV台帳に追加（直リンク有効化）
+          if (hasAdminAccess() && baseDomain) {
+            registerKvCid(
+              s3Item.Key,
+              "r2",
+              s3Item.Size || 0,
+              getContentTypeFromFilename(s3Item.Key),
+              s3Item.Key,
+              "",
+              null,
+              0,
+              null,
+              false,
+              null,
+              baseDomain,
+              false,
+              null,
+              null,
+              null,
+              false,
+              s3Cid,
+              "r2"
+            ).catch(err => console.debug(`KV sync for unmapped R2 file ${s3Item.Key} skipped/deferred:`, err));
+          }
         }
       }
     }
@@ -7534,13 +7559,22 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
 
 async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bucketName, provider) {
   const cleanedKeys = new Set();
-  const isFilebase = normalizeDeliveryProvider(provider) === "filebase";
+  const targetProvider = normalizeDeliveryProvider(provider);
+  const isFilebase = targetProvider === "filebase";
 
   for (const item of expiredItems) {
     const key = item.rawKey || item.Key;
     const s3Key = item.s3Key || item.Key;
     const cid = item.cid || item.metadata?.cid || item.metadata?.c || "";
     if (!key) continue;
+
+    // 🛡️ ストレージ分離ガード: 現在開いているストレージ（provider）とアイテムの所属が不一致なら絶対にKV削除しない
+    const itemProvider = item.storageProvider
+      ? normalizeDeliveryProvider(item.storageProvider)
+      : ((item.metadata?.backend === "r2" || item.metadata?.b === "r2" || cid === "r2") ? "r2" : "filebase");
+    if (itemProvider !== targetProvider) {
+      continue;
+    }
 
     try {
       // Filebaseでは別名/CID共有中の実体を消さない。R2も同じキーを使う別リンクがあれば保守的に残す。
@@ -7569,13 +7603,22 @@ async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bu
 // ⏳ 有効期限切れストレージアイテムの安全な回収（最後のリンクなら S3 実体も削除）
 async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName, provider) {
   const cleanedKeys = new Set();
-  const isFilebase = normalizeDeliveryProvider(provider) === "filebase";
+  const targetProvider = normalizeDeliveryProvider(provider);
+  const isFilebase = targetProvider === "filebase";
 
   for (const item of expiredItems) {
     const key = item.rawKey || item.Key;
     const s3Key = item.s3Key || item.Key;
     const cid = item.cid || item.metadata?.cid || item.metadata?.c || "";
     if (!key) continue;
+
+    // 🛡️ ストレージ分離ガード: 現在開いているストレージ（provider）とアイテムの所属が不一致なら絶対にKV削除しない
+    const itemProvider = item.storageProvider
+      ? normalizeDeliveryProvider(item.storageProvider)
+      : ((item.metadata?.backend === "r2" || item.metadata?.b === "r2" || cid === "r2") ? "r2" : "filebase");
+    if (itemProvider !== targetProvider) {
+      continue;
+    }
 
     try {
       // Filebaseでは別名/CID共有中の実体を消さない。R2も同じキーを使う別リンクがあれば保守的に残す。
