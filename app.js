@@ -563,6 +563,8 @@ const r2DomainNewSaveBtn = document.querySelector("#r2DomainNewSaveBtn");
 const r2DomainNewCancelBtn = document.querySelector("#r2DomainNewCancelBtn");
 const r2DomainTestBtn = document.querySelector("#r2DomainTestBtn");
 const r2DomainCompatBadge = document.querySelector("#r2DomainCompatBadge");
+const r2DomainMirrorContainer = document.querySelector("#r2DomainMirrorContainer");
+const r2DomainMirrorCheck = document.querySelector("#r2DomainMirrorCheck");
 const r2PublicDomain = document.querySelector("#r2PublicDomain"); // 後方互換
 const r2DevDomain = document.querySelector("#r2DevDomain"); // 後方互換
 const filebaseDomainSelect = document.querySelector("#filebaseDomainSelect");
@@ -570,6 +572,8 @@ const filebaseDomainAddBtn = document.querySelector("#filebaseDomainAddBtn");
 const filebaseDomainDeleteBtn = document.querySelector("#filebaseDomainDeleteBtn");
 const filebaseDomainTestBtn = document.querySelector("#filebaseDomainTestBtn");
 const filebaseDomainCompatBadge = document.querySelector("#filebaseDomainCompatBadge");
+const filebaseDomainMirrorContainer = document.querySelector("#filebaseDomainMirrorContainer");
+const filebaseDomainMirrorCheck = document.querySelector("#filebaseDomainMirrorCheck");
 const filebaseDomainAddForm = document.querySelector("#filebaseDomainAddForm");
 const filebaseDomainNewInput = document.querySelector("#filebaseDomainNewInput");
 const filebaseDomainNewSaveBtn = document.querySelector("#filebaseDomainNewSaveBtn");
@@ -3057,11 +3061,14 @@ function updateDomainCompatBadgeUi(provider) {
   const storageProvider = normalizeDeliveryProvider(provider);
   const isFilebase = storageProvider === "filebase";
   const badgeElem = isFilebase ? filebaseDomainCompatBadge : r2DomainCompatBadge;
+  const mirrorContainer = isFilebase ? filebaseDomainMirrorContainer : r2DomainMirrorContainer;
+  const mirrorCheck = isFilebase ? filebaseDomainMirrorCheck : r2DomainMirrorCheck;
   if (!badgeElem) return;
 
   const currentDomain = getSelectedR2Domain(storageProvider);
   if (!currentDomain) {
     badgeElem.style.display = "none";
+    if (mirrorContainer) mirrorContainer.style.display = "none";
     return;
   }
 
@@ -3074,11 +3081,22 @@ function updateDomainCompatBadgeUi(provider) {
     badgeElem.style.background = "rgba(34, 197, 94, 0.15)";
     badgeElem.style.color = "#22c55e";
     badgeElem.style.border = "1px solid rgba(34, 197, 94, 0.4)";
+
+    if (mirrorContainer && mirrorCheck) {
+      mirrorContainer.style.display = "inline-flex";
+      const otherProvider = storageProvider === "r2" ? "filebase" : "r2";
+      const otherList = getR2DomainList(otherProvider);
+      mirrorCheck.checked = otherList.includes(currentDomain);
+    }
   } else {
     badgeElem.textContent = "⚠️ 直結・未検証モード（ストレージ排他設定）";
     badgeElem.style.background = "rgba(245, 158, 11, 0.15)";
     badgeElem.style.color = "#f59e0b";
     badgeElem.style.border = "1px solid rgba(245, 158, 11, 0.4)";
+
+    if (mirrorContainer) {
+      mirrorContainer.style.display = "none";
+    }
   }
 }
 
@@ -3222,6 +3240,65 @@ bindDomainManager("r2", r2DomainSelect, r2DomainAddBtn, r2DomainDeleteBtn, r2Dom
 bindDomainManager("filebase", filebaseDomainSelect, filebaseDomainAddBtn, filebaseDomainDeleteBtn, filebaseDomainAddForm, filebaseDomainNewInput, filebaseDomainNewSaveBtn, filebaseDomainNewCancelBtn, "Filebase ");
 bindDomainTestButton("r2", r2DomainTestBtn);
 bindDomainTestButton("filebase", filebaseDomainTestBtn);
+
+function bindDomainMirrorCheckbox(provider, mirrorCheck) {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  const otherProvider = storageProvider === "r2" ? "filebase" : "r2";
+  const otherLabel = otherProvider === "r2" ? "R2" : "Filebase";
+
+  mirrorCheck?.addEventListener("change", async () => {
+    const currentDomain = getSelectedR2Domain(storageProvider);
+    if (!currentDomain) return;
+    const cleanHost = currentDomain.replace(/^https?:\/\//, "").split("/")[0].split(":")[0].toLowerCase();
+    const otherList = getR2DomainList(otherProvider);
+
+    if (mirrorCheck.checked) {
+      if (!otherList.includes(currentDomain)) {
+        otherList.push(currentDomain);
+        saveR2DomainList(otherList, otherProvider);
+        if (!getSelectedR2Domain(otherProvider)) {
+          setSelectedR2Domain(currentDomain, otherProvider);
+        }
+        renderR2DomainSelect();
+        updateR2Status();
+        updateDomainCompatBadgeUi(otherProvider);
+      }
+    } else {
+      // 🛡️ ロック: 他方ストレージでこのドメインに紐づくファイルが台帳に残っていないかチェック
+      try {
+        const kvFiles = await fetchKvFiles();
+        const foreignFiles = kvFiles.filter(f => {
+          const key = (f.name || "").toLowerCase();
+          if (!key.startsWith(`${cleanHost}:`)) return false;
+          const b = f.metadata?.backend || f.metadata?.b;
+          return b === otherProvider || (otherProvider === "r2" ? f.metadata?.cid === "r2" : f.metadata?.cid !== "r2");
+        });
+        if (foreignFiles.length > 0) {
+          await showCustomAlert(
+            `⚠️ ${otherLabel} 側にこのドメイン（${cleanHost}）で配信中のファイルがまだ ${foreignFiles.length} 件存在します。\n\n登録を解除するとそれらがアクセス不能（404）になります。\n該当ファイルを削除するか別ドメインに移してから解除してください。`,
+            "⚠️ 配信中ファイル保護ロック"
+          );
+          mirrorCheck.checked = true;
+          return;
+        }
+      } catch (e) {
+        console.warn("KV check error during domain unmirror:", e);
+      }
+
+      const nextList = otherList.filter(d => d !== currentDomain);
+      saveR2DomainList(nextList, otherProvider);
+      if (getSelectedR2Domain(otherProvider) === currentDomain) {
+        setSelectedR2Domain(nextList[0] || "", otherProvider);
+      }
+      renderR2DomainSelect();
+      updateR2Status();
+      updateDomainCompatBadgeUi(otherProvider);
+    }
+  });
+}
+
+bindDomainMirrorCheckbox("r2", r2DomainMirrorCheck);
+bindDomainMirrorCheckbox("filebase", filebaseDomainMirrorCheck);
 
 cfSaveButton?.addEventListener("click", () => {
   saveR2SettingsAuto();

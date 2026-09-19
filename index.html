@@ -258,6 +258,10 @@
                         <button type="button" class="ghost-button" id="r2DomainTestBtn" title="互換レイヤ接続テスト" style="height: 38px; padding: 0 10px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; border-color: rgba(167, 139, 250, 0.4); color: #c4b5fd; flex-shrink: 0;">🔍 テスト</button>
                       </div>
                       <div id="r2DomainCompatBadge" style="display: none; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 600; align-items: center; gap: 4px; width: fit-content;"></div>
+                      <label id="r2DomainMirrorContainer" style="display: none; align-items: center; gap: 6px; font-size: 11.5px; color: #38bdf8; cursor: pointer; user-select: none; margin-top: 2px;">
+                        <input type="checkbox" id="r2DomainMirrorCheck" style="cursor: pointer; accent-color: #38bdf8;">
+                        <span>Filebase の配信ドメインにも登録</span>
+                      </label>
 
                       <!-- インライン新規ドメイン追加入力欄 -->
                       <div id="r2DomainAddForm" style="display: none; margin-top: 4px; gap: 6px; align-items: center;">
@@ -299,7 +303,10 @@
                         <button type="button" class="ghost-button" id="filebaseDomainTestBtn" title="互換レイヤ接続テスト" style="height: 38px; padding: 0 10px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; flex-shrink: 0;">🔍 テスト</button>
                       </div>
                       <div id="filebaseDomainCompatBadge" style="display: none; font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 600; align-items: center; gap: 4px; width: fit-content;"></div>
-                      </div>
+                      <label id="filebaseDomainMirrorContainer" style="display: none; align-items: center; gap: 6px; font-size: 11.5px; color: #fb923c; cursor: pointer; user-select: none; margin-top: 2px;">
+                        <input type="checkbox" id="filebaseDomainMirrorCheck" style="cursor: pointer; accent-color: #fb923c;">
+                        <span>R2 の配信ドメインにも登録</span>
+                      </label>
                       <div id="filebaseDomainAddForm" style="display: none; margin-top: 4px; gap: 6px; align-items: center;">
                         <input id="filebaseDomainNewInput" type="text" inputmode="url" placeholder="例: content-cache.pages.dev または ipfs.example.com" style="flex: 1; height: 34px; font-size: 12px;" spellcheck="false" autocomplete="off">
                         <button type="button" class="primary-button" id="filebaseDomainNewSaveBtn" style="height: 34px; font-size: 11px; padding: 0 12px; margin: 0;">追加</button>
