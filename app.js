@@ -189,6 +189,8 @@ const i18nDict = {
     passwordBadge: "🔒 パスワード保護",
     qrModalTitle: "📱 スマホ/別端末でスキャン",
     qrModalSub: "スマホのカメラ等で下記QRコードを読み取ると、Civitaiウォッチリストや接続設定が安全に直接引き継がれます。",
+    qrModalWarnTitle: "🚨 第三者への共有・公開厳禁",
+    qrModalWarnDesc: "このQRコードやURLにはストレージの<strong>【秘密鍵・認証情報】</strong>が含まれています。配信・SNS・第三者へ絶対に公開しないでください（不正アクセス・データ削除の危険があります）。",
     btnCopySyncUrl: "📋 引き継ぎURLをコピー",
     btnClose: "閉じる",
     civitaiGalleryHeading: "🎨 Civitai ギャラリー & クリエイターウォッチ",
@@ -434,6 +436,8 @@ const i18nDict = {
     passwordBadge: "🔒 Password Protected",
     qrModalTitle: "📱 Scan with Mobile / Other Device",
     qrModalSub: "Scan this QR code with your mobile camera to securely transfer your Civitai watch list, connection settings, and preferences.",
+    qrModalWarnTitle: "🚨 Strictly Confidential — Do NOT Share",
+    qrModalWarnDesc: "This QR code and URL contain your storage <strong>【Secret Keys & Admin Tokens】</strong>. Never share or stream this screen (risk of unauthorized access, deletion, or tampering).",
     btnCopySyncUrl: "📋 Copy Sync URL",
     btnClose: "Close",
     civitaiGalleryHeading: "🎨 Civitai Gallery & Watcher",
@@ -2844,6 +2848,13 @@ let pendingEncryptedHash = "";
 function checkAndApplyHashSync() {
   try {
     const hash = window.location.hash || "";
+    if (!hash) return;
+
+    // 🛡️ セキュリティ保護: 機密情報を含むハッシュを読み取った直後に即座にURL欄から消去
+    // 誤ってブックマークされたり、URLバーからコピー・共有されるのを完全に防止
+    if (hash.startsWith("#enc=") || hash.startsWith("#sync=") || hash.startsWith("#cfg=")) {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
 
     if (hash.startsWith("#enc=")) {
       pendingEncryptedHash = hash.replace("#enc=", "");

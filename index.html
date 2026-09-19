@@ -712,6 +712,14 @@
         <p style="font-size: 12px; color: var(--muted); margin-bottom: 16px; line-height: 1.5;" data-i18n="qrModalSub">
           スマホのカメラ等で下記QRコードを読み取ると、Civitaiウォッチリストや接続情報、変換設定が安全に直接引き継がれます。
         </p>
+        <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; text-align: left;">
+          <div style="font-size: 12px; font-weight: bold; color: #ef4444; display: flex; align-items: center; gap: 4px; margin-bottom: 4px;" data-i18n="qrModalWarnTitle">
+            🚨 第三者への共有・公開厳禁
+          </div>
+          <div style="font-size: 11px; color: #f87171; line-height: 1.45;" data-i18n="qrModalWarnDesc">
+            このQRコードやURLにはストレージの<strong>【秘密鍵・認証情報】</strong>が含まれています。配信・SNS・第三者へ絶対に公開しないでください（不正アクセス・データ削除の危険があります）。
+          </div>
+        </div>
         <div id="qrContainer" style="background: #ffffff; padding: 16px; border-radius: 12px; display: inline-block; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
           <canvas id="qrCanvas" style="display: block; margin: 0 auto;"></canvas>
         </div>
@@ -755,6 +763,7 @@
         <div style="margin-bottom: 16px; text-align: left;">
           <label style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">復元用URL (クリップボードコピー済み):</label>
           <textarea id="backupUrlTextarea" readonly style="width: 100%; height: 52px; font-size: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px; resize: none; word-break: break-all; outline: none;"></textarea>
+          <div style="font-size: 11px; color: #f87171; margin-top: 4px; line-height: 1.4;">⚠️ URLとPINコードの両方が揃うとストレージの秘密鍵が復元されます。第三者へ絶対に渡さないでください。</div>
         </div>
         <div>
           <button class="primary-button" id="closePinDisplayModalButton" type="button" style="width: 100%; margin: 0;">完了</button>
