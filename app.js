@@ -7229,6 +7229,111 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
   return cleanedKeys;
 }
 
+// ⚡ 既存 R2 ファイルの遅延 CID 解決＆自己修復（Auto-Resolve & Self-Heal）
+async function resolveR2CardCidAuto(article, itemKey, s3Key, publicUrl, labels) {
+  try {
+    let cid = getStoredIpfsCid(itemKey) || getStoredIpfsCid(s3Key) || getStoredR2Hash(itemKey) || getStoredR2Hash(s3Key);
+    if (!cid || !isValidIpfsCid(cid)) {
+      const r2S3 = getS3Client("r2");
+      const r2Bucket = getBucketName("r2");
+      let bytes = null;
+      if (r2S3 && r2Bucket) {
+        try {
+          const res = await r2S3.send(new GetObjectCommand({ Bucket: r2Bucket, Key: s3Key }));
+          bytes = await res.Body.transformToByteArray();
+        } catch (s3Err) {}
+      }
+      if (!bytes || bytes.length === 0) {
+        try {
+          const res = await fetch(publicUrl);
+          if (res.ok) bytes = new Uint8Array(await res.arrayBuffer());
+        } catch (fErr) {}
+      }
+      if (bytes && bytes.length > 0) {
+        cid = await calculateFilebaseCid(bytes);
+      }
+    }
+
+    if (cid && isValidIpfsCid(cid)) {
+      storeIpfsCid(itemKey, cid);
+      storeIpfsCid(s3Key, cid);
+      storeR2Hash(itemKey, cid);
+      storeR2Hash(s3Key, cid);
+      article.dataset.cid = cid;
+
+      // 自宅 Kubo の Pin 状態をチェック
+      let isKuboPinned = false;
+      try {
+        isKuboPinned = await checkKuboPinned(cid, 800);
+      } catch (e) {}
+
+      // 1. Kubo バッジプレースホルダーを更新
+      const kuboHolder = article.querySelector('.r2-kubo-badge-placeholder');
+      if (kuboHolder) {
+        if (isKuboPinned) {
+          kuboHolder.outerHTML = `<button type="button" class="kubo-unpin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(cid)}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboStored}</button>`;
+        } else {
+          kuboHolder.outerHTML = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(cid)}" data-s3key="${escapeHtml(s3Key)}" data-provider="r2" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboMissing}</button>`;
+        }
+      }
+
+      // 2. CID バッジプレースホルダーを更新
+      const cidHolder = article.querySelector('.r2-cid-badge-placeholder');
+      if (cidHolder) {
+        const shortCid = cid.length > 12 ? `${cid.slice(0, 6)}...${cid.slice(-4)}` : cid;
+        const indexerUrl = `https://cid.contact/cid/${encodeURIComponent(cid)}`;
+        cidHolder.outerHTML = `
+          <div style="display: inline-flex; align-items: center; gap: 3px;">
+            <button type="button" class="copy-cid-btn" data-cid="${escapeHtml(cid)}" style="cursor: pointer; font-size: 10px; font-family: monospace; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="IPFS CID: ${escapeHtml(cid)} (クリックでコピー)">📦 ${escapeHtml(shortCid)} 📋</button>
+            <a href="${escapeHtml(indexerUrl)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;">${labels.nodeCheck}</a>
+          </div>
+        `;
+      }
+
+      // 3. R2 保管中ボタンの安全ロック解除（Kubo保持中ならアンピンボタンに昇格）
+      if (isKuboPinned) {
+        const r2Badge = article.querySelector('.item-storage-tier span');
+        if (r2Badge && r2Badge.textContent.includes("R2")) {
+          r2Badge.outerHTML = `<button type="button" class="unpin-r2-origin-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(s3Key)}" data-cid="${escapeHtml(cid)}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;" title="自宅Kuboに保全されているため、クリックしてR2実体を消去（容量解放）できます">${labels.r2Stored}</button>`;
+        }
+      }
+
+      // 4. KV 台帳へ contentCid をバックグラウンド同期
+      (async () => {
+        try {
+          const kvData = await fetchKvRecord(itemKey);
+          if (kvData) {
+            const meta = kvData.metadata || {};
+            await registerKvCid(
+              itemKey,
+              "r2",
+              meta.size || 0,
+              meta.mime || "",
+              s3Key,
+              "",
+              null,
+              meta.ttl || 0,
+              meta.expiresAt || null,
+              Boolean(meta.unpinned),
+              isKuboPinned ? "pinned" : (meta.kuboStatus || null),
+              meta.allowedHost || null,
+              false,
+              meta.thumbnailKey || null,
+              meta.width || null,
+              meta.height || null,
+              Boolean(meta.civitaiTemporary),
+              cid,
+              "r2"
+            );
+          }
+        } catch (e) {}
+      })();
+    }
+  } catch (err) {
+    console.warn("Auto CID resolution failed:", err);
+  }
+}
+
 // 📄 現在のページに該当するストレージカード群をDOM描画
 function renderCurrentStoragePage() {
   if (!r2FileList) return;
@@ -7408,6 +7513,8 @@ function renderCurrentStoragePage() {
         kuboBadgeHtml = `<button type="button" class="kubo-unpin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboStored}</button>`;
       } else if (itemCid) {
         kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-provider="r2" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboMissing}</button>`;
+      } else {
+        kuboBadgeHtml = `<span class="r2-kubo-badge-placeholder kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.08); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.25); display: inline-flex; align-items: center; gap: 3px;">⏳ CID確認中...</span>`;
       }
 
       storageTierHtml = `
@@ -7437,6 +7544,12 @@ function renderCurrentStoragePage() {
         <div style="display: inline-flex; align-items: center; gap: 3px;">
           <button type="button" class="copy-cid-btn" data-cid="${escapeHtml(itemCid)}" style="cursor: pointer; font-size: 10px; font-family: monospace; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="IPFS CID: ${escapeHtml(itemCid)} (クリックでコピー)">📦 ${escapeHtml(shortCid)} 📋</button>
           <a href="${escapeHtml(indexerUrl)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;">${labels.nodeCheck}</a>
+        </div>
+      `;
+    } else if (!isFilebase) {
+      cidBadgeHtml = `
+        <div class="r2-cid-badge-placeholder" data-key="${escapeHtml(itemKey)}" style="display: inline-flex; align-items: center; gap: 3px;">
+          <span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.08); color: #38bdf8; border: 1px dashed rgba(56, 189, 248, 0.25); line-height: 1.4;">📦 CID計算中...</span>
         </div>
       `;
     }
@@ -7474,6 +7587,11 @@ function renderCurrentStoragePage() {
     `;
 
     r2FileList.append(article);
+
+    // ⚡ R2 カードで CID が未解決の場合、バックグラウンドで自動計算してバッジを即時更新
+    if (!isFilebase && !itemCid) {
+      resolveR2CardCidAuto(article, itemKey, item.s3Key || itemDisplayName, publicUrl, labels);
+    }
 
     checkRemoteFileWf(item.Key, publicUrl).then(hasWf => {
       if (hasWf) {
