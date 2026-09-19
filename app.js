@@ -6893,6 +6893,7 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
           ? rawKey.substring(colonIdx + 1)
           : rawKey;
 
+        const kvCid = kvItem.metadata?.cid || kvItem.metadata?.c || kvItem.value || getStoredIpfsCid(rawKey) || getStoredIpfsCid(displayName) || "";
         const isExplicitR2 = kvItem.metadata?.backend === "r2" || kvItem.metadata?.b === "r2" || kvCid === "r2";
         const hasIpfsCid = kvCid && kvCid !== "r2" && (kvCid.startsWith("Qm") || kvCid.startsWith("baf") || kvCid.length > 20);
         if (hasIpfsCid && !isExplicitR2) continue; // Filebase 専用レコードのみ除外
