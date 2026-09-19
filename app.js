@@ -10218,8 +10218,28 @@ const uploadTokenStatusBadge = document.querySelector("#uploadTokenStatusBadge")
 let isUploadTokenVerified = false;
 let uploadTokenVerifyTimer = null;
 
-// 🔑 Worker と通信して UPLOAD_TOKEN の正誤を検証
-async function verifyUploadToken() {
+function getStoredUploadTokenVerification(token, endpoint) {
+  try {
+    const raw = JSON.parse(localStorage.getItem("uploadTokenVerifiedState") || "null");
+    if (raw && raw.token === token && raw.endpoint === endpoint) {
+      return Boolean(raw.verified);
+    }
+  } catch (_) {}
+  return null;
+}
+
+function setStoredUploadTokenVerification(token, endpoint, verified) {
+  try {
+    if (token && endpoint) {
+      localStorage.setItem("uploadTokenVerifiedState", JSON.stringify({ token, endpoint, verified: Boolean(verified) }));
+    } else {
+      localStorage.removeItem("uploadTokenVerifiedState");
+    }
+  } catch (_) {}
+}
+
+// 🔑 Worker と通信して UPLOAD_TOKEN の正誤を検証（Local-First: キャッシュ優先）
+async function verifyUploadToken({ force = false } = {}) {
   const token = getUploadApiToken();
   const endpoint = getDedicatedUploadEndpoint();
   const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
@@ -10229,6 +10249,7 @@ async function verifyUploadToken() {
       uploadTokenStatusBadge.innerHTML = `<span style="color: var(--muted);">${dict.uploadTokenStatusNeedWorker}</span>`;
     }
     isUploadTokenVerified = false;
+    setStoredUploadTokenVerification("", "", false);
     updateDedicatedUploadApiUI();
     return;
   }
@@ -10238,8 +10259,24 @@ async function verifyUploadToken() {
       uploadTokenStatusBadge.innerHTML = `<span style="color: var(--muted);">${dict.uploadTokenStatusUnknown}</span>`;
     }
     isUploadTokenVerified = false;
+    setStoredUploadTokenVerification("", "", false);
     updateDedicatedUploadApiUI();
     return;
+  }
+
+  // 🚀 [INV-CORE-005] 手元キャッシュがある場合は通信を完全スキップ（0回）
+  if (!force) {
+    const cachedStatus = getStoredUploadTokenVerification(token, endpoint);
+    if (cachedStatus !== null) {
+      isUploadTokenVerified = cachedStatus;
+      if (uploadTokenStatusBadge) {
+        uploadTokenStatusBadge.innerHTML = cachedStatus
+          ? `<span style="color: #22c55e; font-weight: 600;">${dict.uploadTokenStatusValid}</span>`
+          : `<span style="color: #ef4444; font-weight: 600;">${dict.uploadTokenStatusInvalid}</span>`;
+      }
+      updateDedicatedUploadApiUI();
+      return;
+    }
   }
 
   if (uploadTokenStatusBadge) {
@@ -10261,17 +10298,20 @@ async function verifyUploadToken() {
           uploadTokenStatusBadge.innerHTML = `<span style="color: #22c55e; font-weight: 600;">${dict.uploadTokenStatusValid}</span>`;
         }
         isUploadTokenVerified = true;
+        setStoredUploadTokenVerification(token, endpoint, true);
       } else {
         if (uploadTokenStatusBadge) {
           uploadTokenStatusBadge.innerHTML = `<span style="color: #ef4444; font-weight: 600;">${dict.uploadTokenStatusInvalid}</span>`;
         }
         isUploadTokenVerified = false;
+        setStoredUploadTokenVerification(token, endpoint, false);
       }
     } else {
       if (uploadTokenStatusBadge) {
         uploadTokenStatusBadge.innerHTML = `<span style="color: #ef4444; font-weight: 600;">${dict.uploadTokenStatusInvalid}</span>`;
       }
       isUploadTokenVerified = false;
+      setStoredUploadTokenVerification(token, endpoint, false);
     }
   } catch (err) {
     if (uploadTokenStatusBadge) {
@@ -10286,7 +10326,7 @@ async function verifyUploadToken() {
 function scheduleUploadTokenVerify(delayMs = 400) {
   if (uploadTokenVerifyTimer) clearTimeout(uploadTokenVerifyTimer);
   uploadTokenVerifyTimer = setTimeout(() => {
-    verifyUploadToken();
+    verifyUploadToken({ force: true });
   }, delayMs);
 }
 
@@ -10330,9 +10370,9 @@ r2DomainSelect?.addEventListener("change", () => {
   populateUploadReturnDomainSelect();
   updateDedicatedUploadApiUI();
 });
-kvWorkerUrl?.addEventListener("input", () => {
+kvWorkerUrl?.addEventListener("change", () => {
   updateDedicatedUploadApiUI();
-  scheduleUploadTokenVerify(400);
+  scheduleUploadTokenVerify(100);
 });
 if (uploadNamingRuleSelect) {
   uploadNamingRuleSelect.value = localStorage.getItem("uploadNamingRule") || "original";
@@ -10343,19 +10383,24 @@ if (uploadNamingRuleSelect) {
 }
 if (uploadApiTokenInput) {
   uploadApiTokenInput.value = localStorage.getItem("uploadApiToken") || "";
+  // [INV-CORE-001] 入力中はローカル保存とUI更新のみ。文字入力ごとの通信連打を完全排除
   uploadApiTokenInput.addEventListener("input", () => {
     const token = uploadApiTokenInput.value.trim();
     if (token) localStorage.setItem("uploadApiToken", token);
     else localStorage.removeItem("uploadApiToken");
-    scheduleUploadTokenVerify(400);
+    updateDedicatedUploadApiUI();
+  });
+  // 入力完了時（change）のみ検証を発火
+  uploadApiTokenInput.addEventListener("change", () => {
+    scheduleUploadTokenVerify(100);
   });
 }
 
+// 起動時: 手元キャッシュを活用して即時反映（通信ゼロ）
 setTimeout(() => {
   populateUploadReturnDomainSelect();
-  updateDedicatedUploadApiUI();
-  scheduleUploadTokenVerify(200);
-}, 250);
+  verifyUploadToken({ force: false });
+}, 100);
 
 copyUploadApiUrlBtn?.addEventListener("click", async () => {
   const token = getUploadApiToken();

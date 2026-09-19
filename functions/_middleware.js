@@ -368,31 +368,46 @@ function renderOgpHtml(filename, rawUrl, ext, isVideo, origin, thumbnailKey = nu
 </html>`;
 }
 
-function renderNotFoundResponse(request, cdnCacheSeconds = 60) {
+function renderNotFoundResponse(request, cdnCacheSeconds = 60, context = null) {
   const accept = request.headers.get("accept") || "";
+  const isHtml = accept.includes("text/html");
   const headers = {
     "Cache-Control": "no-cache",
     ...(cdnCacheSeconds > 0 ? { "Cloudflare-CDN-Cache-Control": `public, max-age=${cdnCacheSeconds}` } : {}),
+    "Content-Type": isHtml ? "text/html; charset=utf-8" : "image/svg+xml; charset=utf-8",
+    "Access-Control-Allow-Origin": "*",
   };
 
-  if (accept.includes("text/html")) {
-    return new Response(CATBOX_404_HTML, {
-      status: 404,
-      headers: {
-        ...headers,
-        "Content-Type": "text/html; charset=utf-8",
-      },
-    });
+  const res = new Response(isHtml ? CATBOX_404_HTML : CATBOX_404_SVG, {
+    status: 404,
+    headers,
+  });
+
+  // ⚡ エッジキャッシュ（Cache API）に404を書き込み、同一パスの反復 DoS 攻撃での KV 消費を完全ゼロ化
+  if (cdnCacheSeconds > 0 && typeof caches !== "undefined" && caches.default && request.method === "GET") {
+    try {
+      context?.waitUntil?.(caches.default.put(request, res.clone())) || caches.default.put(request, res.clone()).catch(() => {});
+    } catch (_) {}
   }
 
-  return new Response(CATBOX_404_SVG, {
-    status: 404,
-    headers: {
-      ...headers,
-      "Content-Type": "image/svg+xml; charset=utf-8",
-      "Access-Control-Allow-Origin": "*",
-    },
-  });
+  return res;
+}
+
+// ⚡ 正常メディアレスポンスを Cache API（エッジキャッシュ）に書き込み、
+// 2回目以降の同一 URL アクセスでの KV 読み取り・ストレージ問い合わせを完全ゼロ化
+function saveResponseToEdgeCache(request, res, context, hasPassword = false) {
+  if (
+    !hasPassword &&
+    request.method === "GET" &&
+    res &&
+    res.status === 200 &&
+    typeof caches !== "undefined" &&
+    caches.default
+  ) {
+    try {
+      context?.waitUntil?.(caches.default.put(request, res.clone())) || caches.default.put(request, res.clone()).catch(() => {});
+    } catch (_) {}
+  }
 }
 
 // アップロード時に台帳へ保存した実寸を、直リンクを事前解析するクライアントへ渡す。
@@ -456,6 +471,15 @@ export async function onRequest(context) {
         "Access-Control-Max-Age": "86400",
       },
     });
+  }
+  // ⚡ エッジキャッシュ（Cache API）最前線ガード:
+  // 過去にアクセスされた正常メディアまたは 404 レスポンスは、KV を叩かず即座に返却（KV消費 0回）
+  const edgeCache = typeof caches !== "undefined" ? caches.default : null;
+  if (edgeCache && (request.method === "GET" || request.method === "HEAD")) {
+    try {
+      const cached = await edgeCache.match(request);
+      if (cached) return cached;
+    } catch (_) {}
   }
 
   const url = new URL(request.url);
@@ -692,7 +716,9 @@ export async function onRequest(context) {
         const ext = extMatch[1].toLowerCase();
         headers.set("Content-Type", meta.mime || mimeMap[ext] || "application/octet-stream");
         setImageDimensionHeaders(headers, meta);
-        return new Response(directData, { status: 200, headers });
+        const res = new Response(directData, { status: 200, headers });
+        saveResponseToEdgeCache(request, res, context, hasPassword);
+        return res;
       }
     } catch (directErr) {
       console.warn("Direct blob read error:", directErr);
@@ -832,8 +858,10 @@ export async function onRequest(context) {
   const ext = extMatch[1].toLowerCase();
   headers.set("Content-Type", mimeMap[ext] || upstreamResponse.headers.get("content-type") || "application/octet-stream");
 
-  return new Response(isHead ? null : upstreamResponse.body, {
+  const res = new Response(isHead ? null : upstreamResponse.body, {
     status: upstreamResponse.status,  // 200 or 206 をそのまま返す
     headers,
   });
+  saveResponseToEdgeCache(request, res, context, hasPassword);
+  return res;
 }
