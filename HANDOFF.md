@@ -593,3 +593,29 @@ npx wrangler pages deploy dist --project-name=my-content-cache
 - **追加インフラ・スキーマ変更ゼロ**: 既存の KV 台帳ビットフラグをそのまま利用。
 - **Filebase Egress の恒久的大幅削減**: 自宅 Kubo に同期される運用において、Filebase 転送枠の消費が劇的に抑制される。
 
+---
+
+## ⚡ [ストレージ統合・一元配信] Cloudflare R2 の pages.dev / relay 経由ハイブリッド配信
+
+### 1. 課題と背景
+- 従来は R2 と Filebase で配信リレー（Pages / Worker）が物理的に分かれており、`r2-relay` や `ipfs-relay` と別々のドメイン管理を強いられていた。
+- また、R2 のアップロード時に条件によって KV 台帳登録がスキップされ、統合 Worker 側で「CID がない」として 404 遮断される潜在的な制限があった。
+
+### 2. 改修内容と設計
+1. **フロントエンド側 (`app.js`)**:
+   - R2 アップロード時に、画像・動画・パスワード・TTLの有無に関わらず、**常に KV 台帳へ "r2" マーカーと allowedHost を登録**。
+   - これにより、R2 のファイルに対しても時限消去（TTL）やドメイン制限が 100% 確実に適用される。
+2. **Worker 側 (`delivery.js` / `[INV-DELIVERY-004]`)**:
+   - **台帳に存在しないランダム URL は即座に 404 返却**（R2 / IPFS どちらにもアクセスさせず DoS 防護）。
+   - **相互排他ルーティング**:
+     - 台帳が R2 レコード ➔ **R2 バケットのみを検索・即時返却**（IPFS 上流フェッチは 0 回）。
+     - 台帳が IPFS レコード ➔ **IPFS ルーティングへ直行**（R2 バケット検索は 0 回）。
+3. **インフラ側 (`wrangler.toml`)**:
+   - `cividge-kv-worker` に `env.R2_BUCKET = "cividge"` をバインド。
+   - 統一カスタムドメイン `relay.k7m.f5.si` をプロビジョニングし、各静的 Pages（`content-relay`, `testunko`, `punipuni-media`）の転送先を一元化。
+
+### 3. 効果
+- ユーザーは **ブラウザから R2 を設定し、配信ドメインに `https://content-relay.pages.dev`（または `testunko`）を選ぶだけ** で、完全無料・Egress ゼロ・爆速で R2 から配信可能に。
+- R2 のファイルに対しても、`k7m.f5.si` の「クエリ無視 Cache Rule（キャッシュバスター DoS 防御）」が 100% 適用される。
+
+

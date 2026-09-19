@@ -5731,13 +5731,12 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       // 無条件に100%消費するため行わない。実際の初回アクセス時にオンデマンドでエッジキャッシュさせる。
       setFileStoredDomain(result.name, baseDomain);
     } else {
-      // ⚡ Cloudflare R2: 保護・期限付きに加え、画像は解像度ヘッダー配信用に台帳登録する。
-      if (password || ttlSeconds > 0 || imageDimensions) {
-        await registerKvCid(result.name, "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
-        result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-      } else {
-        result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-      }
+      // ⚡ Cloudflare R2:
+      // ファイル種別（動画/画像）やパスワード・期限の有無に関わらず、
+      // 常に KV 台帳へ "r2" マーカーと allowedHost（配信許可ドメイン）を登録。
+      // これにより、relay.k7m.f5.si 経由での R2 配信、ドメイン保護、時限消去が 100% 確実に機能する。
+      await registerKvCid(result.name, "r2", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
+      result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       setFileStoredDomain(result.name, baseDomain);
     }
 
@@ -5772,7 +5771,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             // サムネイル自身も親動画と同じ期限で台帳登録し、OGP 配信時に解決できるようにする。
             await registerKvCid(thumbKey, thumbCid, thumbBytes.length, "image/webp", thumbKey, "", thumbBlob, ttlSeconds, expiresAt, false, null, baseDomain, true, null, thumbnailDimensions?.width, thumbnailDimensions?.height);
             // 別名 URL でも元動画のサムネイルを参照できるよう、親レコードへ派生キーを保存する。
-            await registerKvCid(result.name, isFilebase ? (ipfsCid || "") : "", uploadBytes.length, contentType, result.name, "", null, ttlSeconds, expiresAt, false, null, baseDomain, true, thumbKey, imageDimensions?.width, imageDimensions?.height);
+            await registerKvCid(result.name, isFilebase ? (ipfsCid || "") : "r2", uploadBytes.length, contentType, result.name, "", null, ttlSeconds, expiresAt, false, null, baseDomain, true, thumbKey, imageDimensions?.width, imageDimensions?.height);
             console.log(`🎬 動画サムネイル自動アップロード完了: ${thumbKey} (${thumbBytes.length} bytes)`);
           }
         } catch (thumbErr) {
