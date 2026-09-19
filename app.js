@@ -1233,42 +1233,9 @@ window.addEventListener("beforeunload", (e) => {
   }
 });
 
-// 🏠 Kubo 実態と KV 台帳の自己修復（Auto-Heal / Reconciliation）
-// せっかちなリロードやブラウザ終了で KV 更新が取り残された場合でも、Kubo 側の実体 Pin に合わせて KV 台帳を非同期自動修復
-async function healKuboPinnedKvRecords(itemsToHeal) {
-  if (!itemsToHeal || itemsToHeal.length === 0 || !hasAdminAccess()) return;
-  for (const item of itemsToHeal) {
-    try {
-      const key = item.rawKey || item.Key;
-      const cid = item.cid || getStoredIpfsCid(key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null);
-      if (!key || !cid) continue;
-      const meta = item.metadata || {};
-      console.log(`🏠 [Auto-Heal] Kubo実態に合わせてKVレコードを修復更新: ${key} (${cid}) -> pinned`);
-      await registerKvCid(
-        key,
-        cid,
-        item.Size || meta.size || 0,
-        meta.mime || "",
-        item.s3Key || meta.s3Key || key,
-        item.password || meta.password || "",
-        null,
-        item.ttl || meta.ttl || 0,
-        item.expiresAt || meta.expiresAt || null,
-        Boolean(meta.unpinned || !item.isFromS3),
-        "pinned",
-        meta.allowedHost || null,
-        false,
-        meta.thumbnailKey || null,
-        meta.width || null,
-        meta.height || null,
-        item.civitaiTemporary
-      );
-      if (item.metadata) item.metadata.kuboStatus = "pinned";
-    } catch (e) {
-      console.warn(`🏠 [Auto-Heal] 自己修復に失敗: ${item.Key}`, e);
-    }
-  }
-}
+// [INV-CORE-001] [INV-CORE-003] 画面表示時に裏で全KuboアイテムのKVレコードをregisterKvCid()で
+// 自動上書き連打する自己修復コード（healKuboPinnedKvRecords）は書き込み枠（1日1,000回）破壊防止のため完全撤去。
+
 
 // 🪦 墓標（Unpin予約キュー）の回収処理
 let lastKuboDrainTime = 0;
@@ -7689,23 +7656,17 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
 
     // 🔗 同一 CID 状態統合（CID State Unification） & 実体 Kubo 状態同期:
     // IPFSでは同一CID＝同一実体。同じCIDを持つ別名ファイル同士で Filebase保持状態・Kubo保持状態を完全同期
-    const itemsToAutoHeal = [];
     if (contents.length > 0) {
       const cidStatusMap = new Map();
       for (const item of contents) {
         const c = item.contentCid || item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null);
         if (!c) continue;
 
-        // Kuboがオンラインかつ実Pinリストが取得できている場合、実際のKubo実態を優先
+        // Kuboがオンラインかつ実Pinリストが取得できている場合、実際のKubo実態を優先（手元表示を自動同期）
         if (actualKuboPinnedSet) {
           const reallyPinnedOnKubo = actualKuboPinnedSet.has(c);
-          const currentMetaStatus = item.metadata?.kuboStatus;
           if (item.metadata) {
             item.metadata.kuboStatus = reallyPinnedOnKubo ? "pinned" : "not_pinned";
-          }
-          // 🚑 自己修復判定: Kubo上にPinが存在するのに、KV台帳が pinned になっていないレコードを修復キューに登録
-          if (reallyPinnedOnKubo && currentMetaStatus !== "pinned" && isFilebase) {
-            itemsToAutoHeal.push(item);
           }
         }
 
@@ -7733,18 +7694,6 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     storageCachedContents = contents;
     saveLedgerToLocalStorage(requestedProvider, contents);
     renderCurrentStoragePage();
-
-    // 🚑 Kubo実態とKV台帳の自己修復（Auto-Heal）を実行（非同期・画面描画ブロックなし）
-    if (itemsToAutoHeal.length > 0) {
-      const seenKeys = new Set();
-      const uniqueItemsToHeal = itemsToAutoHeal.filter(item => {
-        const k = item.rawKey || item.Key;
-        if (!k || seenKeys.has(k)) return false;
-        seenKeys.add(k);
-        return true;
-      });
-      healKuboPinnedKvRecords(uniqueItemsToHeal);
-    }
 
     // 🌊 IPFS 漂流中ファイルの安否確認＆3ストライク自動整理（Filebase / R2 共通）
     auditDriftingFiles(contents);
@@ -7844,112 +7793,9 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
   return cleanedKeys;
 }
 
-// ⚡ 既存 R2 ファイルの遅延 CID 解決＆自己修復（Auto-Resolve & Self-Heal）
-async function resolveR2CardCidAuto(article, itemKey, s3Key, publicUrl, labels) {
-  try {
-    let cid = getStoredIpfsCid(itemKey) || getStoredIpfsCid(s3Key);
-    const r2HashCandidate = getStoredR2Hash(itemKey) || getStoredR2Hash(s3Key);
-    if (!cid && isValidIpfsCid(r2HashCandidate)) cid = r2HashCandidate;
-    if (!cid || !isValidIpfsCid(cid)) {
-      const r2S3 = getS3Client("r2");
-      const r2Bucket = getBucketName("r2");
-      let bytes = null;
-      if (r2S3 && r2Bucket) {
-        try {
-          const res = await r2S3.send(new GetObjectCommand({ Bucket: r2Bucket, Key: s3Key }));
-          bytes = await res.Body.transformToByteArray();
-        } catch (s3Err) {}
-      }
-      if (!bytes || bytes.length === 0) {
-        try {
-          const res = await fetch(publicUrl);
-          if (res.ok) bytes = new Uint8Array(await res.arrayBuffer());
-        } catch (fErr) {}
-      }
-      if (bytes && bytes.length > 0) {
-        cid = await calculateFilebaseCid(bytes);
-      }
-    }
+// [INV-CORE-001] [INV-CORE-003] 画面表示時にR2ファイルを全ダウンロードして裏でCID計算・KV書き込み連打する
+// 過剰自己修復コード（resolveR2CardCidAuto）は帯域・CPU・書き込み枠浪費防止のため完全撤去。
 
-    if (cid && isValidIpfsCid(cid)) {
-      storeIpfsCid(itemKey, cid);
-      storeIpfsCid(s3Key, cid);
-      storeR2Hash(itemKey, cid);
-      storeR2Hash(s3Key, cid);
-      article.dataset.cid = cid;
-
-      // 自宅 Kubo の Pin 状態をチェック
-      let isKuboPinned = false;
-      try {
-        isKuboPinned = await checkKuboPinned(cid, 800);
-      } catch (e) {}
-
-      // 1. Kubo バッジプレースホルダーを更新
-      const kuboHolder = article.querySelector('.r2-kubo-badge-placeholder');
-      if (kuboHolder) {
-        if (isKuboPinned) {
-          kuboHolder.outerHTML = `<button type="button" class="kubo-unpin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(cid)}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboStored}</button>`;
-        } else {
-          kuboHolder.outerHTML = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(cid)}" data-s3key="${escapeHtml(s3Key)}" data-provider="r2" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboMissing}</button>`;
-        }
-      }
-
-      // 2. CID バッジプレースホルダーを更新
-      const cidHolder = article.querySelector('.r2-cid-badge-placeholder');
-      if (cidHolder) {
-        const shortCid = cid.length > 12 ? `${cid.slice(0, 6)}...${cid.slice(-4)}` : cid;
-        const indexerUrl = `https://cid.contact/cid/${encodeURIComponent(cid)}`;
-        cidHolder.outerHTML = `
-          <div style="display: inline-flex; align-items: center; gap: 3px;">
-            <button type="button" class="copy-cid-btn" data-cid="${escapeHtml(cid)}" style="cursor: pointer; font-size: 10px; font-family: monospace; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="IPFS CID: ${escapeHtml(cid)} (クリックでコピー)">📦 ${escapeHtml(shortCid)} 📋</button>
-            <a href="${escapeHtml(indexerUrl)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;">${labels.nodeCheck}</a>
-          </div>
-        `;
-      }
-
-      // 3. R2 保管中ボタンの安全ロック解除（Kubo保持中ならアンピンボタンに昇格）
-      if (isKuboPinned) {
-        const r2Badge = article.querySelector('.item-storage-tier span');
-        if (r2Badge && r2Badge.textContent.includes("R2")) {
-          r2Badge.outerHTML = `<button type="button" class="unpin-r2-origin-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(s3Key)}" data-cid="${escapeHtml(cid)}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;" title="自宅Kuboに保全されているため、クリックしてR2実体を消去（容量解放）できます">${labels.r2Stored}</button>`;
-        }
-      }
-
-      // 4. KV 台帳へ contentCid をバックグラウンド同期
-      (async () => {
-        try {
-          const kvData = await fetchKvRecord(itemKey);
-          if (kvData) {
-            const meta = kvData.metadata || {};
-            await registerKvCid(
-              itemKey,
-              "r2",
-              meta.size || 0,
-              meta.mime || "",
-              s3Key,
-              "",
-              null,
-              meta.ttl || 0,
-              meta.expiresAt || null,
-              Boolean(meta.unpinned),
-              isKuboPinned ? "pinned" : (meta.kuboStatus || null),
-              meta.allowedHost || null,
-              false,
-              meta.thumbnailKey || null,
-              meta.width || null,
-              meta.height || null,
-              Boolean(meta.civitaiTemporary),
-              cid,
-              "r2"
-            );
-          }
-        } catch (e) {}
-      })();
-    }
-  } catch (err) {
-    console.warn("Auto CID resolution failed:", err);
-  }
-}
 
 // 📄 現在のページに該当するストレージカード群をDOM描画
 function renderCurrentStoragePage() {
@@ -8230,11 +8076,6 @@ function renderCurrentStoragePage() {
 
     r2FileList.append(article);
 
-    // ⚡ R2 カードで CID が未解決の場合、バックグラウンドで自動計算してバッジを即時更新
-    if (!isFilebase && (!itemCid || !isValidIpfsCid(itemCid))) {
-      resolveR2CardCidAuto(article, itemKey, item.s3Key || itemDisplayName, publicUrl, labels);
-    }
-
     checkRemoteFileWf(item.Key, publicUrl).then(hasWf => {
       if (hasWf) {
         const placeholder = article.querySelector('.r2-wf-badge-placeholder');
@@ -8399,6 +8240,7 @@ function recordDriftCheckResult(rawKey, isAlive) {
 
 /**
  * 実体データをダウンロードせず、HTTP HEAD で軽量に安否確認 (4秒タイムアウト)
+ * [INV-CORE-001] cache: "no-store" を外し、エッジキャッシュを優先照会（エッジ生存中はKV消費0回）
  */
 async function checkDriftSurvival(url) {
   if (!url) return false;
@@ -8408,7 +8250,6 @@ async function checkDriftSurvival(url) {
     const res = await fetch(url, {
       method: "HEAD",
       signal: ctrl.signal,
-      cache: "no-store",
     });
     clearTimeout(tid);
     return res.ok || res.status === 206 || res.status === 304;
@@ -8432,13 +8273,20 @@ async function auditDriftingFiles(contents) {
 
   if (driftingItems.length === 0) return;
 
-  console.log(`🌊 漂流中ファイルの安否確認を開始: ${driftingItems.length}件`);
   const labels = getStorageListLabels();
+  const now = Date.now();
 
   for (const item of driftingItems) {
     const rawKey = item.rawKey || item.Key;
     const publicUrl = item.publicUrl || item.proxyUrl;
     if (!rawKey || !publicUrl) continue;
+
+    // 🛡️ クールダウン先行ガード: 前回失敗から1時間以内なら HEAD 通信自体を完全にスキップ（通信無駄打ちゼロ）
+    const counts = getDriftFailCounts();
+    const entry = counts[rawKey];
+    if (entry && entry.count > 0 && (now - entry.lastChecked < DRIFT_FAIL_COOLDOWN_MS)) {
+      continue;
+    }
 
     const isAlive = await checkDriftSurvival(publicUrl);
     const result = recordDriftCheckResult(rawKey, isAlive);
