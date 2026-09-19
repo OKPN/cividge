@@ -227,9 +227,16 @@
                   </details>
 
                   <details class="settings-accordion cf-settings-accordion" id="filebaseSettingsAccordion">
-                    <summary>🪐 Filebase (IPFS) / 🏠 Kubo</summary>
+                    <summary data-i18n="filebaseAccordionTitle">🪐 Filebase (IPFS)</summary>
                     <div id="filebaseSettingsContent" class="settings-content" style="padding: 12px 0 4px; display: flex; flex-direction: column; gap: 12px;">
-                      <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="filebaseAccordionDesc">Filebase の CID・IPFS 保存、Filebase 専用配信ドメイン、任意の Kubo 保全ノードを設定します。</p>
+                      <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="filebaseAccordionDesc">Filebase の CID・IPFS 保存、Filebase 専用配信ドメイン、CORS を設定します。</p>
+                    </div>
+                  </details>
+
+                  <details class="settings-accordion cf-settings-accordion" id="kuboSettingsAccordion">
+                    <summary data-i18n="kuboAccordionTitle">🏠 自宅 Kubo (IPFSノード永続保存)</summary>
+                    <div id="kuboSettingsContent" class="settings-content" style="padding: 12px 0 4px; display: flex; flex-direction: column; gap: 12px;">
+                      <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="kuboAccordionDesc">自宅 PC / サーバーの Kubo ノードと連携し、R2 や Filebase の容量解放時にファイルを自動保全します。</p>
                     </div>
                   </details>
 
@@ -397,6 +404,10 @@
                           </span>
                         </label>
                         <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 2px;">
+                          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11.5px; color: #e2e8f0;">
+                            <input type="checkbox" id="kuboAutoPinR2Check" checked style="width: 14px; height: 14px; accent-color: #a78bfa; cursor: pointer;">
+                            <span data-i18n="kuboAutoPinR2">Cloudflare R2容量解放時にKuboへ自動Pin留め</span>
+                          </label>
                           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11.5px; color: #e2e8f0;">
                             <input type="checkbox" id="kuboAutoPinCheck" checked style="width: 14px; height: 14px; accent-color: #a78bfa; cursor: pointer;">
                             <span data-i18n="kuboAutoPin">Filebase容量解放時にKuboへ自動Pin留め</span>
