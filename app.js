@@ -1240,7 +1240,10 @@ window.addEventListener("beforeunload", (e) => {
 // 🪦 墓標（Unpin予約キュー）の回収処理
 let lastKuboDrainTime = 0;
 async function drainKuboTombstones() {
-  if (!hasAdminAccess()) return; // KV台帳連携がない場合は墓標キューの回収を行わない
+  // 🛡️ [INV-CORE-004] 自宅Kuboが設定されていない環境、または管理者KV連携がない場合は走査を完全スキップ（空振り照会根絶）
+  const customRpc = (localStorage.getItem("kuboRpcUrl") || "").trim();
+  if (!hasAdminAccess() || !customRpc) return;
+
   const now = Date.now();
   if (now - lastKuboDrainTime < 60000) return; // 少なくとも60秒に1回に制限
   lastKuboDrainTime = now;
@@ -1274,52 +1277,6 @@ async function drainKuboTombstones() {
     }
   } catch (e) {
     console.warn("drainKuboTombstones error:", e);
-  }
-}
-
-// 🪦 S3実体削除用の墓標（Tombstone）回収処理
-let lastS3DrainTime = 0;
-async function drainS3Tombstones(s3, bucketName) {
-  if (!hasAdminAccess() || !s3 || !bucketName) return;
-  const now = Date.now();
-  if (now - lastS3DrainTime < 60000) return; // 少なくとも60秒に1回に制限
-  lastS3DrainTime = now;
-  const token = getAdminApiToken();
-  const endpoint = getKvApiEndpoint();
-
-  try {
-    const sep = endpoint.includes("?") ? "&" : "?";
-    const headers = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    const res = await fetch(`${endpoint}${sep}tombstones_s3=1`, { headers });
-    if (!res.ok) return;
-    const data = await res.json();
-    const tombstones = data.tombstonesS3 || [];
-    if (tombstones.length === 0) return;
-
-    console.log(`🪦 S3墓標回収開始: ${tombstones.length}件のS3実体削除キューを処理中...`);
-    for (const s3Key of tombstones) {
-      try {
-        const thumbnailKey = getVideoThumbnailKey(s3Key);
-        const objects = [s3Key, thumbnailKey].filter(Boolean).map(Key => ({ Key }));
-        await s3.send(objects.length === 1
-          ? new DeleteObjectCommand({ Bucket: bucketName, Key: s3Key })
-          : new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }));
-        console.log(`🗑️ S3墓標に従い実体を削除しました: ${s3Key}`);
-
-        // KVから墓標を消去
-        await fetch(`${endpoint}${sep}tombstone_s3=${encodeURIComponent(s3Key)}`, {
-          method: "DELETE",
-          headers,
-        });
-        console.log(`🪦 S3墓標回収完了: ${s3Key}`);
-      } catch (err) {
-        console.warn(`🪦 S3墓標回収エラー (${s3Key}):`, err);
-      }
-    }
-  } catch (e) {
-    console.warn("drainS3Tombstones error:", e);
   }
 }
 
@@ -1461,19 +1418,18 @@ function addOrUpdateLocalLedgerItem(provider, item) {
 
 // 🪦 墓標回収の1日1回（24時間）低頻度ガード
 const TOMBSTONE_DRAIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
-async function maybeDrainTombstonesDaily(s3, bucketName) {
-  if (!hasAdminAccess()) return;
+async function maybeDrainTombstonesDaily() {
+  // 🛡️ [INV-CORE-004] 自宅Kuboが設定されていない環境、または管理者KV連携がない場合は走査を完全スキップ（空振り照会根絶）
+  const customRpc = (localStorage.getItem("kuboRpcUrl") || "").trim();
+  if (!hasAdminAccess() || !customRpc) return;
   const lastDrainStr = localStorage.getItem("cividge_last_tombstone_drain");
   const lastDrain = lastDrainStr ? Number(lastDrainStr) : 0;
   const now = Date.now();
   if (now - lastDrain < TOMBSTONE_DRAIN_INTERVAL_MS) return;
   localStorage.setItem("cividge_last_tombstone_drain", String(now));
-  console.log("🪦 前回から24時間経過したため墓標（非同期ゴミ回収キュー）を定期走査します");
+  console.log("🪦 前回から24時間経過したため自宅Kubo墓標（アンピン予約キュー）を定期走査します");
   try {
     await drainKuboTombstones();
-    if (s3 && bucketName) {
-      await drainS3Tombstones(s3, bucketName);
-    }
   } catch (err) {
     console.warn("maybeDrainTombstonesDaily error:", err);
   }
@@ -3395,12 +3351,13 @@ async function handleAddNewDomain(provider, input, form) {
   // 🛡️ ロック1: 【宗派替え事故防止】他方ストレージのファイルが台帳に残っていないかチェック
   const otherProvider = storageProvider === "r2" ? "filebase" : "r2";
   try {
-    const kvFiles = await fetchKvFiles();
-    const foreignFiles = kvFiles.filter(f => {
-      const key = (f.name || "").toLowerCase();
+    // 🚀 [INV-CORE-005] 手元台帳キャッシュから照合（kv.list 全件走査ゼロ化）
+    const otherLedger = loadLedgerFromLocalStorage(otherProvider) || [];
+    const foreignFiles = otherLedger.filter(f => {
+      const key = (f.rawKey || f.Key || f.name || "").toLowerCase();
       if (!key.startsWith(`${cleanHost}:`)) return false;
-      const b = f.metadata?.backend || f.metadata?.b;
-      return b === otherProvider || (otherProvider === "r2" ? f.metadata?.cid === "r2" : f.metadata?.cid !== "r2");
+      const b = f.metadata?.backend || f.metadata?.b || f.backend;
+      return b === otherProvider || (otherProvider === "r2" ? f.cid === "r2" : f.cid !== "r2");
     });
     if (foreignFiles.length > 0) {
       await showCustomAlert(
@@ -3410,7 +3367,7 @@ async function handleAddNewDomain(provider, input, form) {
       return;
     }
   } catch (e) {
-    console.warn("KV check error during domain add:", e);
+    console.warn("Local ledger check error during domain add:", e);
   }
 
   // 🛡️ ロック2: 【ストレージ排他ガード】他方ストレージにすでに同じドメインがある場合、互換レイヤ検証に合格必須
@@ -3441,7 +3398,7 @@ async function handleAddNewDomain(provider, input, form) {
   updateR2Status();
   updateDomainCompatBadgeUi(storageProvider);
   render();
-  if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
+  if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) renderCurrentStoragePage();
   if (form) form.style.display = "none";
 }
 
@@ -3466,8 +3423,9 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
 
     // 🛡️ ロック2: 【残存ファイル消し忘れ防止】このドメインに紐づくファイルが台帳に残っていないかチェック
     try {
-      const kvFiles = await fetchKvFiles();
-      const activeFiles = kvFiles.filter(f => (f.name || "").toLowerCase().startsWith(`${cleanHost}:`));
+      // 🚀 [INV-CORE-005] 手元台帳キャッシュから照合（kv.list 全件走査ゼロ化）
+      const currentLedger = loadLedgerFromLocalStorage(storageProvider) || [];
+      const activeFiles = currentLedger.filter(f => (f.rawKey || f.Key || f.name || "").toLowerCase().startsWith(`${cleanHost}:`));
       if (activeFiles.length > 0) {
         await showCustomAlert(
           `⚠️ このドメイン（${cleanHost}）で配信中のファイルがまだ ${activeFiles.length} 件存在します。\n\nドメイン設定を削除すると、これらはアクセス不能（404）になります。\nドメインを削除する前に、該当ファイルを削除するか別ドメインへ移してください。`,
@@ -3476,7 +3434,7 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
         return;
       }
     } catch (e) {
-      console.warn("KV check error during domain delete:", e);
+      console.warn("Local ledger check error during domain delete:", e);
     }
 
     if (!confirm(`選択中の${label}配信ドメイン「${current}」を削除しますか？`)) return;
@@ -3487,7 +3445,7 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
     updateR2Status();
     updateDomainCompatBadgeUi(storageProvider);
     render();
-    if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
+    if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) renderCurrentStoragePage();
   });
 }
 
@@ -3521,12 +3479,13 @@ function bindDomainMirrorCheckbox(provider, mirrorCheck) {
     } else {
       // 🛡️ ロック: 他方ストレージでこのドメインに紐づくファイルが台帳に残っていないかチェック
       try {
-        const kvFiles = await fetchKvFiles();
-        const foreignFiles = kvFiles.filter(f => {
-          const key = (f.name || "").toLowerCase();
+        // 🚀 [INV-CORE-005] 手元台帳キャッシュから照合（kv.list 全件走査ゼロ化）
+        const otherLedger = loadLedgerFromLocalStorage(otherProvider) || [];
+        const foreignFiles = otherLedger.filter(f => {
+          const key = (f.rawKey || f.Key || f.name || "").toLowerCase();
           if (!key.startsWith(`${cleanHost}:`)) return false;
-          const b = f.metadata?.backend || f.metadata?.b;
-          return b === otherProvider || (otherProvider === "r2" ? f.metadata?.cid === "r2" : f.metadata?.cid !== "r2");
+          const b = f.metadata?.backend || f.metadata?.b || f.backend;
+          return b === otherProvider || (otherProvider === "r2" ? f.cid === "r2" : f.cid !== "r2");
         });
         if (foreignFiles.length > 0) {
           await showCustomAlert(
@@ -3537,7 +3496,7 @@ function bindDomainMirrorCheckbox(provider, mirrorCheck) {
           return;
         }
       } catch (e) {
-        console.warn("KV check error during domain unmirror:", e);
+        console.warn("Local ledger check error during domain unmirror:", e);
       }
 
       const nextList = otherList.filter(d => d !== currentDomain);
@@ -4972,34 +4931,14 @@ function createComfyBadgeHtml(file, result) {
   return `<div class="comfy-meta-row" style="margin-top: 3px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">${badge}${statusNotice}</div>`;
 }
 
-async function checkRemoteFileWf(key, publicUrl) {
-  if (!key || !publicUrl) return false;
-  const ext = key.split('.').pop().toLowerCase();
-  if (!["png", "webp", "mp4", "webm"].includes(ext)) return false;
-
-  let wfStore = {};
+function checkRemoteFileWf(key) {
+  if (!key) return false;
   try {
-    wfStore = JSON.parse(localStorage.getItem("comfyWfMap") || "{}");
-  } catch (e) {}
-
-  if (wfStore[key] !== undefined) return wfStore[key];
-
-  try {
-    const res = await fetch(publicUrl, { headers: { Range: "bytes=0-131072" } });
-    if (res.ok || res.status === 206) {
-      const buf = await res.arrayBuffer();
-      const text = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buf));
-      const hasWf = (text.includes('"nodes"') && text.includes('"links"')) ||
-                    (text.includes('"inputs"') && text.includes('"class_type"')) ||
-                    text.includes('"workflow"');
-      wfStore[key] = hasWf;
-      localStorage.setItem("comfyWfMap", JSON.stringify(wfStore));
-      return hasWf;
-    }
-  } catch (err) {
-    console.debug("Remote WF check skipped:", err);
+    const wfStore = JSON.parse(localStorage.getItem("comfyWfMap") || "{}");
+    return Boolean(wfStore[key]);
+  } catch (e) {
+    return false;
   }
-  return false;
 }
 
 // 許可する拡張子一覧（アーカイブ除外、メディア・テキスト系に限定）
@@ -6135,7 +6074,10 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
     }
     if (itemsToDelete.length === 0) return;
 
-    const kvFiles = await fetchKvFiles();
+    // 🚀 [INV-CORE-005] 手元台帳キャッシュから参照（kv.list 全件走査ゼロ化）
+    const kvFiles = (storageCachedContents && storageCachedContents.length > 0)
+      ? storageCachedContents
+      : (loadLedgerFromLocalStorage("r2") || []);
     const preservedInKuboKeys = new Set();
 
     // 🏠 Kubo への自動実体保存（Pin留め）
@@ -6945,9 +6887,7 @@ storageTabFilebase?.addEventListener("click", () => {
 reloadR2FilesButton?.addEventListener("click", () => {
   storageCurrentPage = 1;
   fetchAndRenderR2Files({ forceRefresh: true, cleanupExpiredCivitaiTransfers: true });
-  const s3 = getS3Client(activeStorageTab);
-  const bucketName = getBucketName(activeStorageTab);
-  maybeDrainTombstonesDaily(s3, bucketName);
+  maybeDrainTombstonesDaily();
 });
 
 // 🚀 初回オンボーディング（設定・接続案内カード）の描画
@@ -8179,14 +8119,12 @@ function renderCurrentStoragePage() {
 
     r2FileList.append(article);
 
-    checkRemoteFileWf(item.Key, publicUrl).then(hasWf => {
-      if (hasWf) {
-        const placeholder = article.querySelector('.r2-wf-badge-placeholder');
-        if (placeholder) {
-          placeholder.innerHTML = `<span class="meta-badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; padding: 1px 5px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 2px;" title="${escapeHtml(labels.workflow)}">🧬 WF</span>`;
-        }
+    if (checkRemoteFileWf(item.Key)) {
+      const placeholder = article.querySelector('.r2-wf-badge-placeholder');
+      if (placeholder) {
+        placeholder.innerHTML = `<span class="meta-badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10px; padding: 1px 5px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 2px;" title="${escapeHtml(labels.workflow)}">🧬 WF</span>`;
       }
-    });
+    }
 
     // 🪐 画像・サムネイルが 404 / 読み込み失敗した際、S3 から直接 Blob を取得して確実に即座表示するフォールバック
     if (isImage) {
@@ -8533,17 +8471,16 @@ r2FileList?.addEventListener("click", async (e) => {
       let size = currentSize;
       let mime = "";
 
-      let existingKvFiles = [];
-      try {
-        existingKvFiles = await fetchKvFiles();
-        const currentKv = existingKvFiles.find(f => f.name === oldKey || f.name.endsWith(`:${oldKey}`));
-        if (currentKv) {
-          if (!cid) cid = currentKv.metadata?.cid;
-          if (!size) size = currentKv.metadata?.size || 0;
-          mime = currentKv.metadata?.mime || "";
-        }
-      } catch (err) {
-        console.warn("KV fetch error during rename:", err);
+      // 🚀 [INV-CORE-005] 手元台帳キャッシュからメタデータ取得と同名衝突チェック（kv.list 全件走査 2重連打を完全根絶）
+      const localLedgerList = (storageCachedContents && storageCachedContents.length > 0)
+        ? storageCachedContents
+        : (loadLedgerFromLocalStorage(activeStorageTab) || []);
+
+      const currentKv = localLedgerList.find(f => (f.rawKey || f.Key) === oldKey || f.Key === oldKey || (f.rawKey || f.Key).endsWith(`:${oldKey}`));
+      if (currentKv) {
+        if (!cid) cid = currentKv.cid || currentKv.contentCid || currentKv.metadata?.cid;
+        if (!size) size = currentKv.Size || currentKv.size || currentKv.metadata?.size || 0;
+        mime = currentKv.mime || currentKv.metadata?.mime || "";
       }
 
       if (isFilebase && !cid) {
@@ -8565,10 +8502,10 @@ r2FileList?.addEventListener("click", async (e) => {
 
       // 🛡️ 同名ファイル存在チェック:
       // 変更先 targetNewKey が既に存在し、かつ実体が異なる場合は上書き破壊を防ぐため中断
-      const conflictingFile = existingKvFiles.find(f => f.name === targetNewKey);
+      const conflictingFile = localLedgerList.find(f => (f.rawKey || f.Key) === targetNewKey || f.Key === newKey);
       if (conflictingFile) {
-        const targetCid = conflictingFile.metadata?.cid || conflictingFile.metadata?.c;
-        const targetS3 = conflictingFile.metadata?.s3Key || conflictingFile.metadata?.k_s3;
+        const targetCid = conflictingFile.cid || conflictingFile.contentCid || conflictingFile.metadata?.cid || conflictingFile.metadata?.c;
+        const targetS3 = conflictingFile.s3Key || conflictingFile.metadata?.s3Key || conflictingFile.metadata?.k_s3;
         const isSameEntity = isFilebase
           ? (targetCid && targetCid === cid)
           : (targetS3 && targetS3 === originalS3Key);
@@ -8585,37 +8522,18 @@ r2FileList?.addEventListener("click", async (e) => {
       try {
         // 1. 新キーで登録（実体 S3 キー名 originalS3Key を引き継ぐ）
         // unpinned / kuboStatus などの状態もそのまま継承
-        let unpinned = false;
-        let kuboStatus = null;
-        let ttl = 0;
-        let expiresAt = null;
-        let password = "";
+        let unpinned = Boolean(currentKv?.unpinned || currentKv?.metadata?.unpinned);
+        let kuboStatus = currentKv?.metadata?.kuboStatus || null;
+        let ttl = currentKv?.ttl || currentKv?.metadata?.ttl || 0;
+        let expiresAt = currentKv?.expiresAt || currentKv?.metadata?.expiresAt || null;
+        let password = currentKv?.password || currentKv?.metadata?.password || "";
         // 🌐 元カードのDOM設定（allowedHost, expiresAt）をまず最優先で取得
         const domAllowedHost = article?.dataset?.allowedhost || null;
         const domExpiresAt = Number(article?.dataset?.expiresat || 0) || null;
-        let allowedHost = domAllowedHost;
+        let allowedHost = domAllowedHost || currentKv?.metadata?.allowedHost || currentKv?.metadata?.d || null;
         if (domExpiresAt && domExpiresAt > Date.now()) {
           expiresAt = domExpiresAt;
           ttl = Math.round((domExpiresAt - Date.now()) / 1000);
-        }
-
-        try {
-          const kvFiles = await fetchKvFiles();
-          const currentKv = kvFiles.find(f => f.name === oldKey || f.name.endsWith(`:${oldKey}`));
-          if (currentKv && currentKv.metadata) {
-            unpinned = Boolean(currentKv.metadata.unpinned);
-            kuboStatus = currentKv.metadata.kuboStatus || null;
-            if (!expiresAt) {
-              ttl = currentKv.metadata.ttl || 0;
-              expiresAt = currentKv.metadata.expiresAt || null;
-            }
-            password = currentKv.metadata.password || "";
-            if (!allowedHost) {
-              allowedHost = currentKv.metadata.allowedHost || currentKv.metadata.d || null;
-            }
-          }
-        } catch (e) {
-          console.warn("fetchKvFiles error during metadata fallback:", e);
         }
 
         const targetCid = isFilebase ? cid : "r2";
@@ -10717,9 +10635,7 @@ if (document.readyState === "loading") {
 window.addEventListener("load", () => {
   setTimeout(() => {
     try {
-      const s3 = getS3Client(activeStorageTab);
-      const bucketName = getBucketName(activeStorageTab);
-      maybeDrainTombstonesDaily(s3, bucketName);
+      maybeDrainTombstonesDaily();
     } catch (_) {}
   }, 5000);
 });
