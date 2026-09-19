@@ -7576,31 +7576,8 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
             civitaiTemporary: Boolean(getCivitaiTemporaryTransfer("r2", s3Item.Key)),
             metadata: {},
           });
-
-          // ⚡ 未同期の物理R2ファイルをKV台帳に追加（直リンク有効化）
-          if (hasAdminAccess() && baseDomain) {
-            registerKvCid(
-              s3Item.Key,
-              "r2",
-              s3Item.Size || 0,
-              getContentTypeFromFilename(s3Item.Key),
-              s3Item.Key,
-              "",
-              null,
-              0,
-              null,
-              false,
-              null,
-              baseDomain,
-              false,
-              null,
-              null,
-              null,
-              false,
-              s3Cid,
-              "r2"
-            ).catch(err => console.debug(`KV sync for unmapped R2 file ${s3Item.Key} skipped/deferred:`, err));
-          }
+          // [INV-CORE-001] [INV-CORE-003] 未同期ファイルを画面表示時に裏で勝手に registerKvCid() 連打して
+          // 書き込み上限枠（1日1,000回）を自爆枯渇させる過保護コードを完全排除。未登録ファイルは表示のみに留める。
         }
       }
     }
@@ -8360,26 +8337,8 @@ function renderCurrentStoragePage() {
                   if (nameRow) nameRow.appendChild(badgeWrap);
                 }
               }
-
-              // 中央KVにもバックグラウンドで CID を登録・修復（既存ドメインを絶対に初期アドレスで上書きしない）
-              if (hasAdminAccess() && item.rawKey) {
-                const preserveAllowedHost = rawAllowedHost || (itemKey.indexOf(":") > 0 ? itemKey.split(":")[0] : null) || targetDomain;
-                registerKvCid(
-                  itemKey,
-                  resolvedCid,
-                  Number(item.Size || 0),
-                  item.metadata?.mime || "",
-                  s3TargetKey,
-                  item.password || "",
-                  null,
-                  item.ttl || 0,
-                  item.expiresAt || null,
-                  false,
-                  item.metadata?.kuboStatus || null,
-                  preserveAllowedHost,
-                  false
-                );
-              }
+              // [INV-CORE-001] [INV-CORE-003] カード描画時に勝手に registerKvCid() を連打して
+              // 書き込み枠を浪費する処理を排除。ローカル台帳/キャッシュの更新のみで安全に完結させる。
             }
           }
         } catch (resolveErr) {
