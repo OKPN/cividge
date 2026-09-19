@@ -678,4 +678,56 @@ Cloudflare R2（一般的な S3 互換オブジェクトストレージ）は、
 ### 3. 総合アーキテクチャの完成形
 以上の改修により、**「Filebase（真の IPFS）と Cloudflare R2（擬似 IPFS）が、共通の KV 台帳レイヤーの上で完全に対等・安全に両立するハイブリッド・メディアインフラ」** が完成した。
 
+---
+
+## 🌐 [IPFS/Kubo 統合＆ストレージ移行] R2 への UnixFS CID 統一・Kubo 実体注入 ＆ 選択的ゲートウェイルーティング
+
+### 1. 改修の背景と目的
+- **現状の課題**:
+  - R2 は SHA-256 ハッシュで重複排除を行っていたため、Filebase（IPFS UnixFS CID）とハッシュ体系が分裂していた。
+  - R2 で保管しているファイルを自宅 Kubo（IPFS ノード）へ移したい場合、ブラウザから実体を Kubo へ流し込む手段（`/api/v0/add`）が未連携だった。
+  - 将来「数年後に R2 の容量を空けるため実体を消し、自宅 Kubo のみに残す」運用へ移行した際、Worker が Filebase ゲートウェイに無駄な問い合わせを行い、Filebase 帯域消費や 404 待ち遅延が発生する恐れがあった。
+- **改修の目的**:
+  1. **CID の一本化**: R2 アップロード時も Filebase と全く同じ IPFS UnixFS CID（`calculateFilebaseCid`）を事前計算して台帳に記録。
+  2. **自宅 Kubo への実体注入**: R2 カードの `[📌 KuboにPin]` を押すと、Kubo RPC（`/api/v0/add`）へ直接 Blob を POST して即座にローカル保全＆DHT告知。
+  3. **安全な R2 実体消去（ライフサイクルガード）**: 自宅 Kubo に Pin 留めされている時だけ `[⚡ R2保管中]` バッジをクリック可能にし、安全に R2 実体を消去してバケット容量を解放。
+  4. **配信レイヤの相互排他＆Filebase完全除外ルーティング**: R2 起源のファイル（`meta.backend === "r2"`）が R2 から消去されて Kubo 保持になった場合、Filebase ゲートウェイを完全にスキップし、公共 IPFS / 自宅 Kubo ゲートウェイのみを探索して配信。
+
+---
+
+### 2. コンポーネント別の詳細設計と改修仕様
+
+#### ① フロントエンド (`cividge/app.js` / `cividge/kubo-client.js`)
+1. **UnixFS CID 計算の一本化**:
+   - R2 アップロード前に `calculateFilebaseCid(file)` を実行し、CID（`bafy...`）を算出。
+   - KV メタデータに `meta.contentCid = cid`、`meta.backend = "r2"`（短縮 `meta.b = "r2"`）、`targetCid = "r2"` を記録。
+   - 重複判定も CID をキーとして行い、同一ファイルのアップロードを通信ゼロで即時エイリアス化。
+2. **Kubo 実体注入 API の追加 (`kubo-client.js`)**:
+   - `addFileToKubo(blob, filename)` を新設。
+   - 現在の RPC 設定（標準 `http://127.0.0.1:5001`）へ `POST /api/v0/add?pin=true` を送信（追加のポート開放や CORS 設定は不要、既存設定のまま動作）。
+3. **R2 カードのバッジ UI と安全ライフサイクルガード**:
+   - **`[📦 CID 📋]`**: 計算された UnixFS CID をクリップボードにコピー。
+   - **`[🟣 Kubo保持中]` / `[📌 KuboにPin]`**:
+     - 既存の同一 CID がすでに Kubo に Pin されていれば、アップロード直後から即座に `[🟣 Kubo保持中]` を表示。
+     - 未保持の場合、`[📌 KuboにPin]` を押すと R2 から Blob を取得して Kubo の `/api/v0/add` に注入・Pin 留め。
+   - **`[⚡ R2保管中]` (安全ライフサイクルガード)**:
+     - Kubo 未保持時はクリック不可（誤って実体を消して消失する事故を物理防止）。
+     - Kubo 保持中（自宅に実体がある）時のみクリック可能になり、確認ダイアログを経て R2 バケットから実体を削除。
+     - 削除後は `[⚡ R2: 未保持 (Kubo保全中)]` に切り替わり、バケット容量を安全に回収。
+
+#### ② 配信レイヤ (`cividge-kv-worker/delivery.js`)
+1. **R2 ➔ Kubo フォールバック ＆ Filebase 完全除外ルーティング**:
+   - 台帳の `meta.backend === "r2"` または `meta.b === "r2"` を判定。
+   - **Step 1: R2 バケット確認**:
+     - `env.R2_BUCKET.get(r2Key)` で実体が存在すれば、最速・Egress ゼロで即時 200 配信（従来通り）。
+   - **Step 2: R2 実体消去時の Kubo / IPFS フォールバック**:
+     - R2 バケットに実体が存在せず、かつ `meta.contentCid`（または `targetCid`）が存在する場合：
+     - **`filebaseGateway`（`https://ipfs.filebase.io/ipfs`）をゲートウェイ探索候補から 100% 完全に除外**。
+     - 自宅 Kubo ゲートウェイ（`KUBO_GATEWAY_URL`）および公共 IPFS ゲートウェイ（`dweb.link`, `ipfs.io`, `gateway.pinata.cloud`, `4everland.io`）のみを探索。
+     - DHT 経由で自宅 Kubo からブロックを取り寄せて配信。
+   - **効果**:
+     - Filebase の転送枠・リクエスト枠を 1 ミリも消費しない。
+     - Filebase の 404 待ちタイムアウトによる無駄な遅延（数秒）を完全に根絶。
+
+
 

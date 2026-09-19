@@ -999,7 +999,7 @@ function hasAdminAccess() {
   return Boolean(token && custom);
 }
 
-async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null, civitaiTemporary = undefined) {
+async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null, civitaiTemporary = undefined, contentCid = null, backend = null) {
   if (!key) return;
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
@@ -1011,6 +1011,8 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
   }
   try {
     const payload = { key, cid: cid || "", size, mime, s3Key: s3Key || key };
+    if (contentCid) payload.contentCid = contentCid;
+    if (backend) payload.backend = backend;
     // Civitai 転送専用の短期置き場だけを、次回の明示更新で回収できるようにする。
     // undefined は既存レコードの印を維持するため、通常のメタデータ更新では送らない。
     if (civitaiTemporary !== undefined) payload.civitaiTemporary = Boolean(civitaiTemporary);
@@ -1147,7 +1149,7 @@ function clearCivitaiTemporaryTransfer(provider, key) {
   delete records[`${normalizeDeliveryProvider(provider)}:${key}`];
   localStorage.setItem(CIVITAI_TEMP_TRANSFER_STORAGE_KEY, JSON.stringify(records));
 }
-const { checkKuboOnline, checkKuboPinned, pinToKubo, getKuboPinnedCids, unpinFromKubo } = createKuboClient(getKuboRpcEndpoint);
+const { checkKuboOnline, checkKuboPinned, pinToKubo, getKuboPinnedCids, unpinFromKubo, addFileToKubo } = createKuboClient(getKuboRpcEndpoint);
 
 // 🏠 Kubo Pin 同期タスク追跡 & せっかち防止（離脱・リロードガード）
 const activeKuboPins = new Set();
@@ -1506,12 +1508,12 @@ function deleteR2Hash(key) {
 async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
   if (!s3 || !bucketName || !targetHash) return null;
 
-  // KV 台帳のハッシュキャッシュマップを構築（キー -> ハッシュ）
+  // KV 台帳のハッシュ/CIDキャッシュマップを構築（キー -> ハッシュ/CID）
   const kvHashMap = new Map();
   try {
     const kvFiles = await fetchKvFiles();
     for (const item of kvFiles) {
-      const h = item.metadata?.hash || item.metadata?.h_sha;
+      const h = item.metadata?.contentCid || item.metadata?.c_cid || (item.metadata?.cid && item.metadata.cid !== "r2" ? item.metadata.cid : null) || item.metadata?.hash || item.metadata?.h_sha;
       if (h) {
         const sKey = item.metadata?.s3Key || item.metadata?.k_s3 || item.name;
         kvHashMap.set(sKey, h);
@@ -1530,9 +1532,9 @@ async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
     }));
     const objects = page.Contents || [];
 
-    // 1. ローカルキャッシュ または KV台帳 から既知のハッシュを照合（通信ゼロ）
+    // 1. ローカルキャッシュ または KV台帳 から既知のハッシュ/CIDを照合（通信ゼロ）
     for (const object of objects) {
-      const knownHash = getStoredR2Hash(object.Key) || kvHashMap.get(object.Key);
+      const knownHash = getStoredR2Hash(object.Key) || getStoredIpfsCid(object.Key) || kvHashMap.get(object.Key);
       if (knownHash) {
         storeR2Hash(object.Key, knownHash);
         if (knownHash === targetHash) {
@@ -1541,9 +1543,9 @@ async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
       }
     }
 
-    // 2. ハッシュ未解決かつサイズが完全一致するものだけに絞り込み、HEAD で x-amz-meta-hash を確認
+    // 2. ハッシュ未解決かつサイズが完全一致するものだけに絞り込み、HEAD で x-amz-meta-cid / x-amz-meta-hash を確認
     const candidateObjects = objects.filter(object => {
-      const knownHash = getStoredR2Hash(object.Key) || kvHashMap.get(object.Key);
+      const knownHash = getStoredR2Hash(object.Key) || getStoredIpfsCid(object.Key) || kvHashMap.get(object.Key);
       if (knownHash) return false;
       return targetSize ? (object.Size === targetSize) : true;
     });
@@ -1554,7 +1556,7 @@ async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
       const heads = await Promise.all(batch.map(async (object) => {
         try {
           const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: object.Key }));
-          const h = head?.Metadata?.hash || head?.$metadata?.httpHeaders?.["x-amz-meta-hash"] || null;
+          const h = head?.Metadata?.cid || head?.Metadata?.["x-amz-meta-cid"] || head?.$metadata?.httpHeaders?.["x-amz-meta-cid"] || head?.Metadata?.hash || head?.$metadata?.httpHeaders?.["x-amz-meta-hash"] || null;
           return { object, hash: h };
         } catch (error) {
           return { object, hash: null };
@@ -5758,11 +5760,11 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         }
       }
     } else {
-      // ⚡ R2 疑似CID（SHA-256）重複検査:
-      // 同一ハッシュの既存実体があれば PutObject を実行せず、既存実体を指す別名リンク（KV）を作成
-      calculatedHash = await calculateContentHash(uploadBytes);
-      if (calculatedHash) {
-        const duplicate = await findR2ObjectByHash(s3, bucketName, calculatedHash, uploadBytes.length);
+      // ⚡ R2 IPFS UnixFS CID 重複検査:
+      // Filebase と同一の UnixFS CID を計算し、同一 CID の既存実体があれば PutObject をスキップしてスマートエイリアス化
+      calculatedCid = await calculateFilebaseCid(uploadBytes);
+      if (calculatedCid) {
+        const duplicate = await findR2ObjectByHash(s3, bucketName, calculatedCid, uploadBytes.length);
         if (duplicate) {
           if (!hasAdminAccess()) {
             throw new Error("同一内容のファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
@@ -5773,6 +5775,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           result.uploadedProvider = "r2";
           result.storageKey = duplicate.key;
           result.duplicateOf = duplicate.key;
+          result.ipfsCid = calculatedCid;
           result.mime = contentType;
           result.password = password;
           result.hasPassword = Boolean(password);
@@ -5798,17 +5801,21 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             getVideoThumbnailKey(duplicate.key),
             imageDimensions?.width,
             imageDimensions?.height,
-            civitaiTemporary
+            civitaiTemporary,
+            calculatedCid,
+            "r2"
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
-          storeR2Hash(result.name, calculatedHash);
-          storeR2Hash(duplicate.key, calculatedHash);
+          storeR2Hash(result.name, calculatedCid);
+          storeR2Hash(duplicate.key, calculatedCid);
+          storeIpfsCid(result.name, calculatedCid);
+          storeIpfsCid(duplicate.key, calculatedCid);
           result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
           setFileStoredDomain(result.name, baseDomain);
           paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
           renderUrlPalette();
 
-          console.log(`⚡ R2 重複排除（疑似CID照合）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
+          console.log(`⚡ R2 重複排除（UnixFS CID照合: ${calculatedCid}）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
           return true;
         }
       }
@@ -5828,8 +5835,9 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       s3Metadata["expires-at"] = String(expiresAt);
       s3Metadata["ttl"] = String(ttlSeconds);
     }
-    if (calculatedHash) {
-      s3Metadata["hash"] = calculatedHash;
+    if (calculatedCid) {
+      s3Metadata["cid"] = calculatedCid;
+      s3Metadata["hash"] = calculatedCid;
     }
 
     const command = new PutObjectCommand({
@@ -5914,15 +5922,41 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       // 無条件に100%消費するため行わない。実際の初回アクセス時にオンデマンドでエッジキャッシュさせる。
       setFileStoredDomain(result.name, baseDomain);
     } else {
-      // ⚡ Cloudflare R2:
-      // ファイル種別（動画/画像）やパスワード・期限の有無に関わらず、
-      // 常に KV 台帳へ "r2" マーカーと allowedHost（配信許可ドメイン）を登録。
-      // これにより、relay.k7m.f5.si 経由での R2 配信、ドメイン保護、時限消去が 100% 確実に機能する。
-      await registerKvCid(result.name, "r2", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
+      let initialKuboStatus = null;
+      if (calculatedCid) {
+        try {
+          if (await checkKuboPinned(calculatedCid, 500)) {
+            initialKuboStatus = "pinned";
+          }
+        } catch (e) {}
+      }
+      await registerKvCid(
+        result.name,
+        "r2",
+        uploadBytes.length,
+        contentType,
+        result.name,
+        password,
+        uploadBlob || uploadBytes,
+        ttlSeconds,
+        expiresAt,
+        false,
+        initialKuboStatus,
+        baseDomain,
+        true,
+        null,
+        imageDimensions?.width,
+        imageDimensions?.height,
+        civitaiTemporary,
+        calculatedCid,
+        "r2"
+      );
       result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       setFileStoredDomain(result.name, baseDomain);
-      if (calculatedHash) {
-        storeR2Hash(result.name, calculatedHash);
+      if (calculatedCid) {
+        result.ipfsCid = calculatedCid;
+        storeR2Hash(result.name, calculatedCid);
+        storeIpfsCid(result.name, calculatedCid);
       }
     }
 
@@ -6098,6 +6132,8 @@ function getStorageListLabels() {
       day: "日", hour: "時間", minute: "分", protected: "パスワード保護", passphrase: "合言葉:",
       filebaseStored: "☁️ Filebase: 保持中", filebaseRemoved: "☁️ Filebase: 未保持",
       filebaseRemovedTooltip: "Filebase実体は削除（アンピン）済みです。再保管するには元ファイルを再アップロードしてください",
+      r2Stored: "⚡ R2: 保管中", r2StoredProtected: "⚡ R2: 保管中 (保護)", r2Removed: "⚡ R2: 未保持 (Kubo保全中)",
+      r2ProtectedTooltip: "自宅Kuboに保全されるまで、誤消去を防ぐためR2実体は削除できません",
       kuboOff: "🏠 Kubo: 未設定", kuboStored: "🏠 Kubo: 保持中", kuboMissing: "🏠 Kubo: 未保持",
       ipfsDrifting: "🌊 IPFS: 漂流中", delete: "削除", rename: "ファイル名を変更",
       nodeCheck: "🌐 ノード確認 ↗", workflow: "🧬 ワークフローあり", connectionError: "通信エラー:",
@@ -6109,6 +6145,8 @@ function getStorageListLabels() {
     day: "d", hour: "h", minute: "m", protected: "Password protected", passphrase: "Passphrase:",
     filebaseStored: "☁️ Filebase: Stored", filebaseRemoved: "☁️ Filebase: Unpinned",
     filebaseRemovedTooltip: "Object is unpinned from Filebase. Re-upload the original file to re-store.",
+    r2Stored: "⚡ R2: Stored", r2StoredProtected: "⚡ R2: Stored (Locked)", r2Removed: "⚡ R2: Unstored (On Kubo)",
+    r2ProtectedTooltip: "Cannot remove R2 object until it is pinned on your home Kubo node to prevent data loss.",
     kuboOff: "🏠 Kubo: Disabled", kuboStored: "🏠 Kubo: Pinned", kuboMissing: "🏠 Kubo: Not pinned",
     ipfsDrifting: "🌊 IPFS: Drifting", delete: "Delete", rename: "Rename file",
     nodeCheck: "🌐 Check nodes ↗", workflow: "🧬 Workflow found", connectionError: "Connection error:",
@@ -6855,9 +6893,9 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
           ? rawKey.substring(colonIdx + 1)
           : rawKey;
 
-        const kvCid = kvItem.metadata?.cid || kvItem.metadata?.c || kvItem.value || "";
+        const isExplicitR2 = kvItem.metadata?.backend === "r2" || kvItem.metadata?.b === "r2" || kvCid === "r2";
         const hasIpfsCid = kvCid && kvCid !== "r2" && (kvCid.startsWith("Qm") || kvCid.startsWith("baf") || kvCid.length > 20);
-        if (hasIpfsCid) continue; // IPFS / Filebase 専用レコードは除外
+        if (hasIpfsCid && !isExplicitR2) continue; // Filebase 専用レコードのみ除外
 
         const recordedS3Key = kvItem.metadata?.s3Key || kvItem.metadata?.k_s3;
         let matchedS3 = null;
@@ -6870,11 +6908,21 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
         }
 
         // R2 明示レコード、または R2 バケット内の実体とマッチするレコードのみ対象
-        const isR2Record = kvCid === "r2" || kvItem.metadata?.backend === "r2" || kvItem.metadata?.b === "r2" || Boolean(matchedS3);
+        const isR2Record = isExplicitR2 || Boolean(matchedS3);
         if (!isR2Record) continue;
 
         if (matchedS3) {
           consumedS3Keys.add(matchedS3.Key);
+        }
+
+        const itemContentCid = kvItem.metadata?.contentCid || kvItem.metadata?.c_cid || getStoredIpfsCid(matchedS3 ? matchedS3.Key : displayName) || getStoredR2Hash(matchedS3 ? matchedS3.Key : displayName) || (hasIpfsCid ? kvCid : null);
+        if (itemContentCid) {
+          storeIpfsCid(displayName, itemContentCid);
+          storeR2Hash(displayName, itemContentCid);
+          if (matchedS3) {
+            storeIpfsCid(matchedS3.Key, itemContentCid);
+            storeR2Hash(matchedS3.Key, itemContentCid);
+          }
         }
 
         contents.push({
@@ -6885,6 +6933,8 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
           Size: (matchedS3 && matchedS3.Size) || kvItem.metadata?.size || kvItem.metadata?.s || 0,
           LastModified: (matchedS3 && matchedS3.LastModified) || (kvItem.metadata?.lastModified ? new Date(kvItem.metadata.lastModified) : null),
           isFromS3: Boolean(matchedS3),
+          cid: itemContentCid,
+          contentCid: itemContentCid,
           password: kvItem.metadata?.password || null,
           passwordHash: kvItem.metadata?.passwordHash || null,
           expiresAt: kvItem.metadata?.expiresAt || (kvItem.metadata?.e ? kvItem.metadata.e * 1000 : null) || getCivitaiTemporaryTransfer("r2", matchedS3 ? matchedS3.Key : displayName)?.expiresAt || null,
@@ -6897,6 +6947,7 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       // 2. R2 バケットに存在するが KV に未登録の物理ファイルを追加
       for (const s3Item of s3RawList) {
         if (!consumedS3Keys.has(s3Item.Key)) {
+          const s3Cid = getStoredIpfsCid(s3Item.Key) || getStoredR2Hash(s3Item.Key);
           contents.push({
             storageProvider: "r2",
             Key: s3Item.Key,
@@ -6905,6 +6956,8 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
             Size: s3Item.Size || 0,
             LastModified: s3Item.LastModified,
             isFromS3: true,
+            cid: s3Cid,
+            contentCid: s3Cid,
             password: null,
             passwordHash: null,
             expiresAt: getCivitaiTemporaryTransfer("r2", s3Item.Key)?.expiresAt || null,
@@ -7002,7 +7055,7 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
     let isKuboOnline = false;
     let actualKuboPinnedSet = null;
-    if (isFilebase && isKuboAutoPin) {
+    if (isKuboAutoPin) {
       const checkRes = await checkKuboOnline(800);
       isKuboOnline = checkRes.online;
       if (isKuboOnline) {
@@ -7030,10 +7083,10 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     // 🔗 同一 CID 状態統合（CID State Unification） & 実体 Kubo 状態同期:
     // IPFSでは同一CID＝同一実体。同じCIDを持つ別名ファイル同士で Filebase保持状態・Kubo保持状態を完全同期
     const itemsToAutoHeal = [];
-    if (isFilebase && contents.length > 0) {
+    if (contents.length > 0) {
       const cidStatusMap = new Map();
       for (const item of contents) {
-        const c = item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null);
+        const c = item.contentCid || item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null);
         if (!c) continue;
 
         // Kuboがオンラインかつ実Pinリストが取得できている場合、実際のKubo実態を優先
@@ -7044,7 +7097,7 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
             item.metadata.kuboStatus = reallyPinnedOnKubo ? "pinned" : "not_pinned";
           }
           // 🚑 自己修復判定: Kubo上にPinが存在するのに、KV台帳が pinned になっていないレコードを修復キューに登録
-          if (reallyPinnedOnKubo && currentMetaStatus !== "pinned") {
+          if (reallyPinnedOnKubo && currentMetaStatus !== "pinned" && isFilebase) {
             itemsToAutoHeal.push(item);
           }
         }
@@ -7057,10 +7110,12 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
 
       // 同一CIDの全アイテムに統合ステータスを伝播
       for (const item of contents) {
-        const c = item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null);
+        const c = item.contentCid || item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null);
         if (!c || !cidStatusMap.has(c)) continue;
         const unified = cidStatusMap.get(c);
-        item.isFromS3 = unified.hasS3;
+        if (isFilebase) {
+          item.isFromS3 = unified.hasS3;
+        }
         if (!item.metadata) item.metadata = {};
         item.metadata.kuboStatus = unified.isKuboPinned ? "pinned" : "not_pinned";
       }
@@ -7211,7 +7266,9 @@ function renderCurrentStoragePage() {
     const isVideo = ["mp4", "webm", "ogv", "mov", "m4v"].includes(ext);
     const isImage = ["jpg", "jpeg", "png", "webp", "gif", "avif"].includes(ext);
     
-    const itemCid = isFilebase ? (item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null)) : null;
+    const itemCid = isFilebase
+      ? (item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null))
+      : (item.contentCid || item.cid || item.metadata?.contentCid || item.metadata?.c_cid || getStoredIpfsCid(item.Key) || getStoredR2Hash(item.Key) || (item.s3Key ? (getStoredIpfsCid(item.s3Key) || getStoredR2Hash(item.s3Key)) : null));
 
     const itemKey = item.rawKey || item.Key || "";
     const itemDisplayName = item.Key || "";
@@ -7328,17 +7385,49 @@ function renderCurrentStoragePage() {
         <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${isFromS3 ? '1' : '0'}">${labels.delete}</button>
       `;
     } else {
+      const isFromS3 = Boolean(item.isFromS3);
+      const isKuboPinned = item.metadata?.kuboStatus === "pinned";
+
+      let r2BadgeHtml = "";
+      if (isFromS3) {
+        if (isKuboPinned) {
+          // Kuboに保全済みなので、クリックして安全にR2実体を消去（容量解放）可能
+          r2BadgeHtml = `<button type="button" class="unpin-r2-origin-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;" title="自宅Kuboに保全されているため、クリックしてR2実体を消去（容量解放）できます">${labels.r2Stored}</button>`;
+        } else {
+          // Kubo未保全のため、誤消去を防ぐ安全ロック（クリック不可）
+          r2BadgeHtml = `<span style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(245,158,11,0.1); color: #f59e0b; border: 1px dashed rgba(245,158,11,0.3); font-weight: 500; cursor: not-allowed; display: inline-flex; align-items: center; gap: 3px;" title="${escapeHtml(labels.r2ProtectedTooltip)}">${labels.r2StoredProtected}</span>`;
+        }
+      } else {
+        r2BadgeHtml = `<span style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; cursor: help;" title="R2実体は解放済みで、自宅Kuboから配信されます">${labels.r2Removed}</span>`;
+      }
+
+      let kuboBadgeHtml = "";
+      if (!isKuboAutoPin) {
+        kuboBadgeHtml = `<span class="kubo-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.08); color: #64748b; border: 1px dashed rgba(148,163,184,0.25); font-weight: 500; cursor: not-allowed; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboOff}</span>`;
+      } else if (isKuboPinned) {
+        kuboBadgeHtml = `<button type="button" class="kubo-unpin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboStored}</button>`;
+      } else if (itemCid) {
+        kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-provider="r2" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboMissing}</button>`;
+      }
+
+      storageTierHtml = `
+        <div style="display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+          ${r2BadgeHtml}
+          ${kuboBadgeHtml}
+        </div>
+      `;
+
       const r2CardDomainBadge = createCardDomainBadgeHtml(publicUrl, "r2-file-domain-badge");
       const r2CardTtlSelect = createCardTtlSelectHtml(item.expiresAt, "r2-file-ttl-select");
       actionButtonsHtml = `
         ${r2CardTtlSelect}
         ${r2CardDomainBadge}
         ${!hasPassword ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Civitai の投稿画面を開く">🎨 Civitai</button>` : ""}
-        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-origin="${item.isFromS3 ? '1' : '0'}">${escapeHtml(dict.deleteNow)}</button>
+        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${item.isFromS3 ? '1' : '0'}">${escapeHtml(dict.deleteNow)}</button>
       `;
     }
 
-    const renameBtnHtml = `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || (isFilebase ? "" : "r2"))}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15s; line-height: 1;">✏️</button>`;
+    const renameBtnHtml = `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || "r2")}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15s; line-height: 1;">✏️</button>`;
 
     let cidBadgeHtml = "";
     if (itemCid) {
@@ -8032,6 +8121,91 @@ r2FileList?.addEventListener("click", async (e) => {
       return;
     }
 
+    const provider = target.dataset.provider || activeStorageTab;
+    if (provider === "r2") {
+      const s3Key = target.dataset.s3key || key;
+      const ok = await showCustomConfirm(
+        `自宅Kuboノードへ '${key}' を実体送信してPin留め（保持）しますか？\n\n（Kuboノード内にファイルを直接保存し、IPFSネットワークへ公開告知します）`,
+        "🏠 Kubo Pin留め（実体保存）"
+      );
+      if (!ok) return;
+
+      target.disabled = true;
+      const origText = target.textContent;
+      target.textContent = "送信中...";
+
+      const online = await checkKuboOnline(1500);
+      if (!online.online) {
+        await showCustomAlert(
+          `自宅 Kubo ノードに接続できませんでした（${online.error}）。\nWSL/Docker上でKuboが稼働しているか確認してください。`,
+          "❌ ノード未検出"
+        );
+        target.disabled = false;
+        target.textContent = origText;
+        return;
+      }
+
+      try {
+        // R2 から Blob を取得
+        const r2S3 = getS3Client("r2");
+        const r2Bucket = getBucketName("r2");
+        let blob = null;
+        if (r2S3 && r2Bucket) {
+          const getRes = await r2S3.send(new GetObjectCommand({ Bucket: r2Bucket, Key: s3Key }));
+          blob = await getRes.Body.transformToByteArray().then(bytes => new Blob([bytes]));
+        } else {
+          // フォールバック: 公開URLから fetch
+          const article = target.closest(".result-item");
+          const domain = article?.dataset?.allowedhost || (typeof window !== "undefined" ? window.location.origin : "");
+          const publicUrl = `${domain}/${encodeURIComponent(key)}`;
+          blob = await fetch(publicUrl).then(r => r.blob());
+        }
+
+        if (!blob) throw new Error("実体データの取得に失敗しました");
+
+        // Kubo RPC /api/v0/add?pin=true で実体を直接注入
+        const addRes = await addFileToKubo(blob, key);
+        if (!addRes.success) {
+          throw new Error(`Kuboへの実体注入に失敗しました: ${addRes.error}`);
+        }
+
+        // KV 台帳の kuboStatus を "pinned" に更新
+        const kvData = await fetchKvRecord(key);
+        if (kvData) {
+          const meta = kvData.metadata || {};
+          await registerKvCid(
+            key,
+            "r2",
+            meta.size || blob.size || 0,
+            meta.mime || blob.type || "",
+            meta.s3Key || key,
+            "",
+            null,
+            meta.ttl || 0,
+            meta.expiresAt || null,
+            Boolean(meta.unpinned),
+            "pinned",
+            meta.allowedHost || null,
+            false,
+            meta.thumbnailKey || null,
+            meta.width || null,
+            meta.height || null,
+            Boolean(meta.civitaiTemporary),
+            cid,
+            "r2"
+          );
+        }
+
+        await fetchAndRenderR2Files();
+        await showCustomAlert(`✅ 自宅 Kubo ノードへの実体保存と Pin 留めに成功しました！\n\nCID: ${addRes.cid || cid}`, "🎉 保全完了");
+      } catch (err) {
+        await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
+        target.disabled = false;
+        target.textContent = origText;
+      }
+      return;
+    }
+
     const ok = await showCustomConfirm(
       `自宅Kuboノードへ '${key}' をPin留め（保持）しますか？\n\n（P2Pネットワーク経由でデータをノード内にダウンロード・固定保持します）`,
       "🏠 Kubo Pin留めの確認"
@@ -8188,6 +8362,45 @@ r2FileList?.addEventListener("click", async (e) => {
       }
 
       await fetchAndRenderR2Files();
+    } catch (err) {
+      await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
+    }
+    return;
+  }
+
+  // ⚡ R2 バケットからの実体消去（安全ライフサイクルガード: 自宅Kubo保全済み時のみ実行可能）
+  if (target.classList.contains("unpin-r2-origin-btn")) {
+    const key = target.dataset.key;
+    const s3Key = target.dataset.s3key || key;
+    const cid = target.dataset.cid;
+
+    const isEn = getAppLanguage() === "en";
+    const confirmMsg = isEn
+      ? `Remove R2 storage object for '${key}' to free up bucket quota?\n\n・The object will be safely removed from Cloudflare R2 bucket.\n・Since it is already stored on your home Kubo node, the public URL will remain fully accessible via IPFS / Kubo.\n・Filebase is NOT used or affected.`
+      : `自宅Kuboに保全されているため、'${key}' の R2 実体を消去してバケット容量を解放しますか？\n\n・R2 バケットから実体オブジェクトが削除され、10GB の無料枠が空きます。\n・すでに自宅 Kubo ノードに実体が保全されているため、公開 URL は引き続き IPFS / Kubo 経由で正常にアクセス可能です。\n・※ Filebase の帯域や枠は一切消費されません。`;
+    const confirmTitle = isEn ? "⚡ Free R2 Storage" : "⚡ R2 実体消去（容量解放）の確認";
+    const ok = await showCustomConfirm(confirmMsg, confirmTitle);
+    if (!ok) return;
+
+    try {
+      const r2S3 = getS3Client("r2");
+      const r2Bucket = getBucketName("r2");
+      if (!r2S3 || !r2Bucket) throw new Error("R2 is not configured");
+
+      await r2S3.send(new DeleteObjectCommand({
+        Bucket: r2Bucket,
+        Key: s3Key,
+      }));
+
+      // ローカルハッシュキャッシュをパージ
+      deleteR2Hash(s3Key);
+      deleteR2Hash(key);
+
+      await fetchAndRenderR2Files();
+      await showCustomAlert(
+        isEn ? "✅ R2 object deleted successfully. Media will now be served from your home Kubo node." : "✅ R2 実体を削除し、バケット容量を解放しました！\n今後は自宅 Kubo ノードから安全に配信されます。",
+        "🎉 容量解放完了"
+      );
     } catch (err) {
       await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
     }

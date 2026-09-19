@@ -78,5 +78,26 @@ export function createKuboClient(getEndpoint) {
     }
   }
 
-  return { checkKuboOnline, checkKuboPinned, pinToKubo, getKuboPinnedCids, unpinFromKubo };
+  async function addFileToKubo(blob, filename = "file") {
+    if (!blob) return { success: false, error: "Missing blob" };
+    try {
+      const formData = new FormData();
+      formData.append("file", blob, filename);
+      const res = await fetch(`${getEndpoint()}/api/v0/add?pin=true&cid-version=1`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) {
+        const errorText = await res.text();
+        return { success: false, error: `HTTP ${res.status}: ${errorText}` };
+      }
+      const data = await res.json();
+      return { success: true, cid: data.Hash, size: data.Size };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  return { checkKuboOnline, checkKuboPinned, pinToKubo, getKuboPinnedCids, unpinFromKubo, addFileToKubo };
 }
+
