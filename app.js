@@ -6917,7 +6917,8 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
           consumedS3Keys.add(matchedS3.Key);
         }
 
-        const itemContentCid = kvItem.metadata?.contentCid || kvItem.metadata?.c_cid || getStoredIpfsCid(matchedS3 ? matchedS3.Key : displayName) || getStoredR2Hash(matchedS3 ? matchedS3.Key : displayName) || (hasIpfsCid ? kvCid : null);
+        const rawCandidate = kvItem.metadata?.contentCid || kvItem.metadata?.c_cid || getStoredIpfsCid(matchedS3 ? matchedS3.Key : displayName) || (hasIpfsCid ? kvCid : null);
+        const itemContentCid = isValidIpfsCid(rawCandidate) ? rawCandidate : null;
         if (itemContentCid) {
           storeIpfsCid(displayName, itemContentCid);
           storeR2Hash(displayName, itemContentCid);
@@ -6949,7 +6950,8 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       // 2. R2 バケットに存在するが KV に未登録の物理ファイルを追加
       for (const s3Item of s3RawList) {
         if (!consumedS3Keys.has(s3Item.Key)) {
-          const s3Cid = getStoredIpfsCid(s3Item.Key) || getStoredR2Hash(s3Item.Key);
+          const rawS3Cid = getStoredIpfsCid(s3Item.Key);
+          const s3Cid = isValidIpfsCid(rawS3Cid) ? rawS3Cid : null;
           contents.push({
             storageProvider: "r2",
             Key: s3Item.Key,
@@ -7234,7 +7236,9 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
 // ⚡ 既存 R2 ファイルの遅延 CID 解決＆自己修復（Auto-Resolve & Self-Heal）
 async function resolveR2CardCidAuto(article, itemKey, s3Key, publicUrl, labels) {
   try {
-    let cid = getStoredIpfsCid(itemKey) || getStoredIpfsCid(s3Key) || getStoredR2Hash(itemKey) || getStoredR2Hash(s3Key);
+    let cid = getStoredIpfsCid(itemKey) || getStoredIpfsCid(s3Key);
+    const r2HashCandidate = getStoredR2Hash(itemKey) || getStoredR2Hash(s3Key);
+    if (!cid && isValidIpfsCid(r2HashCandidate)) cid = r2HashCandidate;
     if (!cid || !isValidIpfsCid(cid)) {
       const r2S3 = getS3Client("r2");
       const r2Bucket = getBucketName("r2");
@@ -7373,9 +7377,10 @@ function renderCurrentStoragePage() {
     const isVideo = ["mp4", "webm", "ogv", "mov", "m4v"].includes(ext);
     const isImage = ["jpg", "jpeg", "png", "webp", "gif", "avif"].includes(ext);
     
-    const itemCid = isFilebase
+    const rawCid = isFilebase
       ? (item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null))
-      : (item.contentCid || item.cid || item.metadata?.contentCid || item.metadata?.c_cid || getStoredIpfsCid(item.Key) || getStoredR2Hash(item.Key) || (item.s3Key ? (getStoredIpfsCid(item.s3Key) || getStoredR2Hash(item.s3Key)) : null));
+      : (item.contentCid || item.cid || item.metadata?.contentCid || item.metadata?.c_cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null));
+    const itemCid = isValidIpfsCid(rawCid) ? rawCid : null;
 
     const itemKey = item.rawKey || item.Key || "";
     const itemDisplayName = item.Key || "";
@@ -7591,7 +7596,7 @@ function renderCurrentStoragePage() {
     r2FileList.append(article);
 
     // ⚡ R2 カードで CID が未解決の場合、バックグラウンドで自動計算してバッジを即時更新
-    if (!isFilebase && !itemCid) {
+    if (!isFilebase && (!itemCid || !isValidIpfsCid(itemCid))) {
       resolveR2CardCidAuto(article, itemKey, item.s3Key || itemDisplayName, publicUrl, labels);
     }
 
@@ -8231,7 +8236,8 @@ r2FileList?.addEventListener("click", async (e) => {
   if (target.classList.contains("kubo-pin-manual-btn")) {
     const key = target.dataset.key;
     const cid = target.dataset.cid;
-    if (!cid) return;
+    const provider = target.dataset.provider || activeStorageTab;
+    if (!cid && provider !== "r2") return;
 
     const endpoint = getKuboRpcEndpoint();
     const isLocal = endpoint.includes("127.0.0.1") || endpoint.includes("localhost");
@@ -8241,7 +8247,6 @@ r2FileList?.addEventListener("click", async (e) => {
       return;
     }
 
-    const provider = target.dataset.provider || activeStorageTab;
     if (provider === "r2") {
       const s3Key = target.dataset.s3key || key;
       const ok = await showCustomConfirm(
@@ -8289,6 +8294,14 @@ r2FileList?.addEventListener("click", async (e) => {
           throw new Error(`Kuboへの実体注入に失敗しました: ${addRes.error}`);
         }
 
+        const realCid = addRes.cid || (await calculateFilebaseCid(new Uint8Array(await blob.arrayBuffer())));
+        if (realCid) {
+          storeIpfsCid(key, realCid);
+          storeIpfsCid(s3Key, realCid);
+          storeR2Hash(key, realCid);
+          storeR2Hash(s3Key, realCid);
+        }
+
         // KV 台帳の kuboStatus を "pinned" に更新
         const kvData = await fetchKvRecord(key);
         if (kvData) {
@@ -8311,13 +8324,13 @@ r2FileList?.addEventListener("click", async (e) => {
             meta.width || null,
             meta.height || null,
             Boolean(meta.civitaiTemporary),
-            cid,
+            realCid || (isValidIpfsCid(cid) ? cid : null),
             "r2"
           );
         }
 
         await fetchAndRenderR2Files();
-        await showCustomAlert(`✅ 自宅 Kubo ノードへの実体保存と Pin 留めに成功しました！\n\nCID: ${addRes.cid || cid}`, "🎉 保全完了");
+        await showCustomAlert(`✅ 自宅 Kubo ノードへの実体保存と Pin 留めに成功しました！\n\nCID: ${realCid || addRes.cid}`, "🎉 保全完了");
       } catch (err) {
         await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
         target.disabled = false;

@@ -83,7 +83,7 @@ export function createKuboClient(getEndpoint) {
     try {
       const formData = new FormData();
       formData.append("file", blob, filename);
-      const res = await fetch(`${getEndpoint()}/api/v0/add?pin=true&cid-version=1`, {
+      const res = await fetch(`${getEndpoint()}/api/v0/add?pin=true&cid-version=0&raw-leaves=false`, {
         method: "POST",
         body: formData,
       });
