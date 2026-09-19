@@ -2997,8 +2997,6 @@ fetchAndRenderR2Files();
 fetchAndRenderCivitaiGallery();
 
 // --- イベントリスナー: R2 設定自動保存 ---
-let r2AutoFetchTimer = null;
-
 function saveR2SettingsAuto() {
   s3ClientR2 = null;
   s3ClientFilebase = null;
@@ -3055,15 +3053,10 @@ function saveR2SettingsAuto() {
   safeSaveField(adminApiToken, "adminApiToken");
   updateAdminTokenStatusUI();
 
-  const isConfigured = updateR2Status();
+  updateR2Status();
   render();
-
-  if (r2AutoFetchTimer) clearTimeout(r2AutoFetchTimer);
-  if (isConfigured || hasAdminAccess()) {
-    r2AutoFetchTimer = setTimeout(() => {
-      fetchAndRenderR2Files();
-    }, 400);
-  }
+  // [INV-CORE-001] [INV-CORE-004] 文字入力中の 400ms debounce 通信（fetchAndRenderR2Files）は完全撤去。
+  // 設定値の localStorage 保存と UI 状態更新のみを行い、入力中の重い通信連打を根絶。
 };
 
 filebaseCorsButton?.addEventListener("click", configureFilebaseCors);
