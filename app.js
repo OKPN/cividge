@@ -7752,9 +7752,8 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
     saveLedgerToLocalStorage(requestedProvider, contents);
     renderCurrentStoragePage();
 
-    // [INV-CORE-004] 画面表示・描画時の裏側での漂流ファイル安否確認（auditDriftingFiles）自動発火
-    // および裏での勝手な deleteKvCid 連打（書き込み枠密輸）は完全撤去。
-    // 漂流ファイルの確認・整理はユーザーの明示操作（オプトイン）時のみとする。
+    // 🌊 IPFS 漂流中ファイルの安否確認＆3ストライク自動整理（Filebase / R2 共通）
+    auditDriftingFiles(contents);
   } catch (error) {
     if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     console.error("Storage fetch error:", error);
@@ -8349,9 +8348,27 @@ async function auditDriftingFiles(contents) {
 
     const elem = r2FileList?.querySelector(`.result-item[data-key="${CSS.escape(rawKey)}"]`);
     const badge = elem?.querySelector(`.drifting-badge-${CSS.escape(rawKey)}`);
-    // [INV-CORE-004] 読み取り・安否確認の裏で勝手に deleteKvCid()（書き込み枠密輸）を実行することを禁止。
-    // 3回失敗した場合でも勝手に削除せず、画面上に警告バッジを表示するのみに留める。
-    if (isAlive) {
+    if (result.shouldDelete) {
+      console.warn(`💀 漂流ファイルが3回連続で見つからないためKV台帳から自動整理: ${rawKey}`);
+      try {
+        await deleteKvCid(rawKey);
+        if (elem) {
+          elem.style.transition = "opacity 0.4s ease, transform 0.4s ease";
+          elem.style.opacity = "0";
+          elem.style.transform = "scale(0.95)";
+          setTimeout(() => {
+            elem.remove();
+            if (r2FileList.querySelectorAll(".result-item").length === 0) {
+              const lang = getAppLanguage();
+              const dict = i18nDict[lang] || i18nDict.ja;
+              r2FileList.innerHTML = `<span class="item-meta" style="padding: 18px; color: var(--muted); display: block; text-align: center;">${escapeHtml(dict.noFilesR2)}</span>`;
+            }
+          }, 400);
+        }
+      } catch (err) {
+        console.warn("Auto drift cleanup error:", err);
+      }
+    } else if (isAlive) {
       if (badge) {
         badge.textContent = labels.ipfsDriftingAlive;
         badge.style.background = "rgba(56, 189, 248, 0.15)";
