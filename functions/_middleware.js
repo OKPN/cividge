@@ -432,10 +432,10 @@ async function cleanupExpiredAlias(env, request, key, expectedCid) {
     } while (!isCidShared && cursor);
 
     if (!isCidShared) {
-      await (env.CIVIDGE_KV || env.IPFS_KV).put(`tombstone_${expectedCid}`, "1", { expirationTtl: 86400 * 30 }).catch(() => {});
+      await (env.CIVIDGE_KV || env.IPFS_KV).put(`tombstone_${expectedCid}`, "1").catch(() => {});
       const s3TargetKey = latestMeta.s3Key || latestMeta.s || (key.includes(":") ? key.split(":")[1] : key);
       if (s3TargetKey) {
-        await (env.CIVIDGE_KV || env.IPFS_KV).put(`tombstone_s3_${encodeURIComponent(s3TargetKey)}`, "1", { expirationTtl: 86400 * 30 }).catch(() => {});
+        await (env.CIVIDGE_KV || env.IPFS_KV).put(`tombstone_s3_${encodeURIComponent(s3TargetKey)}`, "1").catch(() => {});
       }
     }
   } catch (err) {

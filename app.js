@@ -1352,6 +1352,96 @@ async function drainS3Tombstones(s3, bucketName) {
   }
 }
 
+// ==========================================
+// 🗃️ 台帳型タプル圧縮ローカルキャッシュ
+// キー名を完全排除し [name, cid, size, unixSec, s3Key, backend, isFromS3, isKuboPinned]
+// の配列形式で50-60%圧縮し、5MB枠内で4万件超まで収容可能
+// ==========================================
+const STORAGE_LEDGER_KEY_PREFIX = "cividge_ledger_";
+
+function saveLedgerToLocalStorage(provider, contents) {
+  if (!provider || !Array.isArray(contents)) return;
+  try {
+    const tuples = contents.map(item => [
+      item.Key || item.name || "",
+      item.contentCid || item.cid || item.metadata?.cid || item.metadata?.c || "",
+      item.Size || item.size || 0,
+      item.LastModified ? Math.floor(new Date(item.LastModified).getTime() / 1000) : (item.updated ? Math.floor(new Date(item.updated).getTime() / 1000) : 0),
+      item.s3Key || item.rawKey || "",
+      item.uploadedProvider || item.backend || provider,
+      item.isFromS3 ? 1 : 0,
+      item.metadata?.kuboStatus === "pinned" ? 1 : 0
+    ]);
+    localStorage.setItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`, JSON.stringify(tuples));
+  } catch (e) {
+    console.warn("saveLedgerToLocalStorage error:", e);
+  }
+}
+
+function loadLedgerFromLocalStorage(provider) {
+  if (!provider) return [];
+  try {
+    const raw = localStorage.getItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`);
+    if (!raw) return [];
+    const tuples = JSON.parse(raw);
+    if (!Array.isArray(tuples)) return [];
+    return tuples.map(t => {
+      const name = t[0] || "";
+      const cid = t[1] || undefined;
+      const size = t[2] || 0;
+      const dateIso = t[3] ? new Date(t[3] * 1000).toISOString() : new Date().toISOString();
+      const s3Key = t[4] || name;
+      const backend = t[5] || provider;
+      const isFromS3 = t[6] === 1;
+      const isKuboPinned = t[7] === 1;
+      return {
+        Key: name,
+        name,
+        cid,
+        contentCid: cid,
+        Size: size,
+        size,
+        LastModified: dateIso,
+        updated: dateIso,
+        s3Key,
+        rawKey: s3Key,
+        uploadedProvider: backend,
+        backend,
+        isFromS3,
+        metadata: {
+          kuboStatus: isKuboPinned ? "pinned" : "not_pinned",
+          cid: cid || undefined,
+        },
+        storageProvider: provider,
+        isCached: true
+      };
+    });
+  } catch (e) {
+    console.warn("loadLedgerFromLocalStorage error:", e);
+    return [];
+  }
+}
+
+// 🪦 墓標回収の1日1回（24時間）低頻度ガード
+const TOMBSTONE_DRAIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+async function maybeDrainTombstonesDaily(s3, bucketName) {
+  if (!hasAdminAccess()) return;
+  const lastDrainStr = localStorage.getItem("cividge_last_tombstone_drain");
+  const lastDrain = lastDrainStr ? Number(lastDrainStr) : 0;
+  const now = Date.now();
+  if (now - lastDrain < TOMBSTONE_DRAIN_INTERVAL_MS) return;
+  localStorage.setItem("cividge_last_tombstone_drain", String(now));
+  console.log("🪦 前回から24時間経過したため墓標（非同期ゴミ回収キュー）を定期走査します");
+  try {
+    await drainKuboTombstones();
+    if (s3 && bucketName) {
+      await drainS3Tombstones(s3, bucketName);
+    }
+  } catch (err) {
+    console.warn("maybeDrainTombstonesDaily error:", err);
+  }
+}
+
 async function fetchKvFiles() {
   // 🛡️ KV台帳連携が有効でない場合、一覧取得はスキップ（相乗り・漏洩防止）
   if (!hasAdminAccess()) {
@@ -6737,27 +6827,40 @@ storageTabR2?.addEventListener("click", () => {
   activeStorageTab = "r2";
   localStorage.setItem("activeStorageTab", "r2");
   storageCurrentPage = 1;
-  storageCachedContents = [];
   updateStorageTabsUi();
   syncStorageLimitControl();
   renderR2DomainSelect("r2");
-  fetchAndRenderR2Files();
+  const cached = loadLedgerFromLocalStorage("r2");
+  if (cached && cached.length > 0) {
+    storageCachedContents = cached;
+    renderCurrentStoragePage();
+  } else {
+    fetchAndRenderR2Files();
+  }
 });
 
 storageTabFilebase?.addEventListener("click", () => {
   activeStorageTab = "filebase";
   localStorage.setItem("activeStorageTab", "filebase");
   storageCurrentPage = 1;
-  storageCachedContents = [];
   updateStorageTabsUi();
   syncStorageLimitControl();
   renderR2DomainSelect("filebase");
-  fetchAndRenderR2Files();
+  const cached = loadLedgerFromLocalStorage("filebase");
+  if (cached && cached.length > 0) {
+    storageCachedContents = cached;
+    renderCurrentStoragePage();
+  } else {
+    fetchAndRenderR2Files();
+  }
 });
 
 reloadR2FilesButton?.addEventListener("click", () => {
   storageCurrentPage = 1;
   fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers: true });
+  const s3 = getS3Client(activeStorageTab);
+  const bucketName = getBucketName(activeStorageTab);
+  maybeDrainTombstonesDaily(s3, bucketName);
 });
 
 // 🚀 初回オンボーディング（設定・接続案内カード）の描画
@@ -7176,7 +7279,15 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
   }
 
   const isViewerMode = (!isStorageConfigured || !s3 || !bucketName) && hasKvAccess;
-  r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
+  if (!storageCachedContents || storageCachedContents.length === 0) {
+    const localLedger = loadLedgerFromLocalStorage(requestedProvider);
+    if (localLedger && localLedger.length > 0) {
+      storageCachedContents = localLedger;
+      renderCurrentStoragePage();
+    } else {
+      r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
+    }
+  }
 
   try {
     let s3RawList = [];
@@ -7512,12 +7623,6 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       }
     }
 
-    // 🪦 墓標（Tombstone）の非同期回収（KuboのアンピンおよびWorker等で先行失効したS3実体の完全消去）
-    drainKuboTombstones();
-    if (isFilebase && s3 && bucketName) {
-      drainS3Tombstones(s3, bucketName);
-    }
-
     // Filebase FIFO 自動容量解放チェック (一覧更新時に現在容量が上限を超えている場合)
     const isAutoFifo = localStorage.getItem("autoFifo") !== "false";
     if (isFilebase && isAutoFifo && contents.length > 0) {
@@ -7640,6 +7745,7 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     // 全件キャッシュとページネーションUI更新
     if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     storageCachedContents = contents;
+    saveLedgerToLocalStorage(requestedProvider, contents);
     renderCurrentStoragePage();
 
     // 🚑 Kubo実態とKV台帳の自己修復（Auto-Heal）を実行（非同期・画面描画ブロックなし）
@@ -10611,4 +10717,15 @@ if (document.readyState === "loading") {
 } else {
   setupResponsiveSettingsLayout();
 }
+
+// 🪦 起動5秒後にバックグラウンドで24時間経過判定を行い、必要時のみ低優先度で墓標を定期回収
+window.addEventListener("load", () => {
+  setTimeout(() => {
+    try {
+      const s3 = getS3Client(activeStorageTab);
+      const bucketName = getBucketName(activeStorageTab);
+      maybeDrainTombstonesDaily(s3, bucketName);
+    } catch (_) {}
+  }, 5000);
+});
 
