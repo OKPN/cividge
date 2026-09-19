@@ -1219,3 +1219,20 @@ R2容量85%超 → FIFO発動 → kuboAutoPinR2=ON → Kuboへ自動Pin
   - **チェック OFF**: 他方ストレージのドメインリストから解除。
     - **安全ガード**: 他方ストレージ側にこのドメインで配信中のファイルが残っている場合は、`[INV-FRONT-006]` の残存ファイル保護ロックが作動し、解除をブロックして警告を表示（チェック状態も元に戻す）。
 
+---
+
+### 6. R2 一括削除エラー（Failed to fetch）の原因と恒久対策
+
+#### 原因
+S3 API 仕様上、単一ファイル削除（`DeleteObjectCommand`）は HTTP `DELETE` メソッドを使用するが、複数一括削除（`DeleteObjectsCommand`）は XML ペイロードを伴う **HTTP `POST /?delete`** メソッドを使用する。
+従来の R2 CORS ポリシー案内では `AllowedMethods` が `["GET", "HEAD", "PUT", "DELETE"]` と定義されており、**`POST` が欠落していた**。
+このため、ブラウザから R2 に対して一括削除を実行した瞬間、CORS 違反によりブラウザがリクエストを遮断し、`Failed to fetch` が発生していた。
+
+#### 対策
+1. **アプリコード側の安全フォールバック (`safeDeleteS3Objects`)**:
+   - `DeleteObjectsCommand`（POST）を実行し、もし CORS やネットワーク起因でエラーとなった場合は、**自動的に `DeleteObjectCommand`（DELETE）の並行ループへフォールバックして削除を完了**させる。
+   - これにより、ユーザーが R2 側の CORS ポリシーを手動更新していなくても、即座に一括削除が成功する。
+2. **CORS 設定テンプレートの更新**:
+   - 設定画面のプレビュー、オンボーディング案内、README.md のすべての R2 CORS テンプレートに `"POST"` を追加。
+
+

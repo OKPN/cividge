@@ -645,7 +645,7 @@ function organizeStorageSettingsUi() {
   const frontendOrigin = window.location.origin.replace(/\/$/, "");
   const corsPolicy = JSON.stringify([{
     AllowedOrigins: [...new Set([frontendOrigin, "http://127.0.0.1:5173", "http://localhost:5173"])],
-    AllowedMethods: ["GET", "HEAD", "PUT", "DELETE"],
+    AllowedMethods: ["GET", "HEAD", "PUT", "POST", "DELETE"],
     AllowedHeaders: ["*"],
     ExposeHeaders: ["ETag", "Content-Length", "Content-Type"],
     MaxAgeSeconds: 3600,
@@ -846,6 +846,40 @@ function getS3Client(provider = "r2") {
     },
   });
   return s3ClientR2;
+}
+
+/**
+ * S3 / R2 オブジェクトの安全な削除
+ * DeleteObjectsCommand (POST /?delete) がバケットの CORS (POST未許可等) で失敗した場合、
+ * 自動的に DeleteObjectCommand (DELETE /<key>) の並行実行へフォールバックする。
+ */
+async function safeDeleteS3Objects(s3, bucketName, keys) {
+  if (!s3 || !bucketName || !keys) return;
+  const keyList = Array.isArray(keys) ? keys : Array.from(keys);
+  const uniqueKeys = Array.from(new Set(keyList.filter(Boolean)));
+  if (uniqueKeys.length === 0) return;
+
+  if (uniqueKeys.length === 1) {
+    await s3.send(new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key: uniqueKeys[0],
+    }));
+    return;
+  }
+
+  try {
+    const command = new DeleteObjectsCommand({
+      Bucket: bucketName,
+      Delete: { Objects: uniqueKeys.map(Key => ({ Key })) },
+    });
+    await s3.send(command);
+  } catch (err) {
+    console.warn("DeleteObjectsCommand failed, falling back to individual DeleteObjectCommand:", err);
+    await Promise.all(uniqueKeys.map(Key => s3.send(new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key,
+    }))));
+  }
 }
 
 // Filebase S3 バケットの CORS 自動設定 (CID 読み取りヘッダー公開)
@@ -5785,17 +5819,7 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
 
     if (filesToUnpin.length > 0) {
       console.log(`🪐 Filebase FIFO 自動アンピン実行: ${filesToUnpin.join(", ")} (${formatBytes(freedBytes)} 解放)`);
-      if (filesToUnpin.length === 1) {
-        await s3.send(new DeleteObjectCommand({
-          Bucket: bucketName,
-          Key: filesToUnpin[0],
-        }));
-      } else {
-        await s3.send(new DeleteObjectsCommand({
-          Bucket: bucketName,
-          Delete: { Objects: filesToUnpin.map(k => ({ Key: k })) },
-        }));
-      }
+      await safeDeleteS3Objects(s3, bucketName, filesToUnpin);
 
       // KV 側のメタデータを unpinned: true に更新（マルチゲートウェイ配信へ切り替え）
       for (const update of kvUpdates) {
@@ -6732,7 +6756,7 @@ function renderStorageOnboardingCard() {
   const r2CorsOrigins = [...new Set([frontendOrigin, "http://127.0.0.1:5173", "http://localhost:5173"])];
   const r2CorsPolicy = JSON.stringify([{
     AllowedOrigins: r2CorsOrigins,
-    AllowedMethods: ["GET", "HEAD", "PUT", "DELETE"],
+    AllowedMethods: ["GET", "HEAD", "PUT", "POST", "DELETE"],
     AllowedHeaders: ["*"],
     ExposeHeaders: ["ETag", "Content-Length", "Content-Type"],
     MaxAgeSeconds: 3600,
@@ -7530,10 +7554,7 @@ async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bu
       await deleteKvCid(key);
       if (!hasSibling && s3 && bucketName && s3Key && item.isFromS3) {
         if (thumbnailKey) await deleteKvCid(thumbnailKey);
-        const objects = [s3Key, thumbnailKey].filter(Boolean).map(Key => ({ Key }));
-        await s3.send(objects.length === 1
-          ? new DeleteObjectCommand({ Bucket: bucketName, Key: s3Key })
-          : new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }));
+        await safeDeleteS3Objects(s3, bucketName, [s3Key, thumbnailKey]);
       }
       clearCivitaiTemporaryTransfer(provider, s3Key);
       clearCivitaiTemporaryTransfer(provider, key);
@@ -7571,10 +7592,7 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
       // 最後のリンク（hasSibling なし）なら、S3 実体およびサムネイルも削除
       if (!hasSibling && s3 && bucketName && s3Key && item.isFromS3) {
         if (thumbnailKey) await deleteKvCid(thumbnailKey);
-        const objects = [s3Key, thumbnailKey].filter(Boolean).map(Key => ({ Key }));
-        await s3.send(objects.length === 1
-          ? new DeleteObjectCommand({ Bucket: bucketName, Key: s3Key })
-          : new DeleteObjectsCommand({ Bucket: bucketName, Delete: { Objects: objects } }));
+        await safeDeleteS3Objects(s3, bucketName, [s3Key, thumbnailKey]);
         console.log(`🗑️ 最後のリンクが期限切れのため S3 実体も削除しました: ${s3Key}`);
       }
       cleanedKeys.add(key);
@@ -9061,12 +9079,7 @@ r2FileList?.addEventListener("click", async (e) => {
           const thumbnailKey = getVideoThumbnailKey(s3Key);
           if (thumbnailKey) await deleteKvCid(thumbnailKey);
           const keysToDelete = [s3Key, thumbnailKey].filter(Boolean);
-          const command = keysToDelete.length === 1 ? new DeleteObjectCommand({
-            Bucket: bucketName, Key: s3Key,
-          }) : new DeleteObjectsCommand({
-            Bucket: bucketName, Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
-          });
-          await s3.send(command);
+          await safeDeleteS3Objects(s3, bucketName, keysToDelete);
         }
 
 
@@ -9128,12 +9141,7 @@ r2FileList?.addEventListener("click", async (e) => {
         const thumbnailKey = getVideoThumbnailKey(resolvedS3Key);
         if (thumbnailKey) await deleteKvCid(thumbnailKey);
         const keysToDelete = [resolvedS3Key, thumbnailKey].filter(Boolean);
-        const command = keysToDelete.length === 1 ? new DeleteObjectCommand({
-          Bucket: bucketName, Key: resolvedS3Key,
-        }) : new DeleteObjectsCommand({
-          Bucket: bucketName, Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
-        });
-        await s3.send(command);
+        await safeDeleteS3Objects(s3, bucketName, keysToDelete);
         keysToDelete.forEach(deleteR2Hash);
       }
       await fetchAndRenderR2Files();
@@ -9198,12 +9206,7 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
       if (s3 && bucketName && s3KeysToDelete.size > 0) {
         const thumbnailKeys = Array.from(s3KeysToDelete).map(getVideoThumbnailKey).filter(Boolean);
         for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey);
-        const objects = [...s3KeysToDelete, ...thumbnailKeys].map(Key => ({ Key }));
-        const command = new DeleteObjectsCommand({
-          Bucket: bucketName,
-          Delete: { Objects: objects },
-        });
-        await s3.send(command);
+        await safeDeleteS3Objects(s3, bucketName, [...s3KeysToDelete, ...thumbnailKeys]);
       }
 
     } else {
@@ -9229,12 +9232,7 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
       if (s3 && bucketName && s3KeysToDelete.size > 0) {
         const thumbnailKeys = Array.from(s3KeysToDelete).map(getVideoThumbnailKey).filter(Boolean);
         for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey);
-        const objects = [...s3KeysToDelete, ...thumbnailKeys].map(Key => ({ Key }));
-        const command = new DeleteObjectsCommand({
-          Bucket: bucketName,
-          Delete: { Objects: objects },
-        });
-        await s3.send(command);
+        await safeDeleteS3Objects(s3, bucketName, [...s3KeysToDelete, ...thumbnailKeys]);
         s3KeysToDelete.forEach(deleteR2Hash);
       }
     }

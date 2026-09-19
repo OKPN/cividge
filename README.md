@@ -191,7 +191,7 @@ Allow the URL where the frontend is opened, such as `https://my-cividge.pages.de
       "http://127.0.0.1:5173",
       "http://localhost:5173"
     ],
-    "AllowedMethods": ["GET", "HEAD", "PUT", "DELETE"],
+    "AllowedMethods": ["GET", "HEAD", "PUT", "POST", "DELETE"],
     "AllowedHeaders": ["*"],
     "ExposeHeaders": ["ETag", "Content-Length", "Content-Type"],
     "MaxAgeSeconds": 3600
