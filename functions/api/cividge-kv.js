@@ -1,4 +1,4 @@
-// functions/api/cividge-kv.js
+// cividge-kv.js
 // Cividge 統合台帳 API: ファイル名と CID/実体・期限・パスワード・配信ドメインの KV 登録・照会・削除・一覧 API
 
 export async function onRequestOptions() {
@@ -7,9 +7,14 @@ export async function onRequestOptions() {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, Range, If-Range, X-Upload-Password, X-Upload-Filename, X-Custom-Domain, X-Delivery-Domain, X-Storage-Backend",
     },
   });
+}
+
+// 🛡️ IPFS CID 判定ヘルパー（"r2" などの特殊マーカー値や無効値を除外）
+function isRealIpfsCid(c) {
+  return typeof c === "string" && c !== "r2" && (c.startsWith("Qm") || c.startsWith("baf") || c.length > 20);
 }
 
 function unpackMetadata(name, cid, meta = {}) {
@@ -34,6 +39,7 @@ function unpackMetadata(name, cid, meta = {}) {
   const width = Number(meta.w ?? meta.width) || null;
   const height = Number(meta.h ?? meta.height) || null;
   const lastKuboPinAttempt = meta.k !== undefined ? meta.k * 1000 : (meta.lastKuboPinAttempt || null);
+  const civitaiTemporary = meta.ct !== undefined ? Boolean(meta.ct) : Boolean(meta.civitaiTemporary);
 
   const allowedHost = keyHost || meta.d || meta.allowedHost || null;
 
@@ -59,6 +65,7 @@ function unpackMetadata(name, cid, meta = {}) {
     ...(allowedHost ? { allowedHost, d: allowedHost } : {}),
     ...(expiresAt ? { expiresAt, e: Math.floor(expiresAt / 1000) } : {}),
     ...(lastKuboPinAttempt ? { lastKuboPinAttempt } : {}),
+    ...(civitaiTemporary ? { civitaiTemporary: true, ct: 1 } : {}),
   };
 }
 
@@ -88,8 +95,8 @@ export async function onRequestGet(context) {
     });
   }
 
-  // 配信処理はこの API を経由せず Function 内で KV を参照する。
-  // 管理メタデータを外部に公開しない。
+  // 配信処理はこの API を経由せず Worker 内で KV を参照する。
+  // パスワード hash / salt / セッション情報を含む管理メタデータを公開しない。
   if (!verifyAdminAuth(request, env)) {
     return new Response(JSON.stringify({ error: "Unauthorized: Admin token required" }), {
       status: 401,
@@ -97,32 +104,7 @@ export async function onRequestGet(context) {
     });
   }
 
-  // 0. tombstones / tombstones_s3 パラメータがある場合は未回収の墓標一覧を返却（管理者のみ）
-  if (url.searchParams.get("tombstones_s3") === "1") {
-    if (!verifyAdminAuth(request, env)) {
-      return new Response(JSON.stringify({ error: "Unauthorized: Admin token required" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      });
-    }
-    try {
-      const list = await (env.CIVIDGE_KV || env.IPFS_KV).list({ prefix: "tombstone_s3_", limit: 1000 });
-      const tombstonesS3 = (list.keys || []).map(k => {
-        const raw = k.name.replace(/^tombstone_s3_/, "");
-        try { return decodeURIComponent(raw); } catch { return raw; }
-      });
-      return new Response(JSON.stringify({ success: true, tombstonesS3 }), {
-        status: 200,
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      });
-    } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), {
-        status: 500,
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      });
-    }
-  }
-
+  // 0. tombstones パラメータがある場合は未回収の墓標一覧を返却（管理者のみ、Kubo専用）
   if (url.searchParams.get("tombstones") === "1") {
     if (!verifyAdminAuth(request, env)) {
       return new Response(JSON.stringify({ error: "Unauthorized: Admin token required" }), {
@@ -132,7 +114,6 @@ export async function onRequestGet(context) {
     }
     try {
       const list = await (env.CIVIDGE_KV || env.IPFS_KV).list({ prefix: "tombstone_", limit: 1000 });
-      // S3用の墓標は除外し、Kubo用のCID墓標のみ返却
       const tombstones = (list.keys || [])
         .filter(k => !k.name.startsWith("tombstone_s3_"))
         .map(k => k.name.replace(/^tombstone_/, ""));
@@ -141,8 +122,9 @@ export async function onRequestGet(context) {
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       });
     } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), {
-        status: 500,
+      console.warn("tombstones list error:", err.message);
+      return new Response(JSON.stringify({ success: true, tombstones: [], warning: err.message }), {
+        status: 200,
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       });
     }
@@ -156,21 +138,37 @@ export async function onRequestGet(context) {
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       });
     }
+
+    const kv = env.CIVIDGE_KV || env.IPFS_KV;
+
     try {
-      const list = await (env.CIVIDGE_KV || env.IPFS_KV).list({ limit: 1000 });
-      const items = (list.keys || [])
+      // See: [INV-LEDGER-002] (KV 走査における全件網羅 / 1,000 件制限の克服)
+      let cursor = undefined;
+      const allRawKeys = [];
+      do {
+        const page = await kv.list({ limit: 1000, ...(cursor ? { cursor } : {}) });
+        if (page.keys && page.keys.length > 0) {
+          allRawKeys.push(...page.keys);
+        }
+        cursor = page.list_complete === false ? page.cursor : undefined;
+      } while (cursor);
+
+      const items = allRawKeys
         .filter(k => !k.name.startsWith("tombstone_") && !k.name.startsWith("blob_"))
         .map(k => ({
           name: k.name,
           metadata: unpackMetadata(k.name, "", k.metadata),
         }));
+
       return new Response(JSON.stringify({ success: true, files: items }), {
         status: 200,
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       });
     } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), {
-        status: 500,
+      console.warn("KV list error:", err.message);
+      // キャッシュもない場合は空配列で安全に返却（500でクラッシュさせない）
+      return new Response(JSON.stringify({ success: true, files: [], warning: err.message }), {
+        status: 200,
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       });
     }
@@ -179,7 +177,7 @@ export async function onRequestGet(context) {
   // 2. key パラメータがある場合は単一照会
   try {
     const value = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(key);
-    if (!value || !value.value) {
+    if (!value || value.value === null || value.value === undefined) {
       return new Response(JSON.stringify({ found: false, key }), {
         status: 404,
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
@@ -266,7 +264,6 @@ export async function onRequestPost(context) {
     // 🛡️ CID衝突ガード:
     // 同一ファイル名が既に存在し、かつ中身（実体CID）が異なる場合は上書き破壊を防ぐため409 Conflictで弾く。
     // ※ "r2" というマーカー値は IPFS CID ではないため、R2 のメタデータ更新や CID 同期時には衝突とみなさない。
-    const isRealIpfsCid = (c) => typeof c === "string" && c !== "r2" && (c.startsWith("Qm") || c.startsWith("baf") || c.length > 20);
     const existingRealCid = isRealIpfsCid(existingMetadata?.contentCid || existingMetadata?.c_cid)
       ? (existingMetadata?.contentCid || existingMetadata?.c_cid)
       : (isRealIpfsCid(existingCid) ? existingCid : "");
@@ -328,20 +325,21 @@ export async function onRequestPost(context) {
 
     // 有効期限の計算と明示的な解除（ttl: 0 または expiresAt: 0 で無期限化）
     let calculatedExpiresAt = null;
-    let putExpirationTtl = undefined;
-    if (expiresAt === 0 || ttl === 0 || expiresAt === null && body.clearTtl) {
+    // 期限は KV のネイティブ TTL には渡さない。
+    // TTL に任せるとレコードだけが無通知で消え、配信時に「この CID の
+    // 最後の別名だったか」を判定して Filebase/Kubo の pin を解放できなくなる。
+    // delivery.js が期限後の最初のアクセスで expiresAt を確認して削除する。
+    // ttl: 0 は「明示的に無期限へ変更」のときだけ期限を外す。
+    // Filebase → Kubo のような保存先状態の更新では、継続時間を持たず ttl: 0 が
+    // 渡されることがあるため、正の expiresAt があればそちらを最優先で維持する。
+    if (expiresAt === 0 || body.clearTtl || (ttl === 0 && (expiresAt === undefined || expiresAt === null))) {
       calculatedExpiresAt = null;
     } else if (expiresAt && Number(expiresAt) > 0) {
       calculatedExpiresAt = Number(expiresAt);
-      const remainingSec = Math.floor((calculatedExpiresAt - Date.now()) / 1000);
-      if (remainingSec > 60) putExpirationTtl = remainingSec;
     } else if (ttl && Number(ttl) > 0) {
       calculatedExpiresAt = Date.now() + Number(ttl) * 1000;
-      putExpirationTtl = Math.max(60, Number(ttl));
     } else if (existingMetadata && (existingMetadata.e || existingMetadata.expiresAt)) {
       calculatedExpiresAt = existingMetadata.e ? existingMetadata.e * 1000 : existingMetadata.expiresAt;
-      const remainingSec = Math.floor((calculatedExpiresAt - Date.now()) / 1000);
-      if (remainingSec > 60) putExpirationTtl = remainingSec;
     }
 
     // 既存の kuboStatus を引き継ぐ、または body から取得
@@ -397,6 +395,9 @@ export async function onRequestPost(context) {
     const inheritedHeight = Math.floor(Number(height)) || (existingMetadata && Math.floor(Number(existingMetadata.h ?? existingMetadata.height))) || 0;
     const inheritedContentCid = body.contentCid || body.c_cid || (existingMetadata && (existingMetadata.c_cid || existingMetadata.contentCid)) || "";
     const inheritedBackend = body.backend || body.b || (existingMetadata && (existingMetadata.b || existingMetadata.backend)) || "";
+    const civitaiTemporary = body.civitaiTemporary === undefined
+      ? Boolean(existingMetadata?.ct || existingMetadata?.civitaiTemporary)
+      : Boolean(body.civitaiTemporary);
     const compressedMeta = {
       ...(safeCid ? { c: safeCid } : {}),
       s: inheritedSize,
@@ -410,14 +411,12 @@ export async function onRequestPost(context) {
       ...(existingLastKuboPinAttempt ? { k: Math.floor(Number(existingLastKuboPinAttempt) / 1000) } : {}),
       ...(inheritedContentCid ? { c_cid: inheritedContentCid } : {}),
       ...(inheritedBackend ? { b: inheritedBackend } : {}),
+      ...(civitaiTemporary ? { ct: 1 } : {}),
       ...passwordMeta,
     };
 
-    // KV に登録 (value: safeCid, metadata, expirationTtl)
+    // KV に登録。期限はメタデータ e だけで管理し、アクセス時の掃除対象として残す。
     const putOptions = { metadata: compressedMeta };
-    if (putExpirationTtl && putExpirationTtl > 0) {
-      putOptions.expirationTtl = putExpirationTtl;
-    }
     await (env.CIVIDGE_KV || env.IPFS_KV).put(key, safeCid, putOptions);
 
     // クライアント側へは旧形式互換のオブジェクトも含めて返却
@@ -434,6 +433,7 @@ export async function onRequestPost(context) {
       backend: inheritedBackend || null,
       ...(compressedMeta.w && compressedMeta.h ? { width: compressedMeta.w, height: compressedMeta.h } : {}),
       ...(calculatedExpiresAt ? { expiresAt: calculatedExpiresAt } : {}),
+      ...(civitaiTemporary ? { civitaiTemporary: true, ct: 1 } : {}),
       ...compressedMeta,
     };
 
@@ -518,30 +518,22 @@ export async function onRequestDelete(context) {
     const existing = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(key);
     const existingCid = existing?.value || "";
 
+    // [INV-CORE-001] 実在しない blob_ キーを無条件 delete() して書き込み枠（1日1,000回）を浪費するバグを根絶
     if (existing?.metadata?.blobKey) {
       await (env.CIVIDGE_KV || env.IPFS_KV).delete(existing.metadata.blobKey).catch(() => {});
-    } else {
+    } else if (existing?.metadata?.backend === "kv" || existing?.metadata?.b === "kv") {
       await (env.CIVIDGE_KV || env.IPFS_KV).delete("blob_" + key).catch(() => {});
     }
     await (env.CIVIDGE_KV || env.IPFS_KV).delete(key);
 
     // 🪦 墓標（Tombstone / Unpin予約）の発行判定:
-    // CID が存在する場合、他のキーが同じ CID を参照していなければ、将来 Kubo 起動時にアンピンできるよう墓標を登録
-    if (existingCid) {
-      const allKeys = await (env.CIVIDGE_KV || env.IPFS_KV).list({ limit: 1000 });
-      const isCidShared = (allKeys.keys || []).some(k => {
-        if (k.name === key || k.name.startsWith("tombstone_") || k.name.startsWith("blob_")) return false;
-        // metadata に CID (cid または c) が入っているか、あるいは同一実体キーか判定
-        const itemCid = k.metadata?.cid || k.metadata?.c;
-        return itemCid === existingCid;
-      });
-
-      if (!isCidShared) {
-        // 30日間のTTLを設定して墓標を保存
-        await (env.CIVIDGE_KV || env.IPFS_KV).put("tombstone_" + existingCid, "1", {
-          expirationTtl: 86400 * 30,
-        }).catch(() => {});
-      }
+    // [INV-CORE-001] [INV-CORE-004] [INV-CORE-005] Local-First 原則:
+    // クライアント側（台帳全体を保持）で判断した make_tombstone === "1" の時のみ墓標を発行。
+    // Worker 側での無駄な kv.list() 全件走査フォールバック（1日1,000回枠の浪費バグ）は完全撤去。
+    const makeTombstoneParam = url.searchParams.get("make_tombstone");
+    if (existingCid && isRealIpfsCid(existingCid) && makeTombstoneParam === "1") {
+      // 回収されて実体が削除されるまで確実に残すため無期限で墓標を保存
+      await (env.CIVIDGE_KV || env.IPFS_KV).put("tombstone_" + existingCid, "1").catch(() => {});
     }
 
     // 🚀 リンク抹消: エッジに残っている画像キャッシュを即座に消滅させる
@@ -563,7 +555,9 @@ export async function onRequestDelete(context) {
 // 🌐 ハイブリッド Cache Purge ヘルパー
 // プランA (独自ドメイン設定時): REST Purge API で世界300箇所の全エッジから即時抹消
 // プランB (pages.dev無料運用時): Cache API (caches.default) でローカルPoPから即時抹消
-// ※ 開発者や特定ドメインを特別扱いせず、Request Origin / Referer / allowedHost から100%動的に解決
+// ※ ローカル Cache API の削除先は Request Origin / Referer / allowedHost から動的に解決する。
+//    Zone API は他ゾーンや pages.dev を渡すと失敗し得るため、明示設定した同一ゾーンの
+//    互換レイヤーだけを対象にする。
 async function purgeHybridCache(request, env, key, extraDomains = []) {
   if (!key) return;
   const colonIdx = key.indexOf(":");
@@ -612,19 +606,44 @@ async function purgeHybridCache(request, env, key, extraDomains = []) {
 
   const urlsToPurge = Array.from(targetDomains).map(origin => `${origin}${targetPath}`);
 
+  // 静的 Pages 公開入口は /<file> -> 独自ゾーンの /r/<file> へ送る。
+  // Zone Purge API へは、そのゾーンに属する実配信 URL だけを渡す。
+  const backendRelayOrigins = String(env.STATIC_RELAY_BACKEND_HOSTS || "")
+    .split(",")
+    .map(host => host.trim())
+    .filter(Boolean)
+    .map(host => host.startsWith("http") ? host : `https://${host}`)
+    .map(host => {
+      try { return new URL(host).origin; } catch (e) { return null; }
+    })
+    .filter(Boolean);
+  const relayTargetPath = `/r/${encodeURIComponent(pureFilename)}`;
+  const globalUrlsToPurge = backendRelayOrigins.flatMap(origin => [
+    `${origin}${relayTargetPath}`,
+    // 互換レイヤー導入前の plain path も、移行中のキャッシュを残さないよう併せて消す。
+    `${origin}${targetPath}`,
+  ]);
+
+  // Cache API でも実配信 URL を削除する。これは現在の PoP 限定の補助策。
+  urlsToPurge.push(...globalUrlsToPurge);
+
   // 1. プランA: REST Purge API (独自ドメインの Zone ID & API Token がある場合)
   const zoneId = env.CLOUDFLARE_ZONE_ID;
   const purgeToken = env.CLOUDFLARE_PURGE_TOKEN || env.CLOUDFLARE_API_TOKEN;
   if (zoneId && purgeToken) {
     try {
-      await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/purge_cache`, {
+      const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/purge_cache`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${purgeToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ files: urlsToPurge }),
+        body: JSON.stringify({ files: globalUrlsToPurge }),
       });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || result?.success !== true) {
+        console.warn(`REST Purge API failed (${response.status}):`, result || "invalid JSON response");
+      }
     } catch (apiErr) {
       console.warn("REST Purge API error:", apiErr);
     }

@@ -5367,7 +5367,7 @@ fileList?.addEventListener("click", async (event) => {
       const targetProvider = (activeStorageTab === "filebase" && fbOk) ? "filebase" : (r2Ok ? "r2" : (fbOk ? "filebase" : "r2"));
       const success = await uploadImage(result, targetProvider);
       if (success) {
-        await fetchAndRenderR2Files();
+        renderCurrentStoragePage();
       }
     } catch (e) {
       console.error(e);
@@ -5395,7 +5395,7 @@ fileList?.addEventListener("click", async (event) => {
       }
       const success = await uploadImage(result, "r2");
       if (success) {
-        await fetchAndRenderR2Files();
+        renderCurrentStoragePage();
       }
     } catch (e) {
       console.error(e);
@@ -5423,7 +5423,7 @@ fileList?.addEventListener("click", async (event) => {
       }
       const success = await uploadImage(result, "filebase");
       if (success) {
-        await fetchAndRenderR2Files();
+        renderCurrentStoragePage();
       }
     } catch (e) {
       console.error(e);
@@ -5483,7 +5483,7 @@ fileList?.addEventListener("click", async (event) => {
         civitaiTemporary: true,
       });
       if (success && result.proxyUrl) {
-        await fetchAndRenderR2Files();
+        renderCurrentStoragePage();
         openCivitaiIntent(result.proxyUrl, result.name, preloadWindow);
       } else {
         if (preloadWindow && !preloadWindow.closed) preloadWindow.close();
@@ -5943,15 +5943,12 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
       let meta = {};
       let kuboStatus = "not_pinned";
 
-      try {
-        const kvData = await fetchKvRecord(targetKey);
-        if (kvData && kvData.found) {
-          cid = kvData.cid || null;
-          meta = kvData.metadata || {};
-          kuboStatus = meta.kuboStatus || "not_pinned";
-        }
-      } catch (kvErr) {
-        console.warn(`KV record lookup failed for ${targetKey}:`, kvErr);
+      // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（ループ内 fetchKvRecord 通信連打を完全排除）
+      const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === targetKey);
+      if (cachedItem) {
+        cid = cachedItem.cid || cachedItem.contentCid || cachedItem.metadata?.cid || null;
+        meta = cachedItem.metadata || cachedItem || {};
+        kuboStatus = meta.kuboStatus || cachedItem.kuboStatus || "not_pinned";
       }
 
       if (!cid) {
@@ -8794,33 +8791,45 @@ r2FileList?.addEventListener("click", async (e) => {
     try {
       const res = await unpinFromKubo(cid);
       if (res.success) {
-        const kvData = await fetchKvRecord(key);
-        if (kvData) {
-          const meta = kvData.metadata || {};
-          const isR2 = meta.backend === "r2" || meta.b === "r2" || kvData.value === "r2" || activeStorageTab === "r2";
-          await registerKvCid(
-            key,
-            isR2 ? "r2" : cid,
-            meta.size || 0,
-            meta.mime || "",
-            meta.s3Key || key,
-            "",
-            null,
-            meta.ttl || 0,
-            meta.expiresAt || null,
-            Boolean(meta.unpinned),
-            "not_pinned",
-            meta.allowedHost || null,
-            false,
-            meta.thumbnailKey || null,
-            meta.width || null,
-            meta.height || null,
-            Boolean(meta.civitaiTemporary),
-            meta.contentCid || meta.c_cid || (isR2 ? cid : null),
-            isR2 ? "r2" : null
-          );
+        // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（通信ゼロ化）
+        const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+        const meta = cachedItem?.metadata || cachedItem || {};
+        const isR2 = meta.backend === "r2" || meta.b === "r2" || cachedItem?.backend === "r2" || activeStorageTab === "r2";
+        await registerKvCid(
+          key,
+          isR2 ? "r2" : cid,
+          meta.size || 0,
+          meta.mime || "",
+          meta.s3Key || key,
+          "",
+          null,
+          meta.ttl || 0,
+          meta.expiresAt || null,
+          Boolean(meta.unpinned),
+          "not_pinned",
+          meta.allowedHost || null,
+          false,
+          meta.thumbnailKey || null,
+          meta.width || null,
+          meta.height || null,
+          Boolean(meta.civitaiTemporary),
+          meta.contentCid || meta.c_cid || (isR2 ? cid : null),
+          isR2 ? "r2" : null
+        );
+
+        // 🚀 [INV-CORE-005] Local-First: 手元台帳の kuboStatus を更新して即時再描画（サーバー全件フェッチゼロ化）
+        if (cachedItem) {
+          addOrUpdateLocalLedgerItem(activeStorageTab, {
+            ...cachedItem,
+            kuboStatus: "not_pinned",
+            metadata: {
+              ...(cachedItem.metadata || {}),
+              kuboStatus: "not_pinned",
+            },
+          });
+        } else {
+          renderCurrentStoragePage();
         }
-        await fetchAndRenderR2Files();
       } else {
         await showCustomAlert(`Kubo Pin解除に失敗しました: ${res.error}`, "❌ エラー");
         target.disabled = false;
@@ -8904,34 +8913,46 @@ r2FileList?.addEventListener("click", async (e) => {
           storeR2Hash(s3Key, realCid);
         }
 
-        // KV 台帳の kuboStatus を "pinned" に更新
-        const kvData = await fetchKvRecord(key);
-        if (kvData) {
-          const meta = kvData.metadata || {};
-          await registerKvCid(
-            key,
-            "r2",
-            meta.size || blob.size || 0,
-            meta.mime || blob.type || "",
-            meta.s3Key || key,
-            "",
-            null,
-            meta.ttl || 0,
-            meta.expiresAt || null,
-            Boolean(meta.unpinned),
-            "pinned",
-            meta.allowedHost || null,
-            false,
-            meta.thumbnailKey || null,
-            meta.width || null,
-            meta.height || null,
-            Boolean(meta.civitaiTemporary),
-            realCid || (isValidIpfsCid(cid) ? cid : null),
-            "r2"
-          );
-        }
+        // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（KV照会通信ゼロ化）
+        const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+        const meta = cachedItem?.metadata || cachedItem || {};
+        await registerKvCid(
+          key,
+          "r2",
+          meta.size || blob.size || 0,
+          meta.mime || blob.type || "",
+          meta.s3Key || key,
+          "",
+          null,
+          meta.ttl || 0,
+          meta.expiresAt || null,
+          Boolean(meta.unpinned),
+          "pinned",
+          meta.allowedHost || null,
+          false,
+          meta.thumbnailKey || null,
+          meta.width || null,
+          meta.height || null,
+          Boolean(meta.civitaiTemporary),
+          realCid || (isValidIpfsCid(cid) ? cid : null),
+          "r2"
+        );
 
-        await fetchAndRenderR2Files();
+        // 🚀 [INV-CORE-005] Local-First: 手元台帳を即座に更新して再描画（サーバー全件フェッチゼロ化）
+        if (cachedItem) {
+          addOrUpdateLocalLedgerItem(activeStorageTab, {
+            ...cachedItem,
+            kuboStatus: "pinned",
+            contentCid: realCid || (isValidIpfsCid(cid) ? cid : null),
+            metadata: {
+              ...(cachedItem.metadata || {}),
+              kuboStatus: "pinned",
+              contentCid: realCid || (isValidIpfsCid(cid) ? cid : null),
+            },
+          });
+        } else {
+          renderCurrentStoragePage();
+        }
         await showCustomAlert(`✅ 自宅 Kubo ノードへの実体保存と Pin 留めに成功しました！\n\nCID: ${realCid || addRes.cid}`, "🎉 保全完了");
       } catch (err) {
         await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
@@ -8977,24 +8998,36 @@ r2FileList?.addEventListener("click", async (e) => {
               clearInterval(pollInterval);
               activeKuboPins.delete(cid);
               console.log(`🏠 Kubo P2P同期完了を検知: ${key}`);
-              const kvData = await fetchKvRecord(key);
-              if (kvData) {
-                const meta = kvData.metadata || {};
-                await registerKvCid(
-                  key,
-                  cid,
-                  meta.size || 0,
-                  meta.mime || "",
-                  meta.s3Key || key,
-                  "",
-                  null,
-                  meta.ttl || 0,
-                  meta.expiresAt || null,
-                  Boolean(meta.unpinned),
-                  "pinned"
-                );
+              // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（KV照会通信ゼロ化）
+              const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+              const meta = cachedItem?.metadata || cachedItem || {};
+              await registerKvCid(
+                key,
+                cid,
+                meta.size || 0,
+                meta.mime || "",
+                meta.s3Key || key,
+                "",
+                null,
+                meta.ttl || 0,
+                meta.expiresAt || null,
+                Boolean(meta.unpinned),
+                "pinned"
+              );
+
+              // 🚀 [INV-CORE-005] Local-First: 手元台帳を即座に更新して再描画（サーバー全件フェッチゼロ化）
+              if (cachedItem) {
+                addOrUpdateLocalLedgerItem(activeStorageTab, {
+                  ...cachedItem,
+                  kuboStatus: "pinned",
+                  metadata: {
+                    ...(cachedItem.metadata || {}),
+                    kuboStatus: "pinned",
+                  },
+                });
+              } else {
+                renderCurrentStoragePage();
               }
-              await fetchAndRenderR2Files();
             }
           } catch (pErr) {
             console.warn(`Kubo poll error for ${cid}:`, pErr);
@@ -9053,16 +9086,10 @@ r2FileList?.addEventListener("click", async (e) => {
       });
       await s3.send(command);
 
-      // KV の unpinned を true に更新（Kubo の既存保護状態は維持し、未Pinかつ自動Pin有効時のみPin試行）
-      let currentKuboStatus = "not_pinned";
-      let meta = {};
-      if (key && cid) {
-        const kvData = await fetchKvRecord(key);
-        if (kvData) {
-          meta = kvData.metadata || {};
-          currentKuboStatus = meta.kuboStatus || "not_pinned";
-        }
-      }
+      // 🚀 [INV-CORE-005] 手元台帳から既存のメタデータを取得（kv.getWithMetadata 通信ゼロ化）
+      const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const meta = cachedItem?.metadata || cachedItem || {};
+      let currentKuboStatus = meta.kuboStatus || "not_pinned";
 
       const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
       if (currentKuboStatus !== "pinned" && isKuboAutoPin && cid) {

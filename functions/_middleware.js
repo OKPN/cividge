@@ -405,11 +405,12 @@ function setImageDimensionHeaders(headers, meta = {}) {
   }
 }
 
-// 期限切れリンクの安全な回収（KV削除＋最後のリンクならKubo・S3墓標作成）
+// 期限切れリンクは、最初にアクセスされた時だけ回収する。定期実行は行わない。
 async function cleanupExpiredAlias(env, request, key, expectedCid) {
   if (!(env?.CIVIDGE_KV || env?.IPFS_KV) || !key || !expectedCid) return;
 
   try {
+    // 古いエッジ読み取り結果で、延長・再登録されたリンクを消さないよう再確認する。
     const latest = await (env.CIVIDGE_KV || env.IPFS_KV).getWithMetadata(key);
     const latestMeta = latest?.metadata || {};
     const latestExpiresAt = latestMeta.e ? latestMeta.e * 1000 : latestMeta.expiresAt;
@@ -420,23 +421,21 @@ async function cleanupExpiredAlias(env, request, key, expectedCid) {
     }
     await (env.CIVIDGE_KV || env.IPFS_KV).delete(key);
 
-    let cursor = undefined;
-    let isCidShared = false;
-    do {
-      const page = await (env.CIVIDGE_KV || env.IPFS_KV).list({ limit: 1000, ...(cursor ? { cursor } : {}) });
-      isCidShared = (page.keys || []).some((item) => {
-        if (item.name.startsWith("tombstone_") || item.name.startsWith("blob_")) return false;
-        return (item.metadata?.c || item.metadata?.cid) === expectedCid;
-      });
-      cursor = page.list_complete === false ? page.cursor : undefined;
-    } while (!isCidShared && cursor);
-
-    if (!isCidShared) {
-      await (env.CIVIDGE_KV || env.IPFS_KV).put(`tombstone_${expectedCid}`, "1").catch(() => {});
+    // [INV-CORE-001] [INV-CORE-004] 配信エッジでの重い kv.list() 全件走査および無駄な墓標 put() は完全撤去。
+    // botやクローラーが期限切れURLを踏むたびに1日1,000回の最貴重枠（list()）を連打消費する脆弱性を根絶。
+    // R2 の場合は Worker 自身が R2 バインディングを持っていれば実体とサムネイルを即時消去。
+    const isR2 = latestMeta.backend === "r2" || latestMeta.b === "r2" || expectedCid === "r2";
+    if (isR2 && env.R2_BUCKET) {
       const s3TargetKey = latestMeta.s3Key || latestMeta.s || (key.includes(":") ? key.split(":")[1] : key);
       if (s3TargetKey) {
-        await (env.CIVIDGE_KV || env.IPFS_KV).put(`tombstone_s3_${encodeURIComponent(s3TargetKey)}`, "1").catch(() => {});
+        await env.R2_BUCKET.delete(s3TargetKey).catch(() => {});
+        await env.R2_BUCKET.delete(`${s3TargetKey}.thumb.webp`).catch(() => {});
       }
+    }
+
+    // 同じ URL が残っているエッジキャッシュをこの PoP から外す。
+    if (typeof caches !== "undefined" && caches.default) {
+      await caches.default.delete(request).catch(() => {});
     }
   } catch (err) {
     console.warn("Expired alias cleanup in middleware failed:", err);
