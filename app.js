@@ -6775,7 +6775,15 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     if (isFilebase && isAutoFifo && contents.length > 0) {
       const limitMb = Number(localStorage.getItem("filebaseStorageLimit") || "5000");
       const limitBytes = limitMb * 1024 * 1024;
-      const currentOriginBytes = contents.filter(c => c.isFromS3).reduce((acc, cur) => acc + (cur.Size || 0), 0);
+      const countedFifoKeys = new Set();
+      let currentOriginBytes = 0;
+      for (const c of contents) {
+        if (!c.isFromS3) continue;
+        const eKey = isFilebase ? (c.cid || getStoredIpfsCid(c.Key) || c.s3Key || c.Key) : (c.s3Key || c.Key);
+        if (eKey && countedFifoKeys.has(eKey)) continue;
+        if (eKey) countedFifoKeys.add(eKey);
+        currentOriginBytes += (c.Size || 0);
+      }
       if (currentOriginBytes > limitBytes) {
         try {
           await ensureStorageCapacityFilebase(s3, bucketName, 0);
@@ -6827,8 +6835,17 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     // 更新日時の降順ソート
     contents.sort((a, b) => new Date(b.LastModified || 0) - new Date(a.LastModified || 0));
 
-    // 使用容量は Filebase / S3 に実体があるもののみカウント（アンピン済みは容量 0）
-    state.r2TotalSize = contents.filter(c => c.isFromS3).reduce((acc, cur) => acc + (cur.Size || 0), 0);
+    // 使用容量は Filebase / S3 に実体があるもののみカウント（アンピン済みは容量 0、同一実体エイリアスは重複排除して1回のみ合算）
+    const countedKeys = new Set();
+    let uniqueTotalSize = 0;
+    for (const c of contents) {
+      if (!c.isFromS3) continue;
+      const eKey = isFilebase ? (c.cid || getStoredIpfsCid(c.Key) || c.s3Key || c.Key) : (c.s3Key || c.Key);
+      if (eKey && countedKeys.has(eKey)) continue;
+      if (eKey) countedKeys.add(eKey);
+      uniqueTotalSize += (c.Size || 0);
+    }
+    state.r2TotalSize = uniqueTotalSize;
     updateStorageUsageUI();
 
     // 🔗 同一 CID 状態統合（CID State Unification） & 実体 Kubo 状態同期:
@@ -7142,9 +7159,7 @@ function renderCurrentStoragePage() {
       `;
     }
 
-    const renameBtnHtml = isFilebase
-      ? `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || "")}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15s; line-height: 1;">✏️</button>`
-      : "";
+    const renameBtnHtml = `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || (isFilebase ? "" : "r2"))}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15s; line-height: 1;">✏️</button>`;
 
     let cidBadgeHtml = "";
     if (itemCid) {
@@ -7486,15 +7501,19 @@ r2FileList?.addEventListener("click", async (e) => {
 
       const newKey = ext ? `${newBaseName}${ext}` : newBaseName;
 
+      const isFilebase = activeStorageTab === "filebase";
       const currentSize = parseInt(btn.dataset.size || article?.dataset?.size || "0", 10);
       let cid = btn.dataset.cid || article?.dataset?.cid || getStoredIpfsCid(oldKey) || getStoredIpfsCid(originalS3Key);
+      if (!isFilebase && (!cid || cid === "")) {
+        cid = "r2";
+      }
       let size = currentSize;
       let mime = "";
 
       let existingKvFiles = [];
       try {
         existingKvFiles = await fetchKvFiles();
-        const currentKv = existingKvFiles.find(f => f.name === oldKey);
+        const currentKv = existingKvFiles.find(f => f.name === oldKey || f.name.endsWith(`:${oldKey}`));
         if (currentKv) {
           if (!cid) cid = currentKv.metadata?.cid;
           if (!size) size = currentKv.metadata?.size || 0;
@@ -7504,18 +7523,33 @@ r2FileList?.addEventListener("click", async (e) => {
         console.warn("KV fetch error during rename:", err);
       }
 
-      if (!cid) {
+      if (isFilebase && !cid) {
         alert("⚠️ このファイルの CID が見つからないためリネームできません。");
         row.innerHTML = originalHtml;
         return;
       }
+      if (!isFilebase && !cid) {
+        cid = "r2";
+      }
+
+      // ドメインプレフィックス付きキー（例: testunko.pages.dev:file.png）の場合、プレフィックスを維持
+      let targetNewKey = newKey;
+      if (oldKey && oldKey.includes(":")) {
+        const colonIdx = oldKey.indexOf(":");
+        const prefix = oldKey.substring(0, colonIdx + 1);
+        targetNewKey = `${prefix}${newKey}`;
+      }
 
       // 🛡️ 同名ファイル存在チェック:
-      // 変更先 newKey が既に存在し、かつ CID が異なる場合は上書き破壊を防ぐため中断
-      const conflictingFile = existingKvFiles.find(f => f.name === newKey);
+      // 変更先 targetNewKey が既に存在し、かつ実体が異なる場合は上書き破壊を防ぐため中断
+      const conflictingFile = existingKvFiles.find(f => f.name === targetNewKey);
       if (conflictingFile) {
         const targetCid = conflictingFile.metadata?.cid || conflictingFile.metadata?.c;
-        if (targetCid && targetCid !== cid) {
+        const targetS3 = conflictingFile.metadata?.s3Key || conflictingFile.metadata?.k_s3;
+        const isSameEntity = isFilebase
+          ? (targetCid && targetCid === cid)
+          : (targetS3 && targetS3 === originalS3Key);
+        if (!isSameEntity) {
           alert(`⚠️ 同名の別ファイル「${newKey}」が既に存在します。\n別のファイル名を指定してください。`);
           row.innerHTML = originalHtml;
           return;
@@ -7561,24 +7595,32 @@ r2FileList?.addEventListener("click", async (e) => {
           console.warn("fetchKvFiles error during metadata fallback:", e);
         }
 
+        const targetCid = isFilebase ? cid : "r2";
         await registerKvCid(
-          newKey, cid, size, mime, originalS3Key, password, null, ttl, expiresAt,
+          targetNewKey, targetCid, size, mime, originalS3Key, password, null, ttl, expiresAt,
           unpinned, kuboStatus, allowedHost, false, getVideoThumbnailKey(originalS3Key)
         );
-        storeIpfsCid(newKey, cid);
-        storeIpfsCid(originalS3Key, cid);
-        storeIpfsCid(oldKey, cid);
+
+        if (isFilebase) {
+          storeIpfsCid(targetNewKey, cid);
+          storeIpfsCid(originalS3Key, cid);
+          storeIpfsCid(oldKey, cid);
+
+          try {
+            const map = JSON.parse(localStorage.getItem("ipfsCidMap") || "{}");
+            map[originalS3Key] = cid;
+            map[oldKey] = cid;
+            map[targetNewKey] = cid;
+            localStorage.setItem("ipfsCidMap", JSON.stringify(map));
+          } catch (e) {}
+        }
+
+        if (allowedHost) {
+          setFileStoredDomain(targetNewKey, allowedHost);
+        }
 
         // 2. 以前の名前のリンクも維持（即404化させず、実体共通エイリアスとして永続両立）
         // ※ deleteKvCid(oldKey) は実行せず、古いURLを踏んだ人も引き続き閲覧可能にする
-
-        try {
-          const map = JSON.parse(localStorage.getItem("ipfsCidMap") || "{}");
-          map[originalS3Key] = cid;
-          map[oldKey] = cid;
-          map[newKey] = cid;
-          localStorage.setItem("ipfsCidMap", JSON.stringify(map));
-        } catch (e) {}
 
         await fetchAndRenderR2Files();
       } catch (err) {
