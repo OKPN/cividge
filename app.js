@@ -10473,7 +10473,7 @@ downloadSharexBtn?.addEventListener("click", async () => {
 
 // 📱 スマホ表示時に設定アコーディオン群を Civitai パネル直下へ移動するレスポンシブ制御
 function setupResponsiveSettingsLayout() {
-  const settingsContainer = document.getElementById("cfSettingsContainer");
+  const settingsContainer = document.getElementById("allSettingsAccordionsContainer") || document.getElementById("cfSettingsContainer");
   const desktopSlot = document.getElementById("desktopSettingsSlot");
   const mobileSlot = document.getElementById("mobileSettingsSlot");
   const mobileBody = mobileSlot ? mobileSlot.querySelector(".mobile-settings-body") : null;
