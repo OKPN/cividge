@@ -1494,31 +1494,33 @@ function storeR2Hash(key, hash) {
   } catch (e) {}
 }
 
+function deleteR2Hash(key) {
+  if (!key) return;
+  try {
+    const map = getR2HashMap();
+    delete map[key];
+    localStorage.setItem("r2HashMap", JSON.stringify(map));
+  } catch (e) {}
+}
+
 async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
   if (!s3 || !bucketName || !targetHash) return null;
 
-  // 1. ローカルストレージキャッシュを検索
-  const map = getR2HashMap();
-  for (const [key, hash] of Object.entries(map)) {
-    if (hash === targetHash) {
-      return { key, hash: targetHash, size: targetSize || 0 };
-    }
-  }
-
-  // 2. KV 台帳の既存レコードからハッシュを検索
+  // KV 台帳のハッシュキャッシュマップを構築（キー -> ハッシュ）
+  const kvHashMap = new Map();
   try {
     const kvFiles = await fetchKvFiles();
     for (const item of kvFiles) {
       const h = item.metadata?.hash || item.metadata?.h_sha;
-      if (h === targetHash) {
+      if (h) {
         const sKey = item.metadata?.s3Key || item.metadata?.k_s3 || item.name;
-        storeR2Hash(sKey, targetHash);
-        return { key: sKey, hash: targetHash, size: item.metadata?.size || targetSize || 0 };
+        kvHashMap.set(sKey, h);
+        kvHashMap.set(item.name, h);
       }
     }
   } catch (e) {}
 
-  // 3. S3 バケット一覧からサイズ一致の未解決オブジェクトを HEAD 確認
+  // S3 (R2) バケット内に実在するオブジェクトを走査（実在しない削除済みキーの誤検知を完全排除）
   let continuationToken = undefined;
   do {
     const page = await s3.send(new ListObjectsV2Command({
@@ -1528,15 +1530,21 @@ async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
     }));
     const objects = page.Contents || [];
 
+    // 1. ローカルキャッシュ または KV台帳 から既知のハッシュを照合（通信ゼロ）
     for (const object of objects) {
-      if (getStoredR2Hash(object.Key) === targetHash) {
-        return { key: object.Key, hash: targetHash, size: object.Size || 0 };
+      const knownHash = getStoredR2Hash(object.Key) || kvHashMap.get(object.Key);
+      if (knownHash) {
+        storeR2Hash(object.Key, knownHash);
+        if (knownHash === targetHash) {
+          return { key: object.Key, hash: targetHash, size: object.Size || 0 };
+        }
       }
     }
 
-    // サイズが完全一致するものだけに絞り込み（無駄な HEAD リクエストを極小化）
+    // 2. ハッシュ未解決かつサイズが完全一致するものだけに絞り込み、HEAD で x-amz-meta-hash を確認
     const candidateObjects = objects.filter(object => {
-      if (getStoredR2Hash(object.Key)) return false;
+      const knownHash = getStoredR2Hash(object.Key) || kvHashMap.get(object.Key);
+      if (knownHash) return false;
       return targetSize ? (object.Size === targetSize) : true;
     });
 
@@ -5570,6 +5578,7 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
       Bucket: bucketName,
       Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
     }));
+    keysToDelete.forEach(deleteR2Hash);
 
     // 台帳に別名がある場合も、実体消去後の死んだリンクを残さない。
     const kvFiles = await fetchKvFiles();
@@ -8323,6 +8332,7 @@ r2FileList?.addEventListener("click", async (e) => {
           Bucket: bucketName, Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
         });
         await s3.send(command);
+        keysToDelete.forEach(deleteR2Hash);
       }
       await fetchAndRenderR2Files();
     } catch (err) {
@@ -8423,6 +8433,7 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
           Delete: { Objects: objects },
         });
         await s3.send(command);
+        s3KeysToDelete.forEach(deleteR2Hash);
       }
     }
     await fetchAndRenderR2Files();
