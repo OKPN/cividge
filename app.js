@@ -1554,6 +1554,18 @@ async function calculateFilebaseCid(bytes) {
 async function findFilebaseObjectByCid(s3, bucketName, targetCid) {
   if (!s3 || !bucketName || !targetCid) return null;
 
+  // 1. [INV-CORE-001] [INV-CORE-004] 手元のローカル台帳キャッシュを最優先照会（通信完全ゼロ）
+  try {
+    const localList = storageCachedContents || loadLedgerFromLocalStorage("filebase") || [];
+    const matched = localList.find(item => {
+      const c = item.contentCid || item.cid || item.metadata?.cid || item.metadata?.c || getStoredIpfsCid(item.Key || item.name);
+      return c === targetCid;
+    });
+    if (matched) {
+      return { key: matched.s3Key || matched.Key || matched.name, cid: targetCid, size: matched.Size || matched.size || 0 };
+    }
+  } catch (_) {}
+
   let continuationToken = undefined;
   do {
     const page = await s3.send(new ListObjectsV2Command({
@@ -1644,16 +1656,20 @@ function deleteR2Hash(key) {
 async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
   if (!s3 || !bucketName || !targetHash) return null;
 
-  // KV 台帳のハッシュ/CIDキャッシュマップを構築（キー -> ハッシュ/CID）
+  // 1. [INV-CORE-001] [INV-CORE-004] 手元のローカル台帳キャッシュから最優先照会（通信完全ゼロ）
+  // 1ファイルアップロードごとに fetchKvFiles()（kv.list() 全件走査）を叩く異常消費を根絶。
   const kvHashMap = new Map();
   try {
-    const kvFiles = await fetchKvFiles();
-    for (const item of kvFiles) {
-      const h = item.metadata?.contentCid || item.metadata?.c_cid || (item.metadata?.cid && item.metadata.cid !== "r2" ? item.metadata.cid : null) || item.metadata?.hash || item.metadata?.h_sha;
+    const localList = storageCachedContents || loadLedgerFromLocalStorage("r2") || [];
+    for (const item of localList) {
+      const h = item.contentCid || item.cid || item.metadata?.contentCid || item.metadata?.c_cid || (item.metadata?.cid && item.metadata?.cid !== "r2" ? item.metadata.cid : null) || item.metadata?.hash || item.metadata?.h_sha;
       if (h) {
-        const sKey = item.metadata?.s3Key || item.metadata?.k_s3 || item.name;
+        const sKey = item.s3Key || item.metadata?.s3Key || item.metadata?.k_s3 || item.Key || item.name;
         kvHashMap.set(sKey, h);
-        kvHashMap.set(item.name, h);
+        kvHashMap.set(item.Key || item.name, h);
+        if (h === targetHash) {
+          return { key: sKey, hash: targetHash, size: item.Size || item.size || 0 };
+        }
       }
     }
   } catch (e) {}
@@ -6175,13 +6191,15 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     }
 
     // 🛡️ アップロード前同名ファイル衝突チェック:
-    // 同名キーがKVに既に存在し、かつ既存のCIDと異なる（別画像）場合は上書き破壊を防ぐ
+    // [INV-CORE-001] [INV-CORE-004] ファイル1件アップロードごとに fetchKvFiles()（kv.list() 全件走査）を
+    // 叩く異常消費を完全撤去。手元のローカル台帳キャッシュを参照し通信ゼロ（0回）で即座に照合する。
+    // （※万が一手元にない場合でも、Worker 側の registerKvCid で 409 CID_CONFLICT が自動検知される）
     if (hasAdminAccess()) {
       try {
-        const kvFiles = await fetchKvFiles();
-        const existingKv = kvFiles.find(f => f.name === result.name);
+        const localList = storageCachedContents || loadLedgerFromLocalStorage(targetProvider) || [];
+        const existingKv = localList.find(f => (f.name || f.Key) === result.name);
         if (existingKv) {
-          const existingCid = existingKv.metadata?.cid || existingKv.metadata?.c;
+          const existingCid = existingKv.contentCid || existingKv.cid || existingKv.metadata?.cid || existingKv.metadata?.c;
           // アップロード前時点ではまだ新CIDが確定していない場合もあるが、既存ファイルがある場合は念のため警告
           // （同一内容のリトライであればそのまま許可）
           if (existingCid && result.ipfsCid && existingCid !== result.ipfsCid) {
@@ -6196,7 +6214,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           }
         }
       } catch (err) {
-        console.debug("KV pre-check skipped:", err);
+        console.debug("Local pre-check skipped:", err);
       }
     }
 
