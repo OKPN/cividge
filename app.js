@@ -10470,3 +10470,39 @@ downloadSharexBtn?.addEventListener("click", async () => {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(downloadUrl), 10000);
 });
+
+// 📱 スマホ表示時に設定アコーディオン群を Civitai パネル直下へ移動するレスポンシブ制御
+function setupResponsiveSettingsLayout() {
+  const settingsContainer = document.getElementById("cfSettingsContainer");
+  const desktopSlot = document.getElementById("desktopSettingsSlot");
+  const mobileSlot = document.getElementById("mobileSettingsSlot");
+  const mobileBody = mobileSlot ? mobileSlot.querySelector(".mobile-settings-body") : null;
+  if (!settingsContainer || !desktopSlot || !mobileBody) return;
+
+  const mql = window.matchMedia("(max-width: 960px)");
+  const updateLayout = (matches) => {
+    if (matches) {
+      if (!mobileBody.contains(settingsContainer)) {
+        mobileBody.appendChild(settingsContainer);
+      }
+    } else {
+      if (!desktopSlot.contains(settingsContainer)) {
+        desktopSlot.appendChild(settingsContainer);
+      }
+    }
+  };
+
+  try {
+    mql.addEventListener("change", (e) => updateLayout(e.matches));
+  } catch (_) {
+    mql.addListener((e) => updateLayout(e.matches));
+  }
+  updateLayout(mql.matches);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", setupResponsiveSettingsLayout);
+} else {
+  setupResponsiveSettingsLayout();
+}
+

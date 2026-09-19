@@ -208,7 +208,7 @@
             </div>
 
             <!-- 安全な Cloudflare R2 / Filebase 接続情報アコーディオン -->
-            <div style="padding: 0 18px 18px;">
+            <div id="desktopSettingsSlot" style="padding: 0 18px 18px;">
               <div id="cfSettingsContainer">
                 <div class="settings-content" style="padding: 14px 0 4px; display: flex; flex-direction: column; gap: 12px;">
 
@@ -667,6 +667,16 @@
           <div id="civitaiGalleryControls" style="display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
             <button class="ghost-button" id="civitaiLoadMoreBtn" type="button" style="display: none;" data-i18n="civitaiLoadMore">↓ 過去の投稿をさらに読み込む</button>
           </div>
+        </section>
+ 
+        <!-- 📱 スマホ表示時専用: Civitai パネル直下に移動する設定アコーディオン配置スロット -->
+        <section class="panel mobile-settings-panel" id="mobileSettingsSlot" style="margin-top: 20px; display: none;">
+          <div class="panel-heading">
+            <h2 style="font-size: 15px; margin: 0; display: flex; align-items: center; gap: 6px;">
+              <span>⚙️ 接続・詳細設定 (KV / R2 / Filebase)</span>
+            </h2>
+          </div>
+          <div class="mobile-settings-body" style="padding: 0 18px 18px;"></div>
         </section>
 
         <footer class="site-footer">

@@ -87,9 +87,20 @@ h2 {
   gap: 20px;
 }
 
+#mobileSettingsSlot {
+  display: none;
+}
+
 @media (max-width: 960px) {
   .tool-grid {
     grid-template-columns: 1fr;
+  }
+  #mobileSettingsSlot {
+    display: block !important;
+  }
+  #desktopSettingsSlot:empty {
+    display: none;
+    padding: 0 !important;
   }
 }
 
