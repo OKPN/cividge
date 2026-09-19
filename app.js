@@ -2884,10 +2884,6 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
     }
   });
 
-  document.querySelectorAll("[data-i18n-title]").forEach(elem => {
-    const key = elem.getAttribute("data-i18n-title");
-    if (dict[key]) elem.title = dict[key];
-  });
   deleteBtn?.addEventListener("click", () => {
     const current = getSelectedR2Domain(storageProvider);
     if (!current) return;
