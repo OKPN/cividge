@@ -1393,6 +1393,72 @@ function loadLedgerFromLocalStorage(provider) {
   }
 }
 
+// 🚀 [INV-CORE-005] Local-First 台帳キャッシュ管理ヘルパー群
+// 操作（追加・削除・リネーム・設定変更）時に手元の台帳キャッシュと localStorage を即時差分更新し、
+// サーバーへの再フェッチ通信（kv.list / ListObjects）を完全ゼロ化する。
+
+function recalculateStorageUsage(provider) {
+  const isFilebase = provider === "filebase";
+  const countedKeys = new Set();
+  let uniqueTotalSize = 0;
+  for (const c of (storageCachedContents || [])) {
+    if (!c.isFromS3) continue;
+    const eKey = isFilebase ? (c.cid || getStoredIpfsCid(c.Key) || c.s3Key || c.Key) : (c.s3Key || c.Key);
+    if (eKey && countedKeys.has(eKey)) continue;
+    if (eKey) countedKeys.add(eKey);
+    uniqueTotalSize += (c.Size || c.size || 0);
+  }
+  state.r2TotalSize = uniqueTotalSize;
+  updateStorageUsageUI();
+}
+
+function removeItemsFromLocalLedger(provider, keysToRemove) {
+  if (!provider) return;
+  const keyList = Array.isArray(keysToRemove) ? keysToRemove : [keysToRemove];
+  const keySet = new Set(keyList.filter(Boolean));
+  if (keySet.size === 0) return;
+
+  if (Array.isArray(storageCachedContents)) {
+    storageCachedContents = storageCachedContents.filter(item => {
+      const k1 = item.Key || item.name;
+      const k2 = item.rawKey;
+      const k3 = item.s3Key;
+      return !keySet.has(k1) && !keySet.has(k2) && !keySet.has(k3);
+    });
+  }
+
+  saveLedgerToLocalStorage(provider, storageCachedContents || []);
+  recalculateStorageUsage(provider);
+  renderCurrentStoragePage();
+}
+
+function addOrUpdateLocalLedgerItem(provider, item) {
+  if (!provider || !item) return;
+  const targetKey = item.rawKey || item.Key || item.name;
+  if (!targetKey) return;
+
+  if (!Array.isArray(storageCachedContents)) {
+    storageCachedContents = loadLedgerFromLocalStorage(provider) || [];
+  }
+
+  const existingIdx = storageCachedContents.findIndex(existing => {
+    const k1 = existing.Key || existing.name;
+    const k2 = existing.rawKey;
+    return k1 === targetKey || k2 === targetKey;
+  });
+
+  if (existingIdx >= 0) {
+    storageCachedContents[existingIdx] = { ...storageCachedContents[existingIdx], ...item };
+  } else {
+    storageCachedContents.unshift(item);
+  }
+
+  saveLedgerToLocalStorage(provider, storageCachedContents);
+  recalculateStorageUsage(provider);
+  renderCurrentStoragePage();
+}
+
+
 // 🪦 墓標回収の1日1回（24時間）低頻度ガード
 const TOMBSTONE_DRAIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 async function maybeDrainTombstonesDaily(s3, bucketName) {
@@ -6567,6 +6633,38 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
     renderUrlPalette();
 
+    // 🚀 [INV-CORE-005] Local-First 台帳オプティミスティック追加（手元キャッシュ即時反映）
+    const finalCid = isFilebase ? (ipfsCid || result.ipfsCid || null) : (result.contentCid || calculatedCid || null);
+    addOrUpdateLocalLedgerItem(targetProvider, {
+      storageProvider: targetProvider,
+      Key: result.name,
+      name: result.name,
+      rawKey: result.name,
+      s3Key: result.name,
+      Size: uploadBytes.length,
+      size: uploadBytes.length,
+      LastModified: new Date().toISOString(),
+      updated: new Date().toISOString(),
+      isFromS3: true,
+      cid: finalCid,
+      contentCid: finalCid,
+      password: password || null,
+      passwordHash: password ? "hash" : null,
+      expiresAt: expiresAt || null,
+      ttl: ttlSeconds || 0,
+      civitaiTemporary: Boolean(civitaiTemporary),
+      metadata: {
+        backend: targetProvider,
+        size: uploadBytes.length,
+        cid: isFilebase ? (finalCid || "") : "r2",
+        s3Key: result.name,
+        expiresAt: expiresAt || null,
+        ttl: ttlSeconds || 0,
+        allowedHost: baseDomain,
+        civitaiTemporary: Boolean(civitaiTemporary),
+      }
+    });
+
     return true;
   } catch (error) {
     result.error = error.message;
@@ -6618,7 +6716,9 @@ async function handleBatchUpload(targetProvider) {
     }
   } finally {
     setUiLock(false);
-    await fetchAndRenderR2Files();
+    // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳が既にオプティミスティック更新されているため、
+    // サーバーへの再フェッチ通信は不要。手元台帳から再描画するだけで完了！
+    renderCurrentStoragePage();
   }
 }
 
@@ -6844,7 +6944,7 @@ storageTabFilebase?.addEventListener("click", () => {
 
 reloadR2FilesButton?.addEventListener("click", () => {
   storageCurrentPage = 1;
-  fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers: true });
+  fetchAndRenderR2Files({ forceRefresh: true, cleanupExpiredCivitaiTransfers: true });
   const s3 = getS3Client(activeStorageTab);
   const bucketName = getBucketName(activeStorageTab);
   maybeDrainTombstonesDaily(s3, bucketName);
@@ -7238,7 +7338,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
   });
 }
 
-async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } = {}) {
+async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivitaiTransfers = false } = {}) {
   if (!r2FileList) return;
   const fetchGeneration = ++storageFetchGeneration;
   const requestedProvider = activeStorageTab;
@@ -7265,15 +7365,24 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     return;
   }
 
-  const isViewerMode = (!isStorageConfigured || !s3 || !bucketName) && hasKvAccess;
+  // 🚀 [INV-CORE-005] Local-First 原則:
+  // 明示的な強制更新（forceRefresh === true）でない場合、手元キャッシュがあればサーバー通信（KV/S3）を完全スキップ！
   if (!storageCachedContents || storageCachedContents.length === 0) {
     const localLedger = loadLedgerFromLocalStorage(requestedProvider);
     if (localLedger && localLedger.length > 0) {
       storageCachedContents = localLedger;
-      renderCurrentStoragePage();
-    } else {
-      r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
     }
+  }
+
+  if (!forceRefresh && storageCachedContents && storageCachedContents.length > 0) {
+    recalculateStorageUsage(requestedProvider);
+    renderCurrentStoragePage();
+    return;
+  }
+
+  const isViewerMode = (!isStorageConfigured || !s3 || !bucketName) && hasKvAccess;
+  if (!storageCachedContents || storageCachedContents.length === 0) {
+    r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
   }
 
   try {
@@ -8536,7 +8645,18 @@ r2FileList?.addEventListener("click", async (e) => {
         // 2. 以前の名前のリンクも維持（即404化させず、実体共通エイリアスとして永続両立）
         // ※ deleteKvCid(oldKey) は実行せず、古いURLを踏んだ人も引き続き閲覧可能にする
 
-        await fetchAndRenderR2Files();
+        // 🚀 [INV-CORE-005] Local-First: 手元台帳に新名前レコードを追加して即時描画
+        const existingItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === oldKey);
+        if (existingItem) {
+          addOrUpdateLocalLedgerItem(activeStorageTab, {
+            ...existingItem,
+            Key: targetNewKey,
+            rawKey: targetNewKey,
+            displayName: targetNewKey,
+          });
+        } else {
+          renderCurrentStoragePage();
+        }
       } catch (err) {
         console.error("Rename failed:", err);
         alert(`❌ リネームに失敗しました: ${err.message}`);
@@ -8631,19 +8751,17 @@ r2FileList?.addEventListener("click", async (e) => {
           ttl = Math.round((domExpiresAt - Date.now()) / 1000);
         }
 
-        try {
-          const kvFiles = await fetchKvFiles();
-          const currentKv = kvFiles.find(f => f.name === oldKey || f.name.endsWith(`:${oldKey}`));
-          if (currentKv && currentKv.metadata) {
-            unpinned = Boolean(currentKv.metadata.unpinned);
-            kuboStatus = currentKv.metadata.kuboStatus || null;
-            if (!expiresAt) {
-              ttl = currentKv.metadata.ttl || 0;
-              expiresAt = currentKv.metadata.expiresAt || null;
-            }
-            password = currentKv.metadata.password || "";
+        // 🚀 [INV-CORE-005] 手元台帳から既存アイテムのメタデータを取得（kv.list 呼び出しゼロ化）
+        const currentItem = (storageCachedContents || []).find(f => (f.rawKey || f.Key) === oldKey || f.Key === displayName);
+        if (currentItem) {
+          unpinned = Boolean(currentItem.unpinned || currentItem.metadata?.unpinned);
+          kuboStatus = currentItem.metadata?.kuboStatus || null;
+          if (!expiresAt) {
+            ttl = currentItem.ttl || currentItem.metadata?.ttl || 0;
+            expiresAt = currentItem.expiresAt || currentItem.metadata?.expiresAt || null;
           }
-        } catch (e) {}
+          password = currentItem.password || currentItem.metadata?.password || "";
+        }
 
         const resolvedCid = cid || getStoredIpfsCid(oldKey) || getStoredIpfsCid(displayName) || getStoredIpfsCid(s3Key) || "";
         const targetCid = isFilebase ? (resolvedCid || cid) : "r2";
@@ -8681,7 +8799,34 @@ r2FileList?.addEventListener("click", async (e) => {
         fetch(newUrl, { method: "HEAD", mode: "no-cors" }).catch(() => {});
 
         closeModal();
-        await fetchAndRenderR2Files();
+
+        // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳にエイリアスレコードを追加して即時描画
+        addOrUpdateLocalLedgerItem(activeStorageTab, {
+          storageProvider: targetBackend,
+          Key: displayName,
+          rawKey: newDomainKey,
+          s3Key: s3Key || displayName,
+          Size: size || 0,
+          LastModified: new Date().toISOString(),
+          isFromS3: currentItem?.isFromS3 ?? true,
+          cid: targetBackend === "r2" ? (resolvedCid || null) : targetCid,
+          contentCid: resolvedCid || null,
+          password: password || null,
+          passwordHash: password ? "hash" : null,
+          expiresAt: expiresAt || null,
+          ttl: ttl || 0,
+          civitaiTemporary: Boolean(currentItem?.civitaiTemporary),
+          metadata: {
+            backend: targetBackend,
+            allowedHost: targetDomainUrl,
+            s3Key: s3Key || displayName,
+            cid: targetCid,
+            unpinned,
+            kuboStatus,
+            expiresAt,
+            ttl,
+          }
+        });
       } catch (err) {
         console.error("Failed to add domain alias:", err);
         alert(`❌ ドメイン追加に失敗しました: ${err.message}`);
@@ -9033,7 +9178,16 @@ r2FileList?.addEventListener("click", async (e) => {
         );
       }
 
-      await fetchAndRenderR2Files();
+      // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳の該当アイテムを更新し即座に再描画
+      const item = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      if (item) {
+        addOrUpdateLocalLedgerItem(activeStorageTab, {
+          ...item,
+          isFromS3: false,
+        });
+      } else {
+        renderCurrentStoragePage();
+      }
     } catch (err) {
       await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
     }
@@ -9068,7 +9222,16 @@ r2FileList?.addEventListener("click", async (e) => {
       deleteR2Hash(s3Key);
       deleteR2Hash(key);
 
-      await fetchAndRenderR2Files();
+      // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳の該当アイテムを更新し即座に再描画
+      const item = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      if (item) {
+        addOrUpdateLocalLedgerItem(activeStorageTab, {
+          ...item,
+          isFromS3: false,
+        });
+      } else {
+        renderCurrentStoragePage();
+      }
       await showCustomAlert(
         isEn ? "✅ R2 object deleted successfully. Media will now be served from your home Kubo node." : "✅ R2 実体を削除し、バケット容量を解放しました！\n今後は自宅 Kubo ノードから安全に配信されます。",
         "🎉 容量解放完了"
@@ -9149,7 +9312,9 @@ r2FileList?.addEventListener("click", async (e) => {
         }
 
 
-        await fetchAndRenderR2Files();
+        // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳から差分削除し即座に再描画（サーバーへの全件フェッチ完全撤去）
+        const deletedKeys = [key, ...(siblingLinks.length > 0 && deleteOriginAlso ? siblingLinks : [])];
+        removeItemsFromLocalLedger(activeStorageTab, deletedKeys);
       } catch (err) {
         await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
       }
@@ -9211,7 +9376,9 @@ r2FileList?.addEventListener("click", async (e) => {
         await safeDeleteS3Objects(s3, bucketName, keysToDelete);
         keysToDelete.forEach(deleteR2Hash);
       }
-      await fetchAndRenderR2Files();
+      // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳から差分削除し即座に再描画（サーバーへの全件フェッチ完全撤去）
+      const deletedKeys = [key, ...(siblingLinks.length > 0 && deleteOriginAlso ? siblingLinks : [])];
+      removeItemsFromLocalLedger(activeStorageTab, deletedKeys);
     } catch (err) {
       await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
     }
@@ -9250,21 +9417,33 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
   const keys = checkboxes.map(cb => cb.dataset.key);
 
   try {
+    const allCached = storageCachedContents || [];
+    const remainingItems = allCached.filter(el => !keys.includes(el.rawKey || el.Key));
+
     if (isFilebase) {
-      // 選択されたキーの KV マッピングを削除
+      // 🚀 [INV-CORE-005] 残るアイテムの CID を手元台帳で全件走査（サーバーKVリスト枠消費ゼロ！）
+      const remainingCids = new Set();
+      for (const rem of remainingItems) {
+        const c = rem.cid || rem.contentCid || rem.metadata?.cid || rem.metadata?.c || getStoredIpfsCid(rem.Key) || getStoredIpfsCid(rem.rawKey);
+        if (c) remainingCids.add(c);
+      }
+
+      // 選択されたキーの KV マッピングを削除（他リンクと共有されていなければ墓標発行）
       for (const key of keys) {
-        await deleteKvCid(key);
+        const item = allCached.find(i => (i.rawKey || i.Key) === key);
+        const itemCid = item?.cid || item?.contentCid || item?.metadata?.cid || item?.metadata?.c || getStoredIpfsCid(key);
+        const isCidShared = itemCid ? remainingCids.has(itemCid) : false;
+        await deleteKvCid(key, { makeTombstone: !isCidShared });
       }
 
       // 未選択の残るアイテムの中に、同じ S3実体 を指している別名リンクがあるかチェック
-      const allItems = Array.from(r2FileList.querySelectorAll(".result-item"));
-      const remainingItems = allItems.filter(el => !keys.includes(el.dataset.key));
-      const remainingS3Keys = new Set(remainingItems.map(el => el.dataset.s3key).filter(Boolean));
+      const remainingS3Keys = new Set(remainingItems.map(el => el.s3Key || el.Key).filter(Boolean));
 
       // 選択された各アイテムに対応する S3Key のうち、残るリンクから参照されていない実体のみを S3 から削除
       const s3KeysToDelete = new Set();
       for (const cb of checkboxes) {
-        const itemS3Key = cb.closest(".result-item")?.dataset?.s3key || cb.dataset.key;
+        const item = allCached.find(i => (i.rawKey || i.Key) === cb.dataset.key);
+        const itemS3Key = item?.s3Key || cb.dataset.s3key || cb.dataset.key;
         if (itemS3Key && !remainingS3Keys.has(itemS3Key)) {
           s3KeysToDelete.add(itemS3Key);
         }
@@ -9277,20 +9456,19 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
       }
 
     } else {
-      // 選択されたキーの KV マッピングを削除（エイリアスレコードの場合）
+      // ⚡ R2 モード（CID墓標は不要）
       for (const key of keys) {
-        await deleteKvCid(key);
+        await deleteKvCid(key, { makeTombstone: false });
       }
 
       // 未選択の残るアイテムの中に、同じ S3実体 を指している別名リンクがあるかチェック
-      const allItems = Array.from(r2FileList.querySelectorAll(".result-item"));
-      const remainingItems = allItems.filter(el => !keys.includes(el.dataset.key));
-      const remainingS3Keys = new Set(remainingItems.map(el => el.dataset.s3key).filter(Boolean));
+      const remainingS3Keys = new Set(remainingItems.map(el => el.s3Key || el.Key).filter(Boolean));
 
       // 選択された各アイテムに対応する S3Key のうち、残るリンクから参照されていない実体のみを R2 から削除
       const s3KeysToDelete = new Set();
       for (const cb of checkboxes) {
-        const itemS3Key = cb.closest(".result-item")?.dataset?.s3key || cb.dataset.key;
+        const item = allCached.find(i => (i.rawKey || i.Key) === cb.dataset.key);
+        const itemS3Key = item?.s3Key || cb.dataset.s3key || cb.dataset.key;
         if (itemS3Key && !remainingS3Keys.has(itemS3Key)) {
           s3KeysToDelete.add(itemS3Key);
         }
@@ -9303,7 +9481,12 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
         s3KeysToDelete.forEach(deleteR2Hash);
       }
     }
-    await fetchAndRenderR2Files();
+
+    // 🚀 [INV-CORE-005] Local-First 原則:
+    // サーバーへの再フェッチ（ListObjects / kv.list）を完全撤去！
+    // 手元の台帳キャッシュと localStorage から即座に差分削除して画面を再描画。
+    removeItemsFromLocalLedger(activeStorageTab, keys);
+    updateSelectedR2ActionButtonsState();
   } catch (err) {
     await showCustomAlert(`一括削除に失敗しました: ${err.message}`, "❌ エラー");
   }
