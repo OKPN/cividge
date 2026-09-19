@@ -3,5 +3,6 @@
 # Worker/domain (the domain that resolves Cividge aliases and then fetches IPFS).
 # The internal `r/` path marker survives a query-stripping rule on the
 # backend domain. Configure that backend rule to discard arbitrary queries.
-# Example: /* https://ipfs-relay.example.com/r/:splat 307
-/* __FILEBASE_COMPATIBILITY_ORIGIN__/r/:splat 307
+# Example: /* https://relay.example.com/r/:splat 307
+/* https://relay.k7m.f5.si/r/:splat 307
+
