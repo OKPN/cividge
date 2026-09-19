@@ -566,7 +566,10 @@
             </div>
             <div class="storage-usage" id="storageUsage" style="display: flex; flex-direction: column; gap: 4px; flex: 1; margin: 0 16px;">
               <div class="storage-info-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
-                <span id="storageUsageText" style="font-weight: 500;">使用量: 0 GB / 5 GB (0%)</span>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span id="storageUsageText" style="font-weight: 500;">使用量: 0 GB / 5 GB (0%)</span>
+                  <span id="r2BillingWarningBadge" data-i18n="r2BillingWarningBadge" data-i18n-title="r2BillingWarningTooltip" style="display: inline-flex; align-items: center; gap: 3px; cursor: help; font-size: 11px; font-weight: bold; padding: 1px 6px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);" title="⚠️ R2は保存容量がアカウント内総量で10GBを超えると自動従量課金が始まります（上限キャップ機能なし）。Cividge以外の用途も含めた総量で判定されるため、課金条件を自身でも必ずご確認ください。">⚠️ 10GB課金注意</span>
+                </div>
                 <div class="storage-limit-control" style="display: flex; align-items: center; gap: 6px;">
                   <label for="storageLimitInput" style="font-size: 12px; color: var(--muted);" data-i18n="limitLabel">上限:</label>
                   <div style="display: inline-flex; align-items: center; gap: 4px;">

@@ -79,6 +79,8 @@ const i18nDict = {
     btnConvertUpload: "🟩 アップロード",
     btnUploadR2: "⚡ R2へ保存",
     btnUploadFilebase: "🪐 Filebaseへ保存",
+    r2BillingWarningBadge: "⚠️ 10GB課金注意",
+    r2BillingWarningTooltip: "⚠️ R2は保存容量がアカウント内総量で10GBを超えると自動従量課金が始まります（上限キャップ機能なし）。Cividge以外の用途も含めた総量で判定されるため、課金条件を自身でも必ずご確認ください。",
     cfTitle: "☁️ クラウドストレージ接続設定",
     kvAccordionTitle: "📚 KV 配信・管理 Worker",
     kvAccordionDesc: "R2 / Filebase 共通の短縮 URL、別名リンク、有効期限、パスワード保護を管理する台帳です。",
@@ -314,6 +316,8 @@ const i18nDict = {
     btnConvertUpload: "🟩 Upload",
     btnUploadR2: "⚡ Save to R2",
     btnUploadFilebase: "🪐 Save to Filebase",
+    r2BillingWarningBadge: "⚠️ 10GB Billing Warning",
+    r2BillingWarningTooltip: "⚠️ R2 begins automatic pay-as-you-go billing once account storage exceeds 10GB (no hard cap). It is calculated based on your total account usage, so please verify billing terms yourself.",
     cfTitle: "☁️ Cloud Storage Settings",
     kvAccordionTitle: "📚 KV Delivery & Management Worker",
     kvAccordionDesc: "The shared registry for R2 and Filebase: short URLs, aliases, expiry, and password protection.",
@@ -726,6 +730,13 @@ function applyLanguage(lang) {
     const key = elem.getAttribute("data-i18n-placeholder");
     if (dict[key]) {
       elem.placeholder = dict[key];
+    }
+  });
+
+  document.querySelectorAll("[data-i18n-title]").forEach(elem => {
+    const key = elem.getAttribute("data-i18n-title");
+    if (dict[key]) {
+      elem.title = dict[key];
     }
   });
 
@@ -3209,12 +3220,12 @@ function getActiveStorageLimitGB() {
   }
   const savedGb = localStorage.getItem("r2StorageLimitGB");
   if (savedGb) return Math.max(1, parseInt(savedGb, 10));
-  const savedMb = Number(localStorage.getItem("r2StorageLimit") || localStorage.getItem("storageLimit") || "10000");
+  const savedMb = Number(localStorage.getItem("r2StorageLimit") || localStorage.getItem("storageLimit") || "5000");
   return Math.max(1, Math.round(savedMb / 1024));
 }
 
 function setActiveStorageLimitGB(val) {
-  const gb = Math.max(1, parseInt(val, 10) || (activeStorageTab === "filebase" ? 5 : 10));
+  const gb = Math.max(1, parseInt(val, 10) || 5);
   const mb = gb * 1024;
   if (activeStorageTab === "filebase") {
     localStorage.setItem("filebaseStorageLimitGB", String(gb));
@@ -5421,9 +5432,9 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
 // ⚡ R2 FIFO: R2 側は IPFS のような「URLを残したアンピン」ができないため、
 // 上限到達時に古い実体と対応する台帳リンクをまとめて削除する。
 async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
-  if (localStorage.getItem("r2AutoFifo") !== "true" || !s3 || !bucketName) return;
+  if (localStorage.getItem("r2AutoFifo") === "false" || !s3 || !bucketName) return;
 
-  const limitMb = Number(localStorage.getItem("r2StorageLimit") || localStorage.getItem("storageLimit") || "10000");
+  const limitMb = Number(localStorage.getItem("r2StorageLimit") || localStorage.getItem("storageLimit") || "5000");
   const limitBytes = limitMb * 1024 * 1024;
   try {
     const contents = [];
@@ -5956,16 +5967,20 @@ function updateStorageTabsUi() {
 
     }
   }
+  const r2WarningBadge = document.querySelector("#r2BillingWarningBadge");
+  if (r2WarningBadge) {
+    r2WarningBadge.style.display = activeStorageTab === "filebase" ? "none" : "inline-flex";
+  }
   syncAutoFifoControl();
 }
 
 function syncAutoFifoControl() {
   if (!autoFifoCheckbox || !autoFifoLabel) return;
   const isFilebase = activeStorageTab === "filebase";
-  // 既存の Filebase FIFO は互換のため既定ON、R2 は明示的にONにするまでOFF。
+  // Filebase/R2 共に互換と安全マージンのため既定ON（明示的に OFF にされた場合のみ false）。
   const enabled = isFilebase
     ? localStorage.getItem("autoFifo") !== "false"
-    : localStorage.getItem("r2AutoFifo") === "true";
+    : localStorage.getItem("r2AutoFifo") !== "false";
   autoFifoCheckbox.checked = enabled;
   const isEnglish = getAppLanguage() === "en";
   const labelText = isFilebase
