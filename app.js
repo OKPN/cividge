@@ -31,6 +31,7 @@ async function ensureJxl() {
 }
 import {
   S3Client,
+  GetObjectCommand,
   PutObjectCommand,
   ListObjectsV2Command,
   DeleteObjectCommand,
