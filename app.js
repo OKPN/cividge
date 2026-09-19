@@ -7564,40 +7564,23 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       }
     }
 
-    // ⏳ 期限切れアイテムの自動回収（最後のリンクなら S3 実体も削除し、一覧から非表示化）
+    // ⏳ 期限切れアイテムの一覧非表示化
+    // [INV-CORE-001] [INV-CORE-004] 画面表示・閲覧時に裏で勝手に cleanupExpiredStorageItems() を
+    // 発火させて deleteKvCid() 連打（書き込み枠浪費）を行う副作用を完全撤去。
+    // 画面上での非表示フィルタリングのみを行い、削除は配信時の単発オンデマンド（cleanupExpiredAlias）に委ねる。
     if (contents.length > 0) {
       const nowMs = Date.now();
-      const expiredItems = contents.filter(item => item.expiresAt && nowMs > Number(item.expiresAt));
-      if (expiredItems.length > 0) {
-        console.log("⏳ 期限切れファイルを検知・回収開始:", expiredItems.map(i => i.Key));
-        cleanupExpiredStorageItems(expiredItems, contents, s3, bucketName, requestedProvider);
-        const expiredKeySet = new Set(expiredItems.map(i => i.rawKey || i.Key));
+      const expiredKeySet = new Set(
+        contents.filter(item => item.expiresAt && nowMs > Number(item.expiresAt)).map(i => i.rawKey || i.Key)
+      );
+      if (expiredKeySet.size > 0) {
         contents = contents.filter(i => !expiredKeySet.has(i.rawKey || i.Key));
       }
     }
 
-    // Filebase FIFO 自動容量解放チェック (一覧更新時に現在容量が上限を超えている場合)
-    const isAutoFifo = localStorage.getItem("autoFifo") !== "false";
-    if (isFilebase && isAutoFifo && contents.length > 0) {
-      const limitMb = Number(localStorage.getItem("filebaseStorageLimit") || "5000");
-      const limitBytes = limitMb * 1024 * 1024;
-      const countedFifoKeys = new Set();
-      let currentOriginBytes = 0;
-      for (const c of contents) {
-        if (!c.isFromS3) continue;
-        const eKey = isFilebase ? (c.cid || getStoredIpfsCid(c.Key) || c.s3Key || c.Key) : (c.s3Key || c.Key);
-        if (eKey && countedFifoKeys.has(eKey)) continue;
-        if (eKey) countedFifoKeys.add(eKey);
-        currentOriginBytes += (c.Size || 0);
-      }
-      if (currentOriginBytes > limitBytes) {
-        try {
-          await ensureStorageCapacityFilebase(s3, bucketName, 0);
-        } catch (fifoErr) {
-          console.debug("Passive FIFO check skipped:", fifoErr);
-        }
-      }
-    }
+    // [INV-CORE-001] [INV-CORE-004] 一覧更新時の Passive FIFO 自動発火（ensureStorageCapacityFilebase）を完全撤去。
+    // 一覧画面を開いただけで勝手にアンピン＆KV書き込み連打が走る副作用の密輸を根絶。
+    // FIFO による容量解放はアップロード時（uploadFiles）の容量不足判定時のみ実行する。
 
     // 動画の OGP 用ポスターは派生データであり、通常ファイルとして操作させない。
     // 使用量計算と FIFO の対象には残すが、一覧・URL パレットからは隠す。
