@@ -561,11 +561,15 @@ const r2DomainAddForm = document.querySelector("#r2DomainAddForm");
 const r2DomainNewInput = document.querySelector("#r2DomainNewInput");
 const r2DomainNewSaveBtn = document.querySelector("#r2DomainNewSaveBtn");
 const r2DomainNewCancelBtn = document.querySelector("#r2DomainNewCancelBtn");
+const r2DomainTestBtn = document.querySelector("#r2DomainTestBtn");
+const r2DomainCompatBadge = document.querySelector("#r2DomainCompatBadge");
 const r2PublicDomain = document.querySelector("#r2PublicDomain"); // 後方互換
 const r2DevDomain = document.querySelector("#r2DevDomain"); // 後方互換
 const filebaseDomainSelect = document.querySelector("#filebaseDomainSelect");
 const filebaseDomainAddBtn = document.querySelector("#filebaseDomainAddBtn");
 const filebaseDomainDeleteBtn = document.querySelector("#filebaseDomainDeleteBtn");
+const filebaseDomainTestBtn = document.querySelector("#filebaseDomainTestBtn");
+const filebaseDomainCompatBadge = document.querySelector("#filebaseDomainCompatBadge");
 const filebaseDomainAddForm = document.querySelector("#filebaseDomainAddForm");
 const filebaseDomainNewInput = document.querySelector("#filebaseDomainNewInput");
 const filebaseDomainNewSaveBtn = document.querySelector("#filebaseDomainNewSaveBtn");
@@ -1771,6 +1775,8 @@ function renderR2DomainSelect() {
   if (filebaseDomainDeleteBtn) filebaseDomainDeleteBtn.disabled = filebaseDomains.length === 0;
   updateR2CompatibilityUi();
   updateFilebaseCompatibilityUi();
+  updateDomainCompatBadgeUi("r2");
+  updateDomainCompatBadgeUi("filebase");
 }
 
 function updateR2CompatibilityUi() {
@@ -2963,6 +2969,7 @@ const handleDomainSelectionChange = (newDomain, provider = activeStorageTab) => 
   if (storageProvider === "r2") updateR2CompatibilityUi();
   if (storageProvider === "filebase") updateFilebaseCompatibilityUi();
   updateR2Status();
+  updateDomainCompatBadgeUi(storageProvider);
   render();
   if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
 };
@@ -2992,7 +2999,116 @@ function showDomainAddForm(form, input) {
   }
 }
 
-function handleAddNewDomain(provider, input, form) {
+// --- 🌐 配信ドメイン互換レイヤ検証＆排他ガードユーティリティ [INV-FRONT-006] ---
+const DOMAIN_COMPAT_STORAGE_KEY = "cividge_domain_compat_flags";
+
+function getDomainCompatFlags() {
+  try {
+    return JSON.parse(localStorage.getItem(DOMAIN_COMPAT_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function setDomainCompatFlag(domainUrl, hasCompatLayer) {
+  if (!domainUrl) return;
+  const flags = getDomainCompatFlags();
+  flags[domainUrl] = {
+    hasCompatLayer: Boolean(hasCompatLayer),
+    lastTested: Date.now(),
+  };
+  localStorage.setItem(DOMAIN_COMPAT_STORAGE_KEY, JSON.stringify(flags));
+}
+
+/**
+ * 配信ドメインが Cividge 互換レイヤ（Worker）に接続されているかを検証
+ * Worker の組み込み看板画像 /404-character.webp への HEAD プローブ
+ */
+async function verifyDomainCompatLayer(domainUrl) {
+  if (!domainUrl) return false;
+  const cleanUrl = domainUrl.replace(/\/$/, "");
+  const probeUrl = `${cleanUrl}/404-character.webp`;
+
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 4000); // 4秒タイムアウト
+
+  try {
+    const res = await fetch(probeUrl, {
+      method: "HEAD",
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    clearTimeout(tid);
+
+    const isWorker = res.ok && (res.headers.get("content-type") || "").includes("webp");
+    setDomainCompatFlag(domainUrl, isWorker);
+    return isWorker;
+  } catch (e) {
+    clearTimeout(tid);
+    setDomainCompatFlag(domainUrl, false);
+    return false;
+  }
+}
+
+/**
+ * ドメインのステータスバッジを描画
+ */
+function updateDomainCompatBadgeUi(provider) {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  const isFilebase = storageProvider === "filebase";
+  const badgeElem = isFilebase ? filebaseDomainCompatBadge : r2DomainCompatBadge;
+  if (!badgeElem) return;
+
+  const currentDomain = getSelectedR2Domain(storageProvider);
+  if (!currentDomain) {
+    badgeElem.style.display = "none";
+    return;
+  }
+
+  const flags = getDomainCompatFlags();
+  const info = flags[currentDomain];
+
+  badgeElem.style.display = "inline-flex";
+  if (info && info.hasCompatLayer) {
+    badgeElem.textContent = "🟢 互換レイヤ接続済（両ストレージ併用可能）";
+    badgeElem.style.background = "rgba(34, 197, 94, 0.15)";
+    badgeElem.style.color = "#22c55e";
+    badgeElem.style.border = "1px solid rgba(34, 197, 94, 0.4)";
+  } else {
+    badgeElem.textContent = "⚠️ 直結・未検証モード（ストレージ排他設定）";
+    badgeElem.style.background = "rgba(245, 158, 11, 0.15)";
+    badgeElem.style.color = "#f59e0b";
+    badgeElem.style.border = "1px solid rgba(245, 158, 11, 0.4)";
+  }
+}
+
+function bindDomainTestButton(provider, testBtn) {
+  const storageProvider = normalizeDeliveryProvider(provider);
+  testBtn?.addEventListener("click", async () => {
+    const current = getSelectedR2Domain(storageProvider);
+    if (!current) {
+      await showCustomAlert("テスト対象のドメインが選択されていません。", "ℹ️ ドメイン検証");
+      return;
+    }
+    const origText = testBtn.textContent;
+    testBtn.disabled = true;
+    testBtn.textContent = "検証中...";
+    try {
+      const isCompat = await verifyDomainCompatLayer(current);
+      updateDomainCompatBadgeUi(storageProvider);
+      if (isCompat) {
+        await showCustomAlert(`🟢 検証成功！\nドメイン「${current}」は Cividge 互換レイヤ（Worker）に正常に接続されています。\nR2 と Filebase の両ストレージで安全に併用可能です。`, "✅ 接続合格");
+      } else {
+        await showCustomAlert(`⚠️ 直結・未接続モード\nドメイン「${current}」から Cividge Worker の応答が確認できませんでした。\n\n・直結モードとして単一ストレージでのみ利用可能です（両ストレージでの同一ドメイン登録はブロックされます）。\n・もし Worker を設定済みの場合は、Cloudflare の Custom Domain や DNS 反映をお待ちください。`, "⚠️ 検証結果");
+      }
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = origText;
+    }
+  });
+}
+
+async function handleAddNewDomain(provider, input, form) {
   const storageProvider = normalizeDeliveryProvider(provider);
   const raw = input?.value?.trim() || "";
   if (!raw) return;
@@ -3001,6 +3117,46 @@ function handleAddNewDomain(provider, input, form) {
   if (!/^https?:\/\//i.test(formatted)) {
     formatted = "https://" + formatted;
   }
+  const cleanHost = formatted.replace(/^https?:\/\//, "").split("/")[0].split(":")[0].toLowerCase();
+
+  // 🛡️ ロック1: 【宗派替え事故防止】他方ストレージのファイルが台帳に残っていないかチェック
+  const otherProvider = storageProvider === "r2" ? "filebase" : "r2";
+  try {
+    const kvFiles = await fetchKvFiles();
+    const foreignFiles = kvFiles.filter(f => {
+      const key = (f.name || "").toLowerCase();
+      if (!key.startsWith(`${cleanHost}:`)) return false;
+      const b = f.metadata?.backend || f.metadata?.b;
+      return b === otherProvider || (otherProvider === "r2" ? f.metadata?.cid === "r2" : f.metadata?.cid !== "r2");
+    });
+    if (foreignFiles.length > 0) {
+      await showCustomAlert(
+        `🚫 登録拒否: このドメイン（${cleanHost}）には、過去に ${otherProvider.toUpperCase()} で登録されたファイルがまだ ${foreignFiles.length} 件台帳に残っています。\n\nURLの衝突やすり替わり事故を防ぐため、該当ファイルを全削除しない限り、${storageProvider.toUpperCase()} で再利用することはできません。`,
+        "⚠️ ドメイン宗派替え防止ロック"
+      );
+      return;
+    }
+  } catch (e) {
+    console.warn("KV check error during domain add:", e);
+  }
+
+  // 🛡️ ロック2: 【ストレージ排他ガード】他方ストレージにすでに同じドメインがある場合、互換レイヤ検証に合格必須
+  const otherDomainList = getR2DomainList(otherProvider).map(d => d.replace(/^https?:\/\//, "").split("/")[0].split(":")[0].toLowerCase());
+  if (otherDomainList.includes(cleanHost)) {
+    const isCompat = await verifyDomainCompatLayer(formatted);
+    if (!isCompat) {
+      await showCustomAlert(
+        `🚫 このドメイン（${cleanHost}）は互換レイヤの接続テストに合格していません。\n\nファイルの上書き消滅や衝突事故を防ぐため、R2 と Filebase の両方に同一の直結ドメインを登録することはできません。\nWorker にカスタムドメインを設定して [テスト] に合格するか、別々のドメインを指定してください。`,
+        "⚠️ ストレージ排他ガード"
+      );
+      return;
+    }
+  }
+
+  // 自動接続テスト実行（非同期）
+  verifyDomainCompatLayer(formatted).then(() => {
+    updateDomainCompatBadgeUi(storageProvider);
+  });
 
   const list = getR2DomainList(storageProvider);
   if (!list.includes(formatted)) {
@@ -3010,6 +3166,7 @@ function handleAddNewDomain(provider, input, form) {
   setSelectedR2Domain(formatted, storageProvider);
   renderR2DomainSelect();
   updateR2Status();
+  updateDomainCompatBadgeUi(storageProvider);
   render();
   if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
   if (form) form.style.display = "none";
@@ -3029,15 +3186,33 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
     }
   });
 
-  deleteBtn?.addEventListener("click", () => {
+  deleteBtn?.addEventListener("click", async () => {
     const current = getSelectedR2Domain(storageProvider);
     if (!current) return;
+    const cleanHost = current.replace(/^https?:\/\//, "").split("/")[0].split(":")[0].toLowerCase();
+
+    // 🛡️ ロック2: 【残存ファイル消し忘れ防止】このドメインに紐づくファイルが台帳に残っていないかチェック
+    try {
+      const kvFiles = await fetchKvFiles();
+      const activeFiles = kvFiles.filter(f => (f.name || "").toLowerCase().startsWith(`${cleanHost}:`));
+      if (activeFiles.length > 0) {
+        await showCustomAlert(
+          `⚠️ このドメイン（${cleanHost}）で配信中のファイルがまだ ${activeFiles.length} 件存在します。\n\nドメイン設定を削除すると、これらはアクセス不能（404）になります。\nドメインを削除する前に、該当ファイルを削除するか別ドメインへ移してください。`,
+          "⚠️ 配信中ファイル保護ロック"
+        );
+        return;
+      }
+    } catch (e) {
+      console.warn("KV check error during domain delete:", e);
+    }
+
     if (!confirm(`選択中の${label}配信ドメイン「${current}」を削除しますか？`)) return;
     const nextList = getR2DomainList(storageProvider).filter(d => d !== current);
     saveR2DomainList(nextList, storageProvider);
     setSelectedR2Domain(nextList[0] || "", storageProvider);
     renderR2DomainSelect();
     updateR2Status();
+    updateDomainCompatBadgeUi(storageProvider);
     render();
     if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) fetchAndRenderR2Files();
   });
@@ -3045,6 +3220,8 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
 
 bindDomainManager("r2", r2DomainSelect, r2DomainAddBtn, r2DomainDeleteBtn, r2DomainAddForm, r2DomainNewInput, r2DomainNewSaveBtn, r2DomainNewCancelBtn, "R2 ");
 bindDomainManager("filebase", filebaseDomainSelect, filebaseDomainAddBtn, filebaseDomainDeleteBtn, filebaseDomainAddForm, filebaseDomainNewInput, filebaseDomainNewSaveBtn, filebaseDomainNewCancelBtn, "Filebase ");
+bindDomainTestButton("r2", r2DomainTestBtn);
+bindDomainTestButton("filebase", filebaseDomainTestBtn);
 
 cfSaveButton?.addEventListener("click", () => {
   saveR2SettingsAuto();
