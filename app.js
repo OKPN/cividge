@@ -1267,8 +1267,12 @@ async function healKuboPinnedKvRecords(itemsToHeal) {
 }
 
 // 🪦 墓標（Unpin予約キュー）の回収処理
+let lastKuboDrainTime = 0;
 async function drainKuboTombstones() {
   if (!hasAdminAccess()) return; // KV台帳連携がない場合は墓標キューの回収を行わない
+  const now = Date.now();
+  if (now - lastKuboDrainTime < 60000) return; // 少なくとも60秒に1回に制限
+  lastKuboDrainTime = now;
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
 
@@ -1303,8 +1307,12 @@ async function drainKuboTombstones() {
 }
 
 // 🪦 S3実体削除用の墓標（Tombstone）回収処理
+let lastS3DrainTime = 0;
 async function drainS3Tombstones(s3, bucketName) {
   if (!hasAdminAccess() || !s3 || !bucketName) return;
+  const now = Date.now();
+  if (now - lastS3DrainTime < 60000) return; // 少なくとも60秒に1回に制限
+  lastS3DrainTime = now;
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
 
@@ -2933,9 +2941,16 @@ let r2AutoFetchTimer = null;
 function saveR2SettingsAuto() {
   s3ClientR2 = null;
   s3ClientFilebase = null;
-  const saveOrRemove = (key, value) => {
-    if (value) localStorage.setItem(key, value);
-    else localStorage.removeItem(key);
+
+  // 🛡️ 入力欄を操作中（フォーカス中）の消去のみ許可し、触っていない別アコーディオンの既存設定を誤削除しない
+  const safeSaveField = (inputEl, key) => {
+    if (!inputEl) return;
+    const value = inputEl.value.trim();
+    if (value) {
+      localStorage.setItem(key, value);
+    } else if (document.activeElement === inputEl) {
+      localStorage.removeItem(key);
+    }
   };
 
   let rawAccount = r2AccountId?.value?.trim() || "";
@@ -2948,30 +2963,21 @@ function saveR2SettingsAuto() {
     }
   }
 
-  const accountId = rawAccount;
-  const bucketName = r2BucketName?.value?.trim() || "";
-  const accessKeyId = r2AccessKeyId?.value?.trim() || "";
-  const secretAccessKey = r2SecretAccessKey?.value?.trim() || "";
+  safeSaveField(r2AccountId, "r2AccountId");
+  safeSaveField(r2BucketName, "r2BucketName");
+  safeSaveField(r2AccessKeyId, "r2AccessKeyId");
+  safeSaveField(r2SecretAccessKey, "r2SecretAccessKey");
 
-  // 入力を消した場合も以前の認証情報を残さない。表示上は未設定なのに
-  // 背景で古いR2バケットを読み続ける状態を防ぐ。
-  saveOrRemove("r2AccountId", accountId);
-  saveOrRemove("r2BucketName", bucketName);
-  saveOrRemove("r2AccessKeyId", accessKeyId);
-  saveOrRemove("r2SecretAccessKey", secretAccessKey);
-
-  const fbBucket = filebaseBucket?.value?.trim() || "";
-  const fbKeyId = filebaseApiKey?.value?.trim() || "";
-  const fbSecret = filebaseSecretKey?.value?.trim() || "";
-
-  saveOrRemove("filebaseBucket", fbBucket);
-  saveOrRemove("filebaseApiKey", fbKeyId);
-  saveOrRemove("filebaseSecretKey", fbSecret);
+  safeSaveField(filebaseBucket, "filebaseBucket");
+  safeSaveField(filebaseApiKey, "filebaseApiKey");
+  safeSaveField(filebaseSecretKey, "filebaseSecretKey");
 
   const kUrl = kuboRpcUrl?.value?.trim() || "";
   if (kUrl) {
     localStorage.setItem("kuboRpcUrl", kUrl);
     if (kuboWebUiLink) kuboWebUiLink.href = `${kUrl.replace(/\/$/, "")}/webui`;
+  } else if (document.activeElement === kuboRpcUrl) {
+    localStorage.removeItem("kuboRpcUrl");
   }
   if (kuboAutoPinR2Check) {
     localStorage.setItem("kuboAutoPinR2", kuboAutoPinR2Check.checked ? "true" : "false");
@@ -2984,26 +2990,15 @@ function saveR2SettingsAuto() {
   }
 
   // 🛡️ KV台帳Worker URL & APIトークン自動保存
-  const customKv = kvWorkerUrl?.value?.trim() || "";
-  if (customKv) {
-    localStorage.setItem("kvWorkerUrl", customKv);
-  } else {
-    localStorage.removeItem("kvWorkerUrl");
-  }
-
-  const token = adminApiToken?.value?.trim() || "";
-  if (token) {
-    localStorage.setItem("adminApiToken", token);
-  } else {
-    localStorage.removeItem("adminApiToken");
-  }
+  safeSaveField(kvWorkerUrl, "kvWorkerUrl");
+  safeSaveField(adminApiToken, "adminApiToken");
   updateAdminTokenStatusUI();
 
   const isConfigured = updateR2Status();
   render();
 
   if (r2AutoFetchTimer) clearTimeout(r2AutoFetchTimer);
-  if (isConfigured) {
+  if (isConfigured || hasAdminAccess()) {
     r2AutoFetchTimer = setTimeout(() => {
       fetchAndRenderR2Files();
     }, 400);
@@ -3048,10 +3043,12 @@ function updateAdminTokenStatusUI() {
   const customKv = (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim();
   const token = getAdminApiToken();
 
-  if (customKv) {
-    adminTokenStatus.innerHTML = '<span style="color: #38bdf8; font-weight: bold;">🪐 独自KV Worker接続中</span>';
-  } else if (token) {
-    adminTokenStatus.innerHTML = '<span style="color: #4caf50; font-weight: bold;">🟢 自ホストKV連携中</span>';
+  if (customKv && token) {
+    adminTokenStatus.innerHTML = '<span style="color: #22c55e; font-weight: bold;">🟢 KV台帳連携中 (認証完了)</span>';
+  } else if (token && !customKv) {
+    adminTokenStatus.innerHTML = '<span style="color: #f59e0b; font-weight: bold;">⚠️ KV Worker URL 未設定</span>';
+  } else if (customKv && !token) {
+    adminTokenStatus.innerHTML = '<span style="color: #f59e0b; font-weight: bold;">⚠️ KV API トークン 未入力</span>';
   } else {
     adminTokenStatus.innerHTML = '<span style="color: var(--muted);">⚪ 一般ユーザーモード (配信ドメイン直リンク)</span>';
   }
@@ -7164,10 +7161,11 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
   const bucketName = getBucketName(requestedProvider);
   const providerLabel = isFilebase ? "Filebase (IPFS)" : "Cloudflare R2";
   const isStorageConfigured = isFilebase ? isFilebaseConfigured() : isR2Configured();
+  const hasKvAccess = hasAdminAccess();
 
-  // 🌟 ストレージ未設定の場合、案内＆簡単セットアップ用オンボーディングカードを描画。
-  // 認証情報だけ残っていて配信ドメインが未設定の場合も、一覧は出さない。
-  if (!isStorageConfigured || !s3 || !bucketName) {
+  // 🌟 ストレージ未設定、かつ KV台帳連携もない場合のみオンボーディングカードを描画。
+  // KV台帳連携がある場合は、S3秘密鍵が端末に入っていなくてもKV台帳ビュー（閲覧・共有専用）として一覧を表示！
+  if ((!isStorageConfigured || !s3 || !bucketName) && !hasKvAccess) {
     storageCachedContents = [];
     storageCurrentPage = 1;
     updateStoragePaginationUI(0);
@@ -7177,25 +7175,36 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
     return;
   }
 
-  r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel} ファイル一覧を取得中...</span>`;
+  const isViewerMode = (!isStorageConfigured || !s3 || !bucketName) && hasKvAccess;
+  r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
 
   try {
-    const command = new ListObjectsV2Command({
-      Bucket: bucketName,
-      MaxKeys: 1000,
-    });
-    const response = await s3.send(command);
+    let s3RawList = [];
+    if (s3 && bucketName) {
+      try {
+        const command = new ListObjectsV2Command({
+          Bucket: bucketName,
+          MaxKeys: 1000,
+        });
+        const response = await s3.send(command);
+        s3RawList = (response.Contents || []).map(item => ({
+          Key: item.Key,
+          Size: item.Size || 0,
+          LastModified: item.LastModified,
+        }));
+      } catch (s3Err) {
+        console.warn("S3 ListObjectsV2 error:", s3Err);
+        if (!hasKvAccess) throw s3Err;
+      }
+    }
+
     if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     let contents = [];
     const baseDomain = (getSelectedR2Domain(requestedProvider) || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
 
     if (isFilebase) {
       // 🪐 Filebase (IPFS) モード: S3実体とKV名札をスマートマッチング
-      const s3RawList = (response.Contents || []).map(item => ({
-        Key: item.Key,
-        Size: item.Size || 0,
-        LastModified: item.LastModified,
-      }));
+
 
       const s3KeyToItem = new Map();
       const s3CidToItem = new Map();
@@ -7343,11 +7352,6 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       }
     } else {
       // ⚡ Cloudflare R2 モード: S3 実体と KV エイリアスを結合して各ドメインのカードを構築
-      const s3RawList = (response.Contents || []).map(item => ({
-        Key: item.Key,
-        Size: item.Size || 0,
-        LastModified: item.LastModified,
-      }));
       const s3KeyToItem = new Map();
       for (const s3Item of s3RawList) {
         s3KeyToItem.set(s3Item.Key, s3Item);
@@ -7392,8 +7396,8 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
           matchedS3 = s3KeyToItem.get(displayName);
         }
 
-        // R2 明示レコード、または R2 バケット内の実体とマッチするレコードのみ対象
-        const isR2Record = isExplicitR2 || Boolean(matchedS3);
+        // R2 明示レコード、または R2 バケット内の実体とマッチするレコードのみ対象（Viewerモード時はS3実体なしでも表示）
+        const isR2Record = isExplicitR2 || Boolean(matchedS3) || (isViewerMode && !isExplicitFilebase);
         if (!isR2Record) continue;
 
         if (matchedS3) {
