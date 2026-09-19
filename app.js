@@ -6227,7 +6227,7 @@ function getStorageListLabels() {
       r2Stored: "⚡ R2: 保管中", r2StoredProtected: "⚡ R2: 保管中 (保護)", r2Removed: "⚡ R2: 未保持 (Kubo保全中)",
       r2ProtectedTooltip: "自宅Kuboに保全されるまで、誤消去を防ぐためR2実体は削除できません",
       kuboOff: "🏠 Kubo: 未設定", kuboStored: "🏠 Kubo: 保持中", kuboMissing: "🏠 Kubo: 未保持",
-      ipfsDrifting: "🌊 IPFS: 漂流中", delete: "削除", rename: "ファイル名を変更",
+      ipfsDrifting: "🌊 IPFS: 漂流中", ipfsDriftingAlive: "🌊 漂流中 (生存確認)", ipfsDriftingMiss: "⚠️ 漂流中 (応答なし {n}/3)", delete: "削除", rename: "ファイル名を変更",
       nodeCheck: "🌐 ノード確認 ↗", workflow: "🧬 ワークフローあり", connectionError: "通信エラー:",
       neverDelete: "⏳ 削除しない（無期限）", deleteAfter: "後に削除",
     };
@@ -6240,7 +6240,7 @@ function getStorageListLabels() {
     r2Stored: "⚡ R2: Stored", r2StoredProtected: "⚡ R2: Stored (Locked)", r2Removed: "⚡ R2: Unstored (On Kubo)",
     r2ProtectedTooltip: "Cannot remove R2 object until it is pinned on your home Kubo node to prevent data loss.",
     kuboOff: "🏠 Kubo: Disabled", kuboStored: "🏠 Kubo: Pinned", kuboMissing: "🏠 Kubo: Not pinned",
-    ipfsDrifting: "🌊 IPFS: Drifting", delete: "Delete", rename: "Rename file",
+    ipfsDrifting: "🌊 IPFS: Drifting", ipfsDriftingAlive: "🌊 Drifting (Alive)", ipfsDriftingMiss: "⚠️ Drifting (Miss {n}/3)", delete: "Delete", rename: "Rename file",
     nodeCheck: "🌐 Check nodes ↗", workflow: "🧬 Workflow found", connectionError: "Connection error:",
     neverDelete: "⏳ Keep forever", deleteAfter: "delete after",
   };
@@ -6868,14 +6868,21 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
         const kvCid = kvItem.metadata?.cid || getStoredIpfsCid(rawKey) || getStoredIpfsCid(displayName);
         const recordedS3Key = kvItem.metadata?.s3Key;
 
-        // 🪐 Filebase タブ: R2 ストレージ専用レコードは除外する
-        const isR2Entry = kvCid === "r2" ||
+        // 🪐 Filebase タブ: R2 ストレージ専用レコードは除外する [INV-FRONT-005]
+        const isExplicitFilebase = kvItem.metadata?.backend === "filebase" || kvItem.metadata?.b === "filebase";
+        const isExplicitR2 = kvCid === "r2" ||
           kvItem.metadata?.backend === "r2" ||
           kvItem.metadata?.b === "r2" ||
-          kvItem.value === "r2" ||
-          (!kvCid && !s3KeyToItem.has(recordedS3Key) && !s3KeyToItem.has(rawKey) && !s3KeyToItem.has(displayName));
-        if (isR2Entry) {
+          kvItem.value === "r2";
+        
+        if (isExplicitR2) {
           continue;
+        }
+        if (!isExplicitFilebase) {
+          const hasMatchingS3 = s3KeyToItem.has(recordedS3Key) || s3KeyToItem.has(rawKey) || s3KeyToItem.has(displayName);
+          if (!kvCid && !hasMatchingS3) {
+            continue;
+          }
         }
 
         let matchedS3 = null;
@@ -6986,6 +6993,11 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
           : rawKey;
 
         const kvCid = kvItem.metadata?.cid || kvItem.metadata?.c || kvItem.value || getStoredIpfsCid(rawKey) || getStoredIpfsCid(displayName) || "";
+        const isExplicitFilebase = kvItem.metadata?.backend === "filebase" || kvItem.metadata?.b === "filebase";
+        if (isExplicitFilebase) {
+          continue; // 🚨 [INV-FRONT-005] Filebase レコードは絶対に R2 一覧に混入させない！
+        }
+
         const isExplicitR2 = kvItem.metadata?.backend === "r2" || kvItem.metadata?.b === "r2" || kvCid === "r2";
         const hasIpfsCid = kvCid && kvCid !== "r2" && (kvCid.startsWith("Qm") || kvCid.startsWith("baf") || kvCid.length > 20);
         if (hasIpfsCid && !isExplicitR2) continue; // Filebase 専用レコードのみ除外
@@ -7233,13 +7245,8 @@ async function fetchAndRenderR2Files({ cleanupExpiredCivitaiTransfers = false } 
       healKuboPinnedKvRecords(uniqueItemsToHeal);
     }
 
-    // 🪐 IPFS ガベージコレクション検知: S3から削除済み（残留中）のファイルがIPFS上から消失していたら自動でKVから掃除
-    if (isFilebase) {
-      const lingeringItems = contents.filter(c => !c.isFromS3 && c.cid);
-      if (lingeringItems.length > 0) {
-        cleanupGarbageCollectedIpfsFiles(lingeringItems);
-      }
-    }
+    // 🌊 IPFS 漂流中ファイルの安否確認＆3ストライク自動整理（Filebase / R2 共通）
+    auditDriftingFiles(contents);
   } catch (error) {
     if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     console.error("Storage fetch error:", error);
@@ -7483,6 +7490,7 @@ function renderCurrentStoragePage() {
     article.dataset.cid = itemCid || "";
     article.dataset.expiresat = item.expiresAt ? String(item.expiresAt) : "0";
     article.dataset.allowedhost = (item.metadata?.allowedHost || item.metadata?.d || "") || "";
+    article.dataset.provider = item.storageProvider || (isFilebase ? "filebase" : "r2");
 
     // 🌐 このファイルカード専用の固定配信ドメイン（プルダウン切り替えで絶対に釣られない）
     const rawAllowedHost = item.metadata?.allowedHost || item.metadata?.d || "";
@@ -7568,7 +7576,15 @@ function renderCurrentStoragePage() {
       let driftingBadgeHtml = "";
       const hasKuboRecord = isKuboPinned || item.metadata?.kuboStatus === "pinned" || item.kuboStatus === "pinned";
       if (!isFromS3 && !hasKuboRecord) {
-        driftingBadgeHtml = `<span class="drifting-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.ipfsDrifting}</span>`;
+        const driftCounts = getDriftFailCounts();
+        const currentDriftCount = driftCounts[itemKey]?.count || 0;
+        const driftText = currentDriftCount > 0
+          ? labels.ipfsDriftingMiss.replace("{n}", currentDriftCount)
+          : labels.ipfsDrifting;
+        const driftBg = currentDriftCount > 0 ? "rgba(239, 68, 68, 0.15)" : "rgba(245, 158, 11, 0.15)";
+        const driftColor = currentDriftCount > 0 ? "#f87171" : "#fbbf24";
+        const driftBorder = currentDriftCount > 0 ? "rgba(239, 68, 68, 0.4)" : "rgba(245, 158, 11, 0.4)";
+        driftingBadgeHtml = `<span class="drifting-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: ${driftBg}; color: ${driftColor}; border: 1px solid ${driftBorder}; font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${driftText}</span>`;
       }
 
       storageTierHtml = `
@@ -7615,10 +7631,25 @@ function renderCurrentStoragePage() {
         kuboBadgeHtml = `<span class="r2-kubo-badge-placeholder kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.08); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.25); display: inline-flex; align-items: center; gap: 3px;">⏳ CID確認中...</span>`;
       }
 
+      let r2DriftingBadgeHtml = "";
+      const hasR2KuboRecord = isKuboPinned || item.metadata?.kuboStatus === "pinned" || item.kuboStatus === "pinned";
+      if (!isFromS3 && !hasR2KuboRecord) {
+        const driftCounts = getDriftFailCounts();
+        const currentDriftCount = driftCounts[itemKey]?.count || 0;
+        const driftText = currentDriftCount > 0
+          ? labels.ipfsDriftingMiss.replace("{n}", currentDriftCount)
+          : labels.ipfsDrifting;
+        const driftBg = currentDriftCount > 0 ? "rgba(239, 68, 68, 0.15)" : "rgba(245, 158, 11, 0.15)";
+        const driftColor = currentDriftCount > 0 ? "#f87171" : "#fbbf24";
+        const driftBorder = currentDriftCount > 0 ? "rgba(239, 68, 68, 0.4)" : "rgba(245, 158, 11, 0.4)";
+        r2DriftingBadgeHtml = `<span class="drifting-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: ${driftBg}; color: ${driftColor}; border: 1px solid ${driftBorder}; font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${driftText}</span>`;
+      }
+
       storageTierHtml = `
         <div style="display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap;">
           ${r2BadgeHtml}
           ${kuboBadgeHtml}
+          ${r2DriftingBadgeHtml}
         </div>
       `;
 
@@ -7825,57 +7856,105 @@ function renderCurrentStoragePage() {
   updateSelectedR2ActionButtonsState();
 }
 
-// 🪐 IPFS ガベージコレクション（消失）検知ユーティリティ
-async function checkIpfsLiveness(cid) {
-  if (!cid) return false;
-  // 1. Filebase IPFS ゲートウェイへの軽量 HEAD 疎通確認 (3.5秒タイムアウト)
+// --- 🌊 IPFS漂流ファイル（全アンピン）安否監査＆3ストライク自動整理ユーティリティ ---
+const DRIFT_STORAGE_KEY = "cividge_drift_fail_counts";
+const DRIFT_FAIL_COOLDOWN_MS = 60 * 60 * 1000; // 1時間（連打防止クールダウン）
+
+function getDriftFailCounts() {
   try {
-    const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 3500);
-    const res = await fetch(`https://ipfs.filebase.io/ipfs/${cid}`, {
+    return JSON.parse(localStorage.getItem(DRIFT_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function recordDriftCheckResult(rawKey, isAlive) {
+  const counts = getDriftFailCounts();
+  const now = Date.now();
+
+  if (isAlive) {
+    // 【生存確認】エッジやIPFSから取得できたため、失敗カウントを完全リセット
+    if (counts[rawKey]) {
+      delete counts[rawKey];
+      localStorage.setItem(DRIFT_STORAGE_KEY, JSON.stringify(counts));
+    }
+    return { shouldDelete: false, count: 0 };
+  }
+
+  // 【失敗時】前回の失敗から1時間未満ならカウント加算をスキップ（連打ガード）
+  const entry = counts[rawKey] || { count: 0, lastChecked: 0 };
+  if (now - entry.lastChecked < DRIFT_FAIL_COOLDOWN_MS && entry.count > 0) {
+    return { shouldDelete: false, count: entry.count, skipped: true };
+  }
+
+  entry.count += 1;
+  entry.lastChecked = now;
+  counts[rawKey] = entry;
+  localStorage.setItem(DRIFT_STORAGE_KEY, JSON.stringify(counts));
+
+  // 3回連続失敗 ➔ ゾンビ化確定（KV削除対象）
+  if (entry.count >= 3) {
+    delete counts[rawKey];
+    localStorage.setItem(DRIFT_STORAGE_KEY, JSON.stringify(counts));
+    return { shouldDelete: true, count: 3 };
+  }
+
+  return { shouldDelete: false, count: entry.count };
+}
+
+/**
+ * 実体データをダウンロードせず、HTTP HEAD で軽量に安否確認 (4秒タイムアウト)
+ */
+async function checkDriftSurvival(url) {
+  if (!url) return false;
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(url, {
       method: "HEAD",
       signal: ctrl.signal,
       cache: "no-store",
     });
     clearTimeout(tid);
-    if (res.ok || res.status === 206 || res.status === 304) return true;
-  } catch (e) {}
-
-  // 2. フォールバック: パブリック ipfs.io ゲートウェイ (3.5秒タイムアウト)
-  try {
-    const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 3500);
-    const res = await fetch(`https://ipfs.io/ipfs/${cid}`, {
-      method: "HEAD",
-      signal: ctrl.signal,
-      headers: { Range: "bytes=0-0" },
-    });
-    clearTimeout(tid);
-    if (res.ok || res.status === 206 || res.status === 304) return true;
-  } catch (e) {}
-
-  return false;
+    return res.ok || res.status === 206 || res.status === 304;
+  } catch (e) {
+    return false;
+  }
 }
 
-async function cleanupGarbageCollectedIpfsFiles(lingeringItems) {
-  if (!lingeringItems || lingeringItems.length === 0) return;
+/**
+ * 漂流ファイル（Filebase/R2なし ＋ Kuboなし）を順次安否確認
+ */
+async function auditDriftingFiles(contents) {
+  if (!contents || contents.length === 0) return;
 
-  for (const item of lingeringItems) {
-    if (!item.cid) continue;
+  // 漂流ファイルのみを抽出（S3実体なし ＋ Kubo実体なし）
+  const driftingItems = contents.filter(item => {
+    const isFromS3 = Boolean(item.isFromS3);
+    const hasKuboRecord = item.isKuboPinned || item.metadata?.kuboStatus === "pinned" || item.kuboStatus === "pinned";
+    return !isFromS3 && !hasKuboRecord;
+  });
 
-    // 同一セッション（サイトを開いている間）で既に生存確認済みの場合はスキップ
-    const sessionKey = `ipfs_live_${item.cid}`;
-    if (sessionStorage.getItem(sessionKey) === "1") continue;
+  if (driftingItems.length === 0) return;
 
-    const isAlive = await checkIpfsLiveness(item.cid);
-    if (isAlive) {
-      sessionStorage.setItem(sessionKey, "1");
-    } else {
-      console.log(`🧹 IPFS ガベージコレクション検知（消失確認）: ${item.Key} (CID: ${item.cid}) -> KVから自動抹消`);
+  console.log(`🌊 漂流中ファイルの安否確認を開始: ${driftingItems.length}件`);
+  const labels = getStorageListLabels();
+
+  for (const item of driftingItems) {
+    const rawKey = item.rawKey || item.Key;
+    const publicUrl = item.publicUrl || item.proxyUrl;
+    if (!rawKey || !publicUrl) continue;
+
+    const isAlive = await checkDriftSurvival(publicUrl);
+    const result = recordDriftCheckResult(rawKey, isAlive);
+
+    const elem = r2FileList?.querySelector(`.result-item[data-key="${CSS.escape(rawKey)}"]`);
+    const badge = elem?.querySelector(`.drifting-badge-${CSS.escape(rawKey)}`);
+
+    if (result.shouldDelete) {
+      console.warn(`💀 漂流ファイルが3回連続で見つからないためKV台帳から自動整理: ${rawKey}`);
       try {
-        await deleteKvCid(item.Key);
-        // DOM 上の該当アイテムを静かにフェードアウト削除
-        const elem = r2FileList.querySelector(`.result-item[data-key="${CSS.escape(item.Key)}"]`);
+        await deleteKvCid(rawKey);
         if (elem) {
           elem.style.transition = "opacity 0.4s ease, transform 0.4s ease";
           elem.style.opacity = "0";
@@ -7890,7 +7969,21 @@ async function cleanupGarbageCollectedIpfsFiles(lingeringItems) {
           }, 400);
         }
       } catch (err) {
-        console.warn("Auto GC cleanup error:", err);
+        console.warn("Auto drift cleanup error:", err);
+      }
+    } else if (isAlive) {
+      if (badge) {
+        badge.textContent = labels.ipfsDriftingAlive;
+        badge.style.background = "rgba(56, 189, 248, 0.15)";
+        badge.style.color = "#38bdf8";
+        badge.style.border = "1px solid rgba(56, 189, 248, 0.4)";
+      }
+    } else {
+      if (badge) {
+        badge.textContent = labels.ipfsDriftingMiss.replace("{n}", result.count);
+        badge.style.background = "rgba(239, 68, 68, 0.15)";
+        badge.style.color = "#f87171";
+        badge.style.border = "1px solid rgba(239, 68, 68, 0.4)";
       }
     }
   }
@@ -8133,10 +8226,11 @@ r2FileList?.addEventListener("click", async (e) => {
     const s3Key = article?.dataset?.s3key || displayName || oldKey;
     const cid = article?.dataset?.cid || "";
     const size = Number(article?.dataset?.size || 0);
-    const isFilebase = activeStorageTab === "filebase";
+    const itemProvider = article?.dataset?.provider || activeStorageTab;
+    const isFilebase = itemProvider === "filebase";
     const currentDomain = (article?.dataset?.allowedhost || "").replace(/^https?:\/\//, "").replace(/\/$/, "").split(":")[0];
 
-    const availableDomains = getR2DomainList(activeStorageTab).filter(d => {
+    const availableDomains = getR2DomainList(itemProvider).filter(d => {
       const clean = d.replace(/^https?:\/\//, "").replace(/\/$/, "").split(":")[0];
       return clean.toLowerCase() !== currentDomain.toLowerCase();
     });
@@ -8214,7 +8308,10 @@ r2FileList?.addEventListener("click", async (e) => {
           }
         } catch (e) {}
 
-        const targetCid = isFilebase ? cid : "r2";
+        const resolvedCid = cid || getStoredIpfsCid(oldKey) || getStoredIpfsCid(displayName) || getStoredIpfsCid(s3Key) || "";
+        const targetCid = isFilebase ? (resolvedCid || cid) : "r2";
+        const targetBackend = isFilebase ? "filebase" : "r2";
+
         await registerKvCid(
           newDomainKey,
           targetCid,
@@ -8229,11 +8326,16 @@ r2FileList?.addEventListener("click", async (e) => {
           kuboStatus,
           cleanHost,
           true, // overwriteAllowedHost: この新ドメインのみ許可
-          getVideoThumbnailKey(s3Key)
+          getVideoThumbnailKey(s3Key),
+          null,
+          null,
+          undefined,
+          resolvedCid || null, // contentCid
+          targetBackend // backend: [INV-FRONT-005] 帰属ストレージの完全固定
         );
 
-        if (cid && isFilebase) {
-          storeIpfsCid(newDomainKey, cid);
+        if (resolvedCid) {
+          storeIpfsCid(newDomainKey, resolvedCid);
         }
         setFileStoredDomain(newDomainKey, targetDomainUrl);
 
