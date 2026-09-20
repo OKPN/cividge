@@ -1597,6 +1597,8 @@ async function findFilebaseObjectByCid(s3, bucketName, targetCid) {
   try {
     const localList = storageCachedContents || loadLedgerFromLocalStorage("filebase") || [];
     const matched = localList.find(item => {
+      // 🛡️ [INV-STORAGE-006] Filebase 実体が既に解放・削除されたレコード（isFromS3 === false）は重複元として参照しない
+      if (item.isFromS3 === false) return false;
       const c = item.contentCid || item.cid || item.metadata?.cid || item.metadata?.c || getStoredIpfsCid(item.Key || item.name);
       return c === targetCid;
     });
@@ -1701,6 +1703,9 @@ async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
   try {
     const localList = storageCachedContents || loadLedgerFromLocalStorage("r2") || [];
     for (const item of localList) {
+      // 🛡️ [INV-STORAGE-006] R2 実体が既に解放・削除されたレコード（isFromS3 === false）は重複元として参照しない
+      if (item.isFromS3 === false) continue;
+
       const h = item.contentCid || item.cid || item.metadata?.contentCid || item.metadata?.c_cid || (item.metadata?.cid && item.metadata?.cid !== "r2" ? item.metadata.cid : null) || item.metadata?.hash || item.metadata?.h_sha;
       if (h) {
         const sKey = item.s3Key || item.metadata?.s3Key || item.metadata?.k_s3 || item.Key || item.name;
