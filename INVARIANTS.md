@@ -213,6 +213,19 @@
      - ルーターのポート開放を強いることなく、UPnP（`Swarm.DisableNatPortMap: false`）、AutoNAT、または AutoRelay / Hole Punching（`Protocols: /libp2p/dcutr`）により、外部の IPFS ピアが自宅 PC へ P2P 接続（TCP/UDP/QUIC）できるポートを確保・アナウンスすること。
   2. **DHT サーバー参加モードの必須 (`Routing.Type: auto` または `dht`)**:
      - `dhtclient`（クライアント専用）モードは、他ノードからブロックを探すことしかできず、自分が持つブロックの Provider Record（所持情報）を世界地図にアナウンスしないため、自律配信目的では絶対に使用してはならない (MUST NOT)。必ず `auto` 以上に設定し、Pin 留めしたブロックを世界中の DHT へ自律告知すること。
-  3. **楽観的 Provide の有効化 (`Experimental.OptimisticProvide: true`)**:
-     - Pin 留めしたブロックの DHT アナウンス遅延を最小化し、世界中のゲートウェイから即座に発見可能とすること。
+   3. **楽観的 Provide の有効化 (`Experimental.OptimisticProvide: true`)**:
+      - Pin 留めしたブロックの DHT アナウンス遅延を最小化し、世界中のゲートウェイから即座に発見可能とすること。
 
+---
+
+### [INV-DELIVERY-005] 単一ホスト照会と総当りKV探索の禁止（KV読み込み枠防護）
+* **規則 (Rule)**:  
+  ファイル配信リクエストにおいて、KV 台帳を照会する際は **特定された単一ホスト（受信ホストまたは特定されたリレーホスト）のキーのみを照会しなければならない (MUST)**。複数のホスト候補をループ走査して KV の `get()` を連続実行する「総当り探索（Brute-force lookup）」は **厳格に禁止する (MUST NOT)**。
+
+* **理由 (Rationale)**:  
+  存在しない URL（404）やランダム URL による DoS 攻撃を受けた際、ホスト候補をループ走査すると 1 リクエストで 5〜10 回もの KV `get()` が消費され、1日10万回の無料枠がわずか数時間で枯渇する。「山田太郎を探すのに鈴木太郎も佐藤太郎も全員呼び出す」ような非効率・危険な照会は設計の敗北である。
+
+* **満たすべき性質 (Required Behavior)**:  
+  1. 静的リレー（Pages 等）からバックエンド Worker への中継は、クエリパラメータではなく **フォルダ構造（`/r/<relay-identifier>/<filename>`）** を最優先で使用すること。これにより、キャッシュバスター防御（`INV-INFRA-001`）によるクエリ除去（Ignore Query String）やブラウザの Referrer-Policy による情報欠落に一切影響されず、単一ホストを一発で確定できる。
+  2. 照会は「特定されたホスト:ファイル名」の 1 回のみで完結させること（404 空振り時の KV 消費は最大 1 回）。
+  3. 404 レスポンスは Cache API（`caches.default`）によりエッジでキャッシュ（最低 300 秒）し、同一パスへの反復攻撃に対する KV 消費を完全ゼロ（0 回）に抑え込むこと。
