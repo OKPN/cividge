@@ -732,13 +732,15 @@ export async function onRequest(context) {
   if (effectiveS3Key && !candidates.includes(effectiveS3Key)) candidates.push(effectiveS3Key);
   if (!candidates.includes(filename)) candidates.push(filename);
 
-  // 🪐 複数公共IPFSゲートウェイへのアクセス分散（マルチキャッシュ伝播 & Filebase転送量節約）
+  // 🪐 複数公共IPFSゲートウェイへのアクセス分散（現役オープンゲートウェイ群）
+  // See: [INV-DELIVERY-003]
   const ipfsGateways = [
-    "https://ipfs.filebase.io/ipfs",
-    "https://gateway.pinata.cloud/ipfs",
-    "https://4everland.io/ipfs",
-    "https://ipfs.io/ipfs",
-    "https://dweb.link/ipfs",
+    "https://apac.orbitor.dev/ipfs",    // アジア太平洋 (APAC - 日本・近隣最速)
+    "https://dget.top/ipfs",             // 高速オープンゲートウェイ (グローバル)
+    "https://ipfs.orbitor.dev/ipfs",    // 北米・グローバル (Orbitor Main)
+    "https://eu.orbitor.dev/ipfs",      // 欧州 (EU)
+    "https://latam.orbitor.dev/ipfs",   // 中南米 (LATAM)
+    "https://ipfs.filebase.io/ipfs",    // Filebase 保険
   ];
 
   // アンピン状態の判定: FIFO等でアンピンされたファイルは 7日間（604,800秒）キャッシュ

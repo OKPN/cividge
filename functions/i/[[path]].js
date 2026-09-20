@@ -76,11 +76,12 @@ export async function onRequest(context) {
   }
 
   const gateways = [
-    "https://ipfs.filebase.io/ipfs",
-    "https://cloudflare-ipfs.com/ipfs",
-    "https://4everland.io/ipfs",
-    "https://ipfs.io/ipfs",
-    "https://dweb.link/ipfs",
+    "https://apac.orbitor.dev/ipfs",    // アジア太平洋 (APAC - 日本・近隣最速)
+    "https://dget.top/ipfs",             // 高速オープンゲートウェイ (グローバル)
+    "https://ipfs.orbitor.dev/ipfs",    // 北米・グローバル (Orbitor Main)
+    "https://eu.orbitor.dev/ipfs",      // 欧州 (EU)
+    "https://latam.orbitor.dev/ipfs",   // 中南米 (LATAM)
+    "https://ipfs.filebase.io/ipfs",    // Filebase 保険
   ];
 
   let upstreamResponse = null;
