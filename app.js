@@ -1309,10 +1309,12 @@ function saveLedgerToLocalStorage(provider, contents) {
       item.contentCid || item.cid || item.metadata?.cid || item.metadata?.c || "",
       item.Size || item.size || 0,
       item.LastModified ? Math.floor(new Date(item.LastModified).getTime() / 1000) : (item.updated ? Math.floor(new Date(item.updated).getTime() / 1000) : 0),
-      item.s3Key || item.rawKey || "",
+      item.s3Key || item.Key || "",
       item.uploadedProvider || item.backend || provider,
       item.isFromS3 ? 1 : 0,
-      item.metadata?.kuboStatus === "pinned" ? 1 : 0
+      item.metadata?.kuboStatus === "pinned" ? 1 : 0,
+      item.rawKey || item.Key || "",
+      item.metadata?.allowedHost || item.metadata?.d || ""
     ]);
     localStorage.setItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`, JSON.stringify(tuples));
   } catch (e) {
@@ -1336,6 +1338,8 @@ function loadLedgerFromLocalStorage(provider) {
       const backend = t[5] || provider;
       const isFromS3 = t[6] === 1;
       const isKuboPinned = t[7] === 1;
+      const rawKey = t[8] || s3Key || name;
+      const allowedHost = t[9] || (rawKey.includes(":") ? rawKey.split(":")[0] : "");
       return {
         Key: name,
         name,
@@ -1346,13 +1350,17 @@ function loadLedgerFromLocalStorage(provider) {
         LastModified: dateIso,
         updated: dateIso,
         s3Key,
-        rawKey: s3Key,
+        rawKey,
         uploadedProvider: backend,
         backend,
         isFromS3,
         metadata: {
           kuboStatus: isKuboPinned ? "pinned" : "not_pinned",
           cid: cid || undefined,
+          allowedHost: allowedHost || undefined,
+          d: allowedHost || undefined,
+          s3Key,
+          backend
         },
         storageProvider: provider,
         isCached: true
@@ -1383,7 +1391,7 @@ function recalculateStorageUsage(provider) {
   updateStorageUsageUI();
 }
 
-function removeItemsFromLocalLedger(provider, keysToRemove) {
+function removeItemsFromLocalLedger(provider, keysToRemove, { purgeOriginAlso = false } = {}) {
   if (!provider) return;
   const keyList = Array.isArray(keysToRemove) ? keysToRemove : [keysToRemove];
   const keySet = new Set(keyList.filter(Boolean));
@@ -1394,7 +1402,10 @@ function removeItemsFromLocalLedger(provider, keysToRemove) {
       const k1 = item.Key || item.name;
       const k2 = item.rawKey;
       const k3 = item.s3Key;
-      return !keySet.has(k1) && !keySet.has(k2) && !keySet.has(k3);
+      if (purgeOriginAlso) {
+        return !keySet.has(k1) && !keySet.has(k2) && !keySet.has(k3);
+      }
+      return !keySet.has(k2) && (!keySet.has(k1) || k2 !== k1);
     });
   }
 
@@ -7535,10 +7546,12 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
       }
 
       const consumedS3Keys = new Set();
+      const processedPhysicalKeys = new Set();
 
       // 1. R2 に属する KV レコード（ドメイン別エイリアスを含む）を走査してカード化
       kvFiles.sort((a, b) => (b.name.includes(":") ? 1 : 0) - (a.name.includes(":") ? 1 : 0));
       const seenR2DomainFiles = new Set();
+      const cleanHostFn = (val) => String(val || "").trim().toLowerCase().replace(/^https?:\/\//, "").split('/')[0].split(':')[0];
 
       for (const kvItem of kvFiles) {
         const rawKey = kvItem.name;
@@ -7549,7 +7562,8 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
           ? rawKey.substring(colonIdx + 1)
           : rawKey;
 
-        const itemDomain = (colonIdx > 0 ? rawKey.split(":")[0] : (kvItem.metadata?.d || kvItem.metadata?.allowedHost || "")).toLowerCase().trim();
+        const rawDomainVal = colonIdx > 0 ? rawKey.split(":")[0] : (kvItem.metadata?.d || kvItem.metadata?.allowedHost || baseDomain || "");
+        const itemDomain = cleanHostFn(rawDomainVal);
         const domainFileKey = `${itemDomain}:${displayName}`;
         if (itemDomain && seenR2DomainFiles.has(domainFileKey)) {
           continue; // 同一ドメインかつ同一ファイル名の重複カードを排除
@@ -7582,7 +7596,10 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
 
         if (matchedS3) {
           consumedS3Keys.add(matchedS3.Key);
+          processedPhysicalKeys.add(matchedS3.Key);
         }
+        if (recordedS3Key) processedPhysicalKeys.add(recordedS3Key);
+        processedPhysicalKeys.add(displayName);
 
         const rawCandidate = kvItem.metadata?.contentCid || kvItem.metadata?.c_cid || getStoredIpfsCid(matchedS3 ? matchedS3.Key : displayName) || (hasIpfsCid ? kvCid : null);
         const itemContentCid = isValidIpfsCid(rawCandidate) ? rawCandidate : null;
@@ -7616,7 +7633,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
 
       // 2. R2 バケットに存在するが KV に未登録の物理ファイルを追加＆自動KV同期
       for (const s3Item of s3RawList) {
-        if (!consumedS3Keys.has(s3Item.Key)) {
+        if (!consumedS3Keys.has(s3Item.Key) && !processedPhysicalKeys.has(s3Item.Key)) {
           const rawS3Cid = getStoredIpfsCid(s3Item.Key);
           const s3Cid = isValidIpfsCid(rawS3Cid) ? rawS3Cid : null;
           contents.push({
@@ -9297,7 +9314,7 @@ r2FileList?.addEventListener("click", async (e) => {
 
         // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳から差分削除し即座に再描画（サーバーへの全件フェッチ完全撤去）
         const deletedKeys = [key, ...(siblingLinks.length > 0 && deleteOriginAlso ? siblingLinks : [])];
-        removeItemsFromLocalLedger(activeStorageTab, deletedKeys);
+        removeItemsFromLocalLedger(activeStorageTab, deletedKeys, { purgeOriginAlso: deleteOriginAlso });
       } catch (err) {
         await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
       }
@@ -9306,22 +9323,31 @@ r2FileList?.addEventListener("click", async (e) => {
 
     // Cloudflare R2 モードの場合
     const resolvedS3Key = target.dataset.s3key || target.closest(".result-item")?.dataset?.s3key || key;
+    const isAlias = key.includes(":") || (resolvedS3Key && key !== resolvedS3Key);
     const allItems = Array.from(r2FileList.querySelectorAll(".result-item"));
     const siblingLinks = allItems
       .filter(el => el.dataset.key !== key)
       .filter(el => {
         const elS3Key = el.dataset.s3key;
-        if (resolvedS3Key && elS3Key && elS3Key === resolvedS3Key) return true;
+        const elDisplayName = el.dataset.displayname;
+        if (resolvedS3Key && (elS3Key === resolvedS3Key || elDisplayName === resolvedS3Key)) return true;
         return false;
       })
       .map(el => el.dataset.key);
 
     let deleteOriginAlso = false;
 
-    if (siblingLinks.length > 0) {
-      // 他のリンクと実体を共有している場合（エイリアスがある）
+    if (isAlias) {
+      // 🛡️ [INV-FRONT-007] エイリアス（別ドメイン用個別キー）の削除:
+      // エイリアス削除時は、いかなる場合も S3 物理実体を絶対に削除しない！
+      const confirmMsg = `ドメインエイリアス '${key}' を削除しますか？\n\n・このドメインでのURLのみを即座に削除（404化）します。\n・大本の実体ファイル（R2）や、他のドメインでの配信リンクは影響を受けずそのまま維持されます。`;
+      const ok = await showCustomConfirm(confirmMsg, "🗑️ エイリアス削除の確認", "削除する");
+      if (!ok) return;
+      deleteOriginAlso = false;
+    } else if (siblingLinks.length > 0) {
+      // 大本ファイルだが、他のドメイン（エイリアス）でも共有されている場合
       const siblingNames = siblingLinks.map(name => `'${name}'`).join("、");
-      const confirmMsg = `ファイル（リンク）'${key}' を削除しますか？\n\n⚠️ このファイルの実体は、以下の他のドメイン（エイリアス）とも共有されています：\n【共有中】: ${siblingNames}\n\n・[OK] を押すと、'${key}' のURLのみを削除（即座に404化）します。\n（他のリンク '${siblingLinks[0]}' などは引き続き閲覧できます）`;
+      const confirmMsg = `元ファイル '${key}' のリンクを削除しますか？\n\n⚠️ このファイルの実体は、以下の他のドメイン（エイリアス）とも共有されています：\n【共有中】: ${siblingNames}\n\n・[OK] を押すと、'${key}' のURLのみを削除（即座に404化）します。\n（他のリンク '${siblingLinks[0]}' などは引き続き閲覧できます）`;
       const ok = await showCustomConfirm(confirmMsg, "⚠️ リンク削除の確認");
       if (!ok) return;
 
@@ -9340,8 +9366,8 @@ r2FileList?.addEventListener("click", async (e) => {
     }
 
     try {
-      const willDeleteAll = (siblingLinks.length === 0 || deleteOriginAlso);
-      // 1. 対象リンクの KV マッピングを削除（エイリアスレコードの場合）
+      const willDeleteAll = (!isAlias && (siblingLinks.length === 0 || deleteOriginAlso));
+      // 1. 対象リンクの KV マッピングを削除（エイリアスレコードまたは大本レコード）
       await deleteKvCid(key, { makeTombstone: willDeleteAll });
 
       // 2. 「すべて完全削除」が選択された場合、共有している兄弟リンクの KV も一括削除
@@ -9351,8 +9377,8 @@ r2FileList?.addEventListener("click", async (e) => {
         }
       }
 
-      // 3. 単独、または「すべて完全削除」の場合のみ S3 (R2) 実体を削除
-      if (deleteOriginAlso && s3 && bucketName && resolvedS3Key) {
+      // 3. 単独、または「すべて完全削除」の場合のみ S3 (R2) 実体を削除（エイリアス時は絶対に実行しない）
+      if (!isAlias && deleteOriginAlso && s3 && bucketName && resolvedS3Key) {
         const thumbnailKey = getVideoThumbnailKey(resolvedS3Key);
         if (thumbnailKey) await deleteKvCid(thumbnailKey, { makeTombstone: false });
         const keysToDelete = [resolvedS3Key, thumbnailKey].filter(Boolean);
@@ -9361,7 +9387,7 @@ r2FileList?.addEventListener("click", async (e) => {
       }
       // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳から差分削除し即座に再描画（サーバーへの全件フェッチ完全撤去）
       const deletedKeys = [key, ...(siblingLinks.length > 0 && deleteOriginAlso ? siblingLinks : [])];
-      removeItemsFromLocalLedger(activeStorageTab, deletedKeys);
+      removeItemsFromLocalLedger(activeStorageTab, deletedKeys, { purgeOriginAlso: deleteOriginAlso });
     } catch (err) {
       await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
     }
