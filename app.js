@@ -1814,24 +1814,19 @@ function getFileStoredDomain(itemKey, itemDisplayName, rawAllowedHost) {
     const host = rawAllowedHost.split(",")[0].trim();
     if (host) return host.startsWith("http") ? host : `https://${host}`;
   }
-  // 3. ローカルに保存されている各ファイルの固定ドメイン
+  // 3. 現在画面で選択されているアクティブ配信ドメインを優先（死んだ過去ドメインの巻き添え防止）
+  const current = getSelectedR2Domain();
+  if (current) {
+    return current;
+  }
+
+  // 4. ローカルに保存されている各ファイルの固定ドメイン（フォールバック）
   try {
     const map = JSON.parse(localStorage.getItem("fileDomainMap") || "{}");
     if (map[itemKey]) return map[itemKey];
     if (map[itemDisplayName]) return map[itemDisplayName];
   } catch (e) {}
 
-  // 4. 初回登録: 現在の選択ドメインをこのファイル専用に固定記録
-  const current = getSelectedR2Domain();
-  if (current) {
-    try {
-      const map = JSON.parse(localStorage.getItem("fileDomainMap") || "{}");
-      map[itemKey] = current;
-      if (itemDisplayName) map[itemDisplayName] = current;
-      localStorage.setItem("fileDomainMap", JSON.stringify(map));
-    } catch (e) {}
-    return current;
-  }
   return typeof window !== "undefined" ? window.location.origin : "";
 }
 
@@ -8338,7 +8333,10 @@ async function auditDriftingFiles(contents) {
 
   for (const item of driftingItems) {
     const rawKey = item.rawKey || item.Key;
-    const publicUrl = item.publicUrl || item.proxyUrl;
+    const isFilebase = item.storageProvider === "filebase";
+    const rawAllowedHost = item.metadata?.allowedHost || item.metadata?.d || "";
+    const fileDomain = getFileStoredDomain(rawKey, item.Key, rawAllowedHost).replace(/\/$/, "");
+    const publicUrl = item.publicUrl || item.proxyUrl || getPublicDeliveryUrl(item.Key, isFilebase ? "filebase" : "r2", fileDomain);
     if (!rawKey || !publicUrl) continue;
 
     // 🛡️ クールダウン先行ガード: 前回失敗から1時間以内なら HEAD 通信自体を完全にスキップ（通信無駄打ちゼロ）
