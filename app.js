@@ -7618,8 +7618,8 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
           matchedS3 = s3KeyToItem.get(displayName);
         }
 
-        // R2 明示レコード、または R2 バケット内の実体とマッチするレコードのみ対象（Viewerモード時はS3実体なしでも表示）
-        const isR2Record = isExplicitR2 || Boolean(matchedS3) || (isViewerMode && !isExplicitFilebase);
+        // R2 明示レコード、または R2 バケット内の実体とマッチするレコードのみ対象（Viewerモード時もIPFS CID持ちは除外）
+        const isR2Record = isExplicitR2 || Boolean(matchedS3) || (isViewerMode && !isExplicitFilebase && !hasIpfsCid);
         if (!isR2Record) continue;
 
         if (matchedS3) {
