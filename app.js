@@ -1066,6 +1066,17 @@ function hasAdminAccess() {
   return Boolean(token && custom);
 }
 
+// [INV-CORE-006] ホスト名抽出・KVキー生成ヘルパー:
+// すべてのKVレコードを `host:filename` という均一なキー構造にするための共通関数。
+// 「コピー元（単体キー）」と「エイリアス（ドメイン付きキー）」の非対称性を根絶する。
+function extractCleanHost(domainOrUrl) {
+  return String(domainOrUrl || "").trim().toLowerCase().replace(/^https?:\/\//, "").split('/')[0].split(':')[0];
+}
+function buildKvKey(domainOrUrl, filename) {
+  const host = extractCleanHost(domainOrUrl);
+  return host ? `${host}:${filename}` : filename;
+}
+
 async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null, civitaiTemporary = undefined, contentCid = null, backend = null) {
   if (!key) return;
   const token = getAdminApiToken();
@@ -5560,10 +5571,10 @@ fileList?.addEventListener("change", (e) => {
       const civitaiBtn = card?.querySelector(".civitai-post-btn");
       if (civitaiBtn) civitaiBtn.dataset.url = updatedUrl;
 
-      // 🌐 KV台帳に登録済みの場合は allowedHost も非同期で自動更新
+      // 🌐 [INV-CORE-006] KV台帳に登録済みの場合は allowedHost も非同期で自動更新（host:filename キーで照会）
       if (result && result.name && hasAdminAccess()) {
         registerKvCid(
-          result.name,
+          result.kvKey || result.name,
           result.ipfsCid || "",
           result.size || 0,
           result.mime || "",
@@ -5659,7 +5670,7 @@ fileList?.addEventListener("change", (e) => {
 
       if (result.name && hasAdminAccess()) {
         registerKvCid(
-          result.name,
+          result.kvKey || result.name,
           result.ipfsCid || "",
           result.size || 0,
           result.mime || "",
@@ -6305,9 +6316,10 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           result.expiresAt = expiresAt;
           result.civitaiTemporary = civitaiTemporary;
 
-          // 新名 -> 既存のS3実体キー、という別名マッピングを作る。旧URLは維持される。
+          // [INV-CORE-006] 新名 -> 既存のS3実体キー、という別名マッピングを作る。旧URLは維持される。
+          const kvKey = buildKvKey(baseDomain, result.name);
           await registerKvCid(
-            result.name,
+            kvKey,
             duplicate.cid,
             uploadBytes.length,
             contentType,
@@ -6326,10 +6338,12 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             civitaiTemporary
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
+          storeIpfsCid(kvKey, duplicate.cid);
           storeIpfsCid(result.name, duplicate.cid);
           storeIpfsCid(duplicate.key, duplicate.cid);
           result.proxyUrl = getSelectedDeliveryUrl(result);
-          setFileStoredDomain(result.name, baseDomain);
+          result.kvKey = kvKey;
+          setFileStoredDomain(kvKey, baseDomain);
           paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
           renderUrlPalette();
 
@@ -6360,9 +6374,10 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           result.expiresAt = expiresAt;
           result.civitaiTemporary = civitaiTemporary;
 
-          // 新名 -> 既存の R2 実体キー、という別名マッピングを登録（R2 容量を消費しない）
+          // [INV-CORE-006] 新名 -> 既存の R2 実体キー、という別名マッピングを登録（R2 容量を消費しない）
+          const kvKey = buildKvKey(baseDomain, result.name);
           await registerKvCid(
-            result.name,
+            kvKey,
             "r2",
             uploadBytes.length,
             contentType,
@@ -6383,12 +6398,15 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             "r2"
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
+          storeR2Hash(kvKey, calculatedCid);
           storeR2Hash(result.name, calculatedCid);
           storeR2Hash(duplicate.key, calculatedCid);
+          storeIpfsCid(kvKey, calculatedCid);
           storeIpfsCid(result.name, calculatedCid);
           storeIpfsCid(duplicate.key, calculatedCid);
           result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-          setFileStoredDomain(result.name, baseDomain);
+          result.kvKey = kvKey;
+          setFileStoredDomain(kvKey, baseDomain);
           paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
           renderUrlPalette();
 
@@ -6480,8 +6498,10 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         console.warn("Filebase returned a CID different from the local UnixFS calculation; duplicate detection will be retried with Filebase's CID on future uploads.", { calculatedCid, ipfsCid });
       }
       // CID の有無に関わらず、KV にメタデータ（パスワード含む）を登録（※一般ユーザー時は自動スキップ）
-      // 🌐 選択されている配信ドメインのみを allowedHost として渡し、指定ドメイン外からのアクセスを404遮断
-      await registerKvCid(result.name, ipfsCid || "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
+      // [INV-CORE-006] 🌐 選択されている配信ドメインのみを allowedHost として渡し、host:filename 均一キーで登録
+      const fbKvKey = buildKvKey(baseDomain, result.name);
+      await registerKvCid(fbKvKey, ipfsCid || "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
+      result.kvKey = fbKvKey;
       
       if (hasAdminAccess()) {
         const deliveryBase = getKvDeliveryBaseDomain();
@@ -6497,7 +6517,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       // 🛡️ Filebase 帯域保護（Egress 温存）:
       // アップロード直後の全量ウォームアップフェッチは Filebase のダウンロード帯域を
       // 無条件に100%消費するため行わない。実際の初回アクセス時にオンデマンドでエッジキャッシュさせる。
-      setFileStoredDomain(result.name, baseDomain);
+      setFileStoredDomain(fbKvKey, baseDomain);
     } else {
       let initialKuboStatus = null;
       if (calculatedCid) {
@@ -6507,8 +6527,10 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           }
         } catch (e) {}
       }
+      // [INV-CORE-006] host:filename 均一キーで登録
+      const r2KvKey = buildKvKey(baseDomain, result.name);
       await registerKvCid(
-        result.name,
+        r2KvKey,
         "r2",
         uploadBytes.length,
         contentType,
@@ -6529,10 +6551,13 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         "r2"
       );
       result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-      setFileStoredDomain(result.name, baseDomain);
+      result.kvKey = r2KvKey;
+      setFileStoredDomain(r2KvKey, baseDomain);
       if (calculatedCid) {
         result.ipfsCid = calculatedCid;
+        storeR2Hash(r2KvKey, calculatedCid);
         storeR2Hash(result.name, calculatedCid);
+        storeIpfsCid(r2KvKey, calculatedCid);
         storeIpfsCid(result.name, calculatedCid);
       }
     }
@@ -6565,10 +6590,11 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             const thumbPut = await s3.send(thumbCommand);
             const tHeaders = thumbPut?.$metadata?.httpHeaders || {};
             const thumbCid = isFilebase ? (tHeaders["x-amz-meta-cid"] || tHeaders["x-amz-meta-ipfs-hash"] || "") : "";
-            // サムネイル自身も親動画と同じ期限で台帳登録し、OGP 配信時に解決できるようにする。
-            await registerKvCid(thumbKey, thumbCid, thumbBytes.length, "image/webp", thumbKey, "", thumbBlob, ttlSeconds, expiresAt, false, null, baseDomain, true, null, thumbnailDimensions?.width, thumbnailDimensions?.height);
-            // 別名 URL でも元動画のサムネイルを参照できるよう、親レコードへ派生キーを保存する。
-            await registerKvCid(result.name, isFilebase ? (ipfsCid || "") : "r2", uploadBytes.length, contentType, result.name, "", null, ttlSeconds, expiresAt, false, null, baseDomain, true, thumbKey, imageDimensions?.width, imageDimensions?.height);
+            // [INV-CORE-006] サムネイル自身も親動画と同じ期限で台帳登録し、OGP 配信時に解決できるようにする。
+            await registerKvCid(buildKvKey(baseDomain, thumbKey), thumbCid, thumbBytes.length, "image/webp", thumbKey, "", thumbBlob, ttlSeconds, expiresAt, false, null, baseDomain, true, null, thumbnailDimensions?.width, thumbnailDimensions?.height);
+            // [INV-CORE-006] 別名 URL でも元動画のサムネイルを参照できるよう、親レコードへ派生キーを保存する。
+            const parentKvKey = isFilebase ? (fbKvKey || buildKvKey(baseDomain, result.name)) : (r2KvKey || buildKvKey(baseDomain, result.name));
+            await registerKvCid(parentKvKey, isFilebase ? (ipfsCid || "") : "r2", uploadBytes.length, contentType, result.name, "", null, ttlSeconds, expiresAt, false, null, baseDomain, true, thumbKey, imageDimensions?.width, imageDimensions?.height);
             console.log(`🎬 動画サムネイル自動アップロード完了: ${thumbKey} (${thumbBytes.length} bytes)`);
           }
         } catch (thumbErr) {
@@ -6598,13 +6624,14 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
     renderUrlPalette();
 
-    // 🚀 [INV-CORE-005] Local-First 台帳オプティミスティック追加（手元キャッシュ即時反映）
+    // 🚀 [INV-CORE-005] [INV-CORE-006] Local-First 台帳オプティミスティック追加（host:filename キーで即時反映）
     const finalCid = isFilebase ? (ipfsCid || result.ipfsCid || null) : (result.contentCid || calculatedCid || null);
+    const uploadKvKey = result.kvKey || buildKvKey(baseDomain, result.name);
     addOrUpdateLocalLedgerItem(targetProvider, {
       storageProvider: targetProvider,
       Key: result.name,
       name: result.name,
-      rawKey: result.name,
+      rawKey: uploadKvKey,
       s3Key: result.name,
       Size: uploadBytes.length,
       size: uploadBytes.length,
@@ -6626,6 +6653,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         expiresAt: expiresAt || null,
         ttl: ttlSeconds || 0,
         allowedHost: baseDomain,
+        d: extractCleanHost(baseDomain),
         civitaiTemporary: Boolean(civitaiTemporary),
       }
     });
