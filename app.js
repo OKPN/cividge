@@ -9321,9 +9321,9 @@ r2FileList?.addEventListener("click", async (e) => {
       return;
     }
 
-    // Cloudflare R2 モードの場合
+    // Cloudflare R2 モードの場合: 🔗 対称的ハードリンク（参照カウント）モデル
+    // コピー元・コピー先の役割・主従関係を完全撤廃し、同一実体へのリンク数のみで状態遷移
     const resolvedS3Key = target.dataset.s3key || target.closest(".result-item")?.dataset?.s3key || key;
-    const isAlias = key.includes(":") || (resolvedS3Key && key !== resolvedS3Key);
     const allItems = Array.from(r2FileList.querySelectorAll(".result-item"));
     const siblingLinks = allItems
       .filter(el => el.dataset.key !== key)
@@ -9337,17 +9337,11 @@ r2FileList?.addEventListener("click", async (e) => {
 
     let deleteOriginAlso = false;
 
-    if (isAlias) {
-      // 🛡️ [INV-FRONT-007] エイリアス（別ドメイン用個別キー）の削除:
-      // エイリアス削除時は、いかなる場合も S3 物理実体を絶対に削除しない！
-      const confirmMsg = `ドメインエイリアス '${key}' を削除しますか？\n\n・このドメインでのURLのみを即座に削除（404化）します。\n・大本の実体ファイル（R2）や、他のドメインでの配信リンクは影響を受けずそのまま維持されます。`;
-      const ok = await showCustomConfirm(confirmMsg, "🗑️ エイリアス削除の確認", "削除する");
-      if (!ok) return;
-      deleteOriginAlso = false;
-    } else if (siblingLinks.length > 0) {
-      // 大本ファイルだが、他のドメイン（エイリアス）でも共有されている場合
+    if (siblingLinks.length > 0) {
+      // 🔗 参照数 2 以上: どのカードも対等な「参照リンク（エイリアス）」
+      // デフォルトは「このリンクのみ削除（実体は残す）」
       const siblingNames = siblingLinks.map(name => `'${name}'`).join("、");
-      const confirmMsg = `元ファイル '${key}' のリンクを削除しますか？\n\n⚠️ このファイルの実体は、以下の他のドメイン（エイリアス）とも共有されています：\n【共有中】: ${siblingNames}\n\n・[OK] を押すと、'${key}' のURLのみを削除（即座に404化）します。\n（他のリンク '${siblingLinks[0]}' などは引き続き閲覧できます）`;
+      const confirmMsg = `リンク '${key}' を削除しますか？\n\n⚠️ このファイルの実体は、以下の他のドメイン（リンク）とも共有されています：\n【共有中】: ${siblingNames}\n\n・[OK] を押すと、'${key}' のURLのみを削除（即座に404化）します。\n（他のリンク '${siblingLinks[0]}' などは引き続き閲覧できます）`;
       const ok = await showCustomConfirm(confirmMsg, "⚠️ リンク削除の確認");
       if (!ok) return;
 
@@ -9358,7 +9352,8 @@ r2FileList?.addEventListener("click", async (e) => {
         "リンクのみ削除"
       );
     } else {
-      // 単独リンクの場合
+      // 🔗 参照数 1（最後の1個）: 実体と結びついた「最後の唯一の窓口（本物）」
+      // これを削除することは実体そのものの抹消と同義
       const confirmMsg = `ファイル '${key}' を R2 から削除しますか？\n\n・URL は即座に 404 になり閲覧できなくなります。\n・R2 バケット内の実体も安全に消去されます。`;
       const ok = await showCustomConfirm(confirmMsg, "🗑️ R2 削除の確認", "削除する");
       if (!ok) return;
@@ -9366,8 +9361,8 @@ r2FileList?.addEventListener("click", async (e) => {
     }
 
     try {
-      const willDeleteAll = (!isAlias && (siblingLinks.length === 0 || deleteOriginAlso));
-      // 1. 対象リンクの KV マッピングを削除（エイリアスレコードまたは大本レコード）
+      const willDeleteAll = (siblingLinks.length === 0 || deleteOriginAlso);
+      // 1. 対象リンクの KV マッピングを削除
       await deleteKvCid(key, { makeTombstone: willDeleteAll });
 
       // 2. 「すべて完全削除」が選択された場合、共有している兄弟リンクの KV も一括削除
@@ -9377,8 +9372,8 @@ r2FileList?.addEventListener("click", async (e) => {
         }
       }
 
-      // 3. 単独、または「すべて完全削除」の場合のみ S3 (R2) 実体を削除（エイリアス時は絶対に実行しない）
-      if (!isAlias && deleteOriginAlso && s3 && bucketName && resolvedS3Key) {
+      // 3. 最後の1個、または「すべて完全削除」の場合のみ S3 (R2) 実体を削除
+      if (deleteOriginAlso && s3 && bucketName && resolvedS3Key) {
         const thumbnailKey = getVideoThumbnailKey(resolvedS3Key);
         if (thumbnailKey) await deleteKvCid(thumbnailKey, { makeTombstone: false });
         const keysToDelete = [resolvedS3Key, thumbnailKey].filter(Boolean);
