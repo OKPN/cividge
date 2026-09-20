@@ -1405,7 +1405,7 @@ function removeItemsFromLocalLedger(provider, keysToRemove) {
 
 function addOrUpdateLocalLedgerItem(provider, item) {
   if (!provider || !item) return;
-  const targetKey = item.rawKey || item.Key || item.name;
+  const targetKey = item.rawKey || (item.metadata?.d ? `${item.metadata.d}:${item.Key}` : (item.Key || item.name));
   if (!targetKey) return;
 
   if (!Array.isArray(storageCachedContents)) {
@@ -1413,9 +1413,8 @@ function addOrUpdateLocalLedgerItem(provider, item) {
   }
 
   const existingIdx = storageCachedContents.findIndex(existing => {
-    const k1 = existing.Key || existing.name;
-    const k2 = existing.rawKey;
-    return k1 === targetKey || k2 === targetKey;
+    const existingRawKey = existing.rawKey || (existing.metadata?.d ? `${existing.metadata.d}:${existing.Key}` : (existing.Key || existing.name));
+    return existingRawKey === targetKey;
   });
 
   if (existingIdx >= 0) {
@@ -1802,30 +1801,29 @@ function getSelectedDeliveryUrl(result) {
   return getPublicDeliveryUrl(result.name, provider);
 }
 
-// 🌐 各ファイルカード専用の固定配信ドメイン管理（プルダウン変更で釣られないように完全分離）
+// 🌐 各ファイルカード専用の固定配信ドメイン管理（プルダウン変更や他ファイル操作で絶対に釣られない完全独立）
 function getFileStoredDomain(itemKey, itemDisplayName, rawAllowedHost) {
-  // 1. rawKey に host:filename があればそのホストを優先
+  // 1. rawKey に host:filename があればそのホストを絶対優先
   if (itemKey && itemKey.indexOf(":") > 0 && !itemKey.startsWith("tombstone_") && !itemKey.startsWith("blob_")) {
     const host = itemKey.split(":")[0].trim();
     if (host) return host.startsWith("http") ? host : `https://${host}`;
   }
-  // 2. メタデータの allowedHost / d があれば優先
+  // 2. メタデータの allowedHost / d があれば絶対優先
   if (rawAllowedHost) {
     const host = rawAllowedHost.split(",")[0].trim();
     if (host) return host.startsWith("http") ? host : `https://${host}`;
   }
-  // 3. 現在画面で選択されているアクティブ配信ドメインを優先（死んだ過去ドメインの巻き添え防止）
+  // 3. ローカルに保存されている各カード固有キー（itemKey）の固定ドメイン
+  try {
+    const map = JSON.parse(localStorage.getItem("fileDomainMap") || "{}");
+    if (itemKey && map[itemKey]) return map[itemKey];
+  } catch (e) {}
+
+  // 4. メタデータも固有キーも存在しない未設定アイテムのみ、現在選択されている配信ドメインを適用
   const current = getSelectedR2Domain();
   if (current) {
     return current;
   }
-
-  // 4. ローカルに保存されている各ファイルの固定ドメイン（フォールバック）
-  try {
-    const map = JSON.parse(localStorage.getItem("fileDomainMap") || "{}");
-    if (map[itemKey]) return map[itemKey];
-    if (map[itemDisplayName]) return map[itemDisplayName];
-  } catch (e) {}
 
   return typeof window !== "undefined" ? window.location.origin : "";
 }
@@ -7407,6 +7405,10 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
       const consumedS3Keys = new Set();
 
       // 1. KV に登録されている名前（公開URL名）を最優先でリスト構築
+      // ドメイン付き正規キー（host:filename）を優先処理し、同一ドメインの重複を排除
+      kvFiles.sort((a, b) => (b.name.includes(":") ? 1 : 0) - (a.name.includes(":") ? 1 : 0));
+      const seenDomainFiles = new Set();
+
       for (const kvItem of kvFiles) {
         const rawKey = kvItem.name;
         // hostname:filename の形式（別ドメイン個別キー）なら表示ファイル名を抽出
@@ -7414,6 +7416,13 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
         const displayName = (colonIdx > 0 && !rawKey.startsWith("tombstone_") && !rawKey.startsWith("blob_"))
           ? rawKey.substring(colonIdx + 1)
           : rawKey;
+
+        const itemDomain = (colonIdx > 0 ? rawKey.split(":")[0] : (kvItem.metadata?.d || kvItem.metadata?.allowedHost || "")).toLowerCase().trim();
+        const domainFileKey = `${itemDomain}:${displayName}`;
+        if (itemDomain && seenDomainFiles.has(domainFileKey)) {
+          continue; // 同一ドメインかつ同一ファイル名の重複カードを排除
+        }
+        if (itemDomain) seenDomainFiles.add(domainFileKey);
 
         const kvCid = kvItem.metadata?.cid || getStoredIpfsCid(rawKey) || getStoredIpfsCid(displayName);
         const recordedS3Key = kvItem.metadata?.s3Key;
@@ -7528,6 +7537,9 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
       const consumedS3Keys = new Set();
 
       // 1. R2 に属する KV レコード（ドメイン別エイリアスを含む）を走査してカード化
+      kvFiles.sort((a, b) => (b.name.includes(":") ? 1 : 0) - (a.name.includes(":") ? 1 : 0));
+      const seenR2DomainFiles = new Set();
+
       for (const kvItem of kvFiles) {
         const rawKey = kvItem.name;
         if (!rawKey || rawKey.startsWith("tombstone_") || rawKey.startsWith("blob_")) continue;
@@ -7536,6 +7548,13 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
         const displayName = (colonIdx > 0)
           ? rawKey.substring(colonIdx + 1)
           : rawKey;
+
+        const itemDomain = (colonIdx > 0 ? rawKey.split(":")[0] : (kvItem.metadata?.d || kvItem.metadata?.allowedHost || "")).toLowerCase().trim();
+        const domainFileKey = `${itemDomain}:${displayName}`;
+        if (itemDomain && seenR2DomainFiles.has(domainFileKey)) {
+          continue; // 同一ドメインかつ同一ファイル名の重複カードを排除
+        }
+        if (itemDomain) seenR2DomainFiles.add(domainFileKey);
 
         const kvCid = kvItem.metadata?.cid || kvItem.metadata?.c || kvItem.value || getStoredIpfsCid(rawKey) || getStoredIpfsCid(displayName) || "";
         const isExplicitFilebase = kvItem.metadata?.backend === "filebase" || kvItem.metadata?.b === "filebase";
