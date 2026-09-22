@@ -17,7 +17,7 @@ Cividge's public delivery-domain selector when the relay is enabled.
 ```text
 https://<project>.pages.dev/<file>
   → 307
-https://<backend>/r/<project>.pages.dev/<file>
+https://<backend>/r/<relay-id>/<file>
 ```
 
 The public project name becomes the Pages hostname. For example,
@@ -30,8 +30,11 @@ When deploying a new project name, initialize it first with:
 Start from Cividge's
 `compatibility-layer/filebase/_redirects.template`, copying it to an empty
 folder as `_redirects`. Replace
-`__FILEBASE_PUBLIC_HOST__` with the exact public Pages hostname (for example
-`content-relay.pages.dev`). The backend origin is the canonical relay Worker
+`__FILEBASE_PUBLIC_HOST__` with a relay identifier accepted by the Worker. Use
+the exact public Pages hostname (for example `content-relay.pages.dev`) unless
+the maintained deployment already uses its unique first label
+(`content-relay`). The backend maps that transport identifier to exactly one
+allowlisted canonical host. The backend origin is the canonical relay Worker
 declared by the maintained template.
 
 The resulting rule must look like:
@@ -52,8 +55,8 @@ Then verify:
 curl.exe -I "https://content-relay.pages.dev/example.webp?x=random"
 ```
 
-The Location must use the backend's
-`/r/content-relay.pages.dev/example.webp` path. The query-removal rule belongs
+The Location must use the backend's `/r/<relay-id>/example.webp` path. The
+query-removal rule belongs
 on the backend custom-domain zone; it must preserve `/r/`.
 
 In Cividge, add and select `https://content-relay.pages.dev` under **Filebase

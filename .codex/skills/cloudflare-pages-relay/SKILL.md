@@ -23,7 +23,7 @@ Do not reverse these roles:
 
 ```text
 public, pasted URL: https://<chosen-project>.pages.dev/<file>
-             307 → backend delivery origin: https://<worker-or-custom-host>/r/<chosen-project>.pages.dev/<file>
+             307 → backend delivery origin: https://<worker-or-custom-host>/r/<relay-id>/<file>
 ```
 
 For Filebase, the public Pages URL is selected in Cividge's **Filebase delivery
@@ -51,7 +51,8 @@ delivery origin. A Pages URL is the public entry, not the backend host.
 5. Verify a real or deliberately harmless test path with `curl.exe -I`. Confirm
    a single 307, the preserved filename path, the intended backend hostname,
    and the expected fixed relay identifier. Filebase uses
-   `/r/<public-pages-host>/<file>`; follow the current R2 template for R2.
+   `/r/<relay-id>/<file>` where the identifier is either the exact allowed
+   Pages hostname or its unique first label; follow the current R2 template for R2.
 6. In `cividge-kv-worker/wrangler.toml`, append the new public hostname to
    `STATIC_RELAY_PUBLIC_HOSTS` as a comma-separated list (e.g. `host1.pages.dev,host2.pages.dev`),
    then redeploy the worker (`npx wrangler deploy`). The Worker validates that
