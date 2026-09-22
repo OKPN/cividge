@@ -8456,7 +8456,9 @@ r2FileList?.addEventListener("click", async (e) => {
     return;
   }
 
-  // 🪐 ファイル名（URL）変更（インライン編集: byoc スタイル）
+  // Presentation: ファイル名変更に見えるインライン編集。
+  // Domain: 元Linkと同じhostに、同じObjectRefを指すpeer Linkをcreate-onlyで追加する。
+  // 元Linkと物理Objectは変更・削除しない。
   if (target.classList.contains("rename-file-btn") || target.closest(".rename-file-btn")) {
     const btn = target.classList.contains("rename-file-btn") ? target : target.closest(".rename-file-btn");
     const oldKey = btn.dataset.key;
@@ -8533,7 +8535,7 @@ r2FileList?.addEventListener("click", async (e) => {
         ? storageCachedContents
         : (loadLedgerFromLocalStorage(activeStorageTab) || []);
 
-      const currentKv = localLedgerList.find(f => (f.rawKey || f.Key) === oldKey || f.Key === oldKey || (f.rawKey || f.Key).endsWith(`:${oldKey}`));
+      const currentKv = localLedgerList.find(f => (f.rawKey || f.Key) === oldKey);
       if (currentKv) {
         if (!cid) cid = currentKv.cid || currentKv.contentCid || currentKv.metadata?.cid;
         if (!size) size = currentKv.Size || currentKv.size || currentKv.metadata?.size || 0;
@@ -8549,28 +8551,22 @@ r2FileList?.addEventListener("click", async (e) => {
         cid = "r2";
       }
 
-      // ドメインプレフィックス付きキー（例: testunko.pages.dev:file.png）の場合、プレフィックスを維持
-      let targetNewKey = newKey;
-      if (oldKey && oldKey.includes(":")) {
-        const colonIdx = oldKey.indexOf(":");
-        const prefix = oldKey.substring(0, colonIdx + 1);
-        targetNewKey = `${prefix}${newKey}`;
+      // Link identityはcanonical `host:filename` のみ。ペン操作でhostは変えない。
+      const colonIdx = oldKey.indexOf(":");
+      if (colonIdx <= 0 || colonIdx === oldKey.length - 1) {
+        alert("❌ 元リンクがcanonical host:filename形式ではないため、別名リンクを作成できません。");
+        row.innerHTML = originalHtml;
+        return;
       }
+      const sourceHost = oldKey.slice(0, colonIdx).toLowerCase();
+      const targetNewKey = `${sourceHost}:${newKey}`;
 
-      // 🛡️ 同名ファイル存在チェック:
-      // 変更先 targetNewKey が既に存在し、かつ実体が異なる場合は上書き破壊を防ぐため中断
-      const conflictingFile = localLedgerList.find(f => (f.rawKey || f.Key) === targetNewKey || f.Key === newKey);
+      // 同じLink identityは、同じObjectを指していても必ずconflict。上書きはしない。
+      const conflictingFile = localLedgerList.find(f => (f.rawKey || f.Key) === targetNewKey);
       if (conflictingFile) {
-        const targetCid = conflictingFile.cid || conflictingFile.contentCid || conflictingFile.metadata?.cid || conflictingFile.metadata?.c;
-        const targetS3 = conflictingFile.s3Key || conflictingFile.metadata?.s3Key || conflictingFile.metadata?.k_s3;
-        const isSameEntity = isFilebase
-          ? (targetCid && targetCid === cid)
-          : (targetS3 && targetS3 === originalS3Key);
-        if (!isSameEntity) {
-          alert(`⚠️ 同名の別ファイル「${newKey}」が既に存在します。\n別のファイル名を指定してください。`);
-          row.innerHTML = originalHtml;
-          return;
-        }
+        alert(`⚠️ 同名のリンク「${newKey}」はすでに存在します。\n別のファイル名を指定してください。`);
+        row.innerHTML = originalHtml;
+        return;
       }
 
       saveBtn.disabled = true;
@@ -8594,7 +8590,7 @@ r2FileList?.addEventListener("click", async (e) => {
         }
 
         const targetCid = isFilebase ? cid : "r2";
-        await registerKvCid(
+        const created = await registerKvCid(
           targetNewKey, targetCid, size, mime, originalS3Key, password, null, ttl, expiresAt,
           unpinned, kuboStatus, allowedHost, false, getVideoThumbnailKey(originalS3Key),
           null, null, undefined,
@@ -8602,6 +8598,9 @@ r2FileList?.addEventListener("click", async (e) => {
           isFilebase ? "filebase" : "r2",
           { createOnly: true }
         );
+        if (created !== true) {
+          throw new Error("KV台帳Workerと管理トークンが未設定のため、peer Linkを作成できません。");
+        }
 
         if (isFilebase) {
           storeIpfsCid(targetNewKey, cid);
@@ -8621,8 +8620,7 @@ r2FileList?.addEventListener("click", async (e) => {
           setFileStoredDomain(targetNewKey, allowedHost);
         }
 
-        // 2. 以前の名前のリンクも維持（即404化させず、実体共通エイリアスとして永続両立）
-        // ※ deleteKvCid(oldKey) は実行せず、古いURLを踏んだ人も引き続き閲覧可能にする
+        // 元Linkはpeerとしてそのまま残す。delete/update/renameは行わない。
 
         // 🚀 [INV-CORE-005] Local-First: 手元台帳に新名前レコードを追加して即時描画
         const existingItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === oldKey);
