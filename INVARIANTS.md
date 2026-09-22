@@ -1,5 +1,26 @@
 # システム不変条件 (System Invariants) - Cividge Frontend
 
+> **Lifecycle authority supersession.** Browser peer scans, tombstones,
+> client-side last-reference decisions, and direct physical deletion described
+> by older text are obsolete. `localStorage` is UI/cache only;
+> `host:filename` is the only Link identity; ObjectLifecycle is authoritative
+> for Link/Object/Placement transitions; delivery KV is a projection; and
+> physical release requires an authority-issued task.
+
+## Lifecycle authority
+
+- A Link is canonical `host:filename`; an ObjectRef is `r2:<s3Key>` or
+  `ipfs:<CID>`; and a Placement is a backend copy. They are not interchangeable.
+- `createLink` and `removeLink` pass the lifecycle authority. Peer Links have
+  no old/new or primary/secondary role.
+- A GET does one canonical KV lookup, performs no storage fallback and causes
+  no write, repair, delete, or release.
+- Object release requires an authoritative empty Link set. FIFO, expiry,
+  manual delete, and Civitai cleanup only request release.
+- Worker executes R2 work. Browser/local holders execute Filebase/Kubo only
+  after an issued task and report success or retryable failure. Their
+  credentials are an explicit boundary, not lifecycle authority.
+
 このドキュメントは、Cividge フロントエンド（UI / Pages）および関連システムが正常に動作するために、**いかなるコード改修やリファクタリングを行っても絶対に崩してはならない性質（不変条件）** を定義したものです。
 
 配信 Worker 側の不変条件については `cividge-kv-worker/INVARIANTS.md` を参照してください。
@@ -64,20 +85,21 @@
 
 ---
 
-### [INV-CORE-005] Local-First 原則と localStorage 最大活用原則 (Local-First & Storage Conservation Principle)
-* **規則 (Rule)**:  
-  1. **手元台帳の正本化とオプティミスティック更新 (Optimistic Local-First)**:  
+### [INV-CORE-005] Local-First UI と server-authoritative lifecycle の分離
+* **規則 (Rule)**:
+  1. **手元キャッシュの差分更新 (Optimistic UI Cache)**:
      ファイルの追加・削除・リネーム・メタデータ変更等の通常操作完了後、サーバー（KV/R2）への全件再照会・再フェッチ（`fetchKvFiles` / `fetchAndRenderR2Files`）を行ってはならない (MUST NOT)。手元のキャッシュ（`localStorage` およびメモリ内データ構造）を差分更新し、即座に画面を再描画しなければならない。
-  2. **起動時・画面遷移時のサーバー通信ゼロ化 (Zero-Fetch on Mount / Transition)**:  
+     ただし localStorage は UI / recoverable cache であり、Link 関係、最終参照、Object release の authority ではない。
+  2. **起動時・画面遷移時のサーバー通信ゼロ化 (Zero-Fetch on Mount / Transition)**:
      手元にローカル台帳（`localStorage`）が存在する場合、画面初期ロード時やタブ切り替え時にサーバーへ全件フェッチを飛ばしてはならない (MUST NOT)。手元台帳からミリ秒単位で即座に描画し、サーバー同期はユーザーが明示的に「🔄 更新」ボタンを押した時のみ（明示的オプトイン）に限定する。
-  3. **クライアント側メタデータ解決による Worker 走査根絶 (Client-Side Resolution)**:  
-     ファイルの重複チェック、同名衝突判定、削除時の墓標発行要否（`isCidShared`）など、台帳全体の走査が必要なロジックは、クライアントの手元台帳で全件解決し、サーバー（Worker）には解決済みの決定論的パラメータ（`make_tombstone=1` または `0` など）のみを送信しなければならない。サーバー側に `kv.list()` による全件走査フォールバックを持たせてはならない。
+  3. **表示上の解決と lifecycle authorization の分離**:
+     並び替え、表示フィルター、同名警告等は手元キャッシュで解決してよい。一方、Link 作成・削除、最後の参照判定、Placement release は canonical ObjectRef から一意に決まる Durable Object を必ず通す。クライアントが `isCidShared`、墓標、手元件数等から物理削除を許可してはならない。公開 GET と通常 UI 操作のいずれにも KV 全件走査フォールバックを持たせてはならない。
 
 * **設計倫理 (Rationale & Philosophy)**:  
   - ブラウザの `localStorage` は安価かつ大容量（通常5MB〜10MB。タプル圧縮台帳なら数万件格納可能）であり、高速に永続化できる。
   - 一方で Cloudflare KV の `list()` 枠は **1日たった 1,000回** しかなく、全リソースの中で最も貴重である。
   - 操作のたびに「念のため最新をサーバーから取り直す」という旧来の Web アプリ設計は、1回削除するごとに `list()` 枠を消費し、一瞬で無料枠を破綻させる。
-  - 「手元にあるデータは手元で解決し、手元の台帳を更新する」「他デバイスとの同期が必要な時だけ明示的にフェッチする」という Local-First 原則を徹底することで、通常運用における KV `list()` の消費を「完全 0 回」に抑え込むことができる。
+  - 「表示は手元、状態遷移の許可はサーバー」という境界により、KV `list()` の浪費と stale localStorage による Object 誤削除を同時に防ぐ。
 
 ---
 
@@ -261,10 +283,10 @@
   「コピー元（親・本物）」と「エイリアス（子）」のような主従関係や、ホスト名を持たない特権キー（単体キー）を設けてはならない (MUST NOT)。
 
 * **状態遷移とライフサイクル (State Transition & Lifecycle)**:  
-  1. **参照数 2 以上の場合 (`totalLinks >= 2`)**:  
-     コピー元だろうが追加ドメインだろうが、すべてが対等な「参照リンク（エイリアス）」である。どのリンクの削除においても背後のストレージ実体を削除してはならず、削除対象の KV マッピングのみを除去して実体を 100% 保護しなければならない。
-  2. **参照数 1 の場合 (`totalLinks === 1`、最後の 1 個)**:  
-     ホスト名の種別に関わらず、それが実体と結びついた「最後の唯一の窓口（本物）」である。これを削除することは実体そのものの抹消と同義とし、KV レコードとともに背後の物理実体（S3 / IPFS）も安全に消去（unlink）しなければならない。
+  1. canonical `ObjectRef` ごとの Durable Object が Link 集合を authoritative に保持する。Link A と Link B は順序のない peer であり、B の作成は A を更新・削除しない。
+  2. Link 削除は `beginRemoveLink → delivery KV projection delete → completeRemoveLink` の二段階とする。projection delete 完了前の Link は参照として数え続け、途中失敗は同一 identity で再試行できなければならない。
+  3. active Link と pending removal がともに 0 の場合だけ、Object は release candidate になれる。これは物理削除の即時実行を意味しない。
+  4. Placement は claim ID と generation を持つ authorize/execute/report により遷移する。stale executor、重複 report、partial failure が共有 Object を破壊してはならない。
 
 * **理由 (Rationale)**:  
   キー名の形式（コロンの有無）で親子を区別する非対称なモデルは、元カードを先に消した際に残ったエイリアスが実体を消せなくなって孤児オブジェクト（容量浪費ゴミ）を生み出すか、または親削除時に他リンクを巻き添え破壊する致命的な欠陥を招く。Linux の inode/hardlink や IPFS の CID/名前と同様に、すべての URL を実体への対等なポインタとして扱うことが、最も堅牢で論理的な不変条件である。

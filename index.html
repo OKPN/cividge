@@ -523,14 +523,14 @@
                   </label>
                   <label class="field" style="margin: 0;">
                     <span style="display: flex; justify-content: space-between; align-items: center;">
-                      <span style="font-size: 11px; color: var(--muted);">🔑 投稿専用 API トークン</span>
+                      <span style="font-size: 11px; color: var(--muted);">🔑 投稿用 API トークン（本番 / テスト）</span>
                       <span id="uploadTokenStatusBadge" style="font-size: 10.5px; color: var(--muted);" data-i18n="uploadTokenStatusUnknown">⚪ 未検証</span>
                     </span>
-                    <input id="uploadApiToken" type="password" placeholder="Worker の UPLOAD_TOKEN を入力" style="font-family: monospace; font-size: 11px; height: 32px;" spellcheck="false" autocomplete="off">
-                    <span style="font-size: 10px; color: var(--muted); line-height: 1.3;">※ 管理用トークンではなく、外部投稿だけを許可する <code>UPLOAD_TOKEN</code> を使います。BAT にはこのトークンが保存されるため、他人へ渡さないでください。</span>
+                    <input id="uploadApiToken" type="password" placeholder="Worker の UPLOAD_TOKEN または TEST_UPLOAD_TOKEN を入力" style="font-family: monospace; font-size: 11px; height: 32px;" spellcheck="false" autocomplete="off">
+                    <span style="font-size: 10px; color: var(--muted); line-height: 1.3;">※ 管理用トークンではなく、外部投稿だけを許可する <code>UPLOAD_TOKEN</code> または検証用 <code>TEST_UPLOAD_TOKEN</code> を使います。入力値は接続先 Worker ごとにこのブラウザへ保存されます。BAT にはこのトークンが保存されるため、他人へ渡さないでください。</span>
                   </label>
                   <div id="uploadTokenNotice" style="display: none; font-size: 11px; color: #f59e0b; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; padding: 6px 10px; line-height: 1.4;">
-                    ⚠️ <strong>投稿専用 API トークンが必要です:</strong> Worker に設定した <code>UPLOAD_TOKEN</code> を入力すると、URLコピー・curl例・Windows「送る」登録を利用できます。
+                    ⚠️ <strong>投稿用 API トークンが必要です:</strong> Worker に設定した <code>UPLOAD_TOKEN</code> または <code>TEST_UPLOAD_TOKEN</code> を入力すると、URLコピー・curl例・Windows「送る」登録を利用できます。
                   </div>
                   <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                     <button class="ghost-button" id="copyUploadApiUrlBtn" type="button" style="font-size: 11px; padding: 4px 8px; min-height: 30px;" data-i18n="btnCopyUrl">📋 URLをコピー</button>

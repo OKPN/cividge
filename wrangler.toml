@@ -2,10 +2,7 @@ name = "cividge"
 compatibility_date = "2026-09-01"
 pages_build_output_dir = "dist"
 
-[[kv_namespaces]]
-binding = "CIVIDGE_KV"
-id = "ff45707014424ab3afac57fda8c305de"
-
-[[kv_namespaces]]
-binding = "IPFS_KV"
-id = "ff45707014424ab3afac57fda8c305de"
+[vars]
+# Pages compatibility proxy for /api/upload. The Pages Function never writes
+# Links; it forwards the upload capability to this canonical Worker.
+CIVIDGE_KV_WORKER_URL = "https://cividge-kv-worker.okpn.workers.dev"

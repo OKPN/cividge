@@ -1,19 +1,11 @@
 # Cividge Pages relay reference
 
-## Architecture Tiers
+## Architecture
 
-Cividge supports two deployment modes for `pages.dev` URLs:
-
-1. **Tier 1 (Starter: Standalone Pages with Functions)**
-   - Used when you do not have a custom domain or compatibility Worker.
-   - Deploy the frontend directly (`npm run build` → `npx wrangler pages deploy dist --project-name=cividge`).
-   - Media delivery is handled directly by Pages Functions with an `IPFS_KV` binding.
-   - Zero additional infrastructure, but subject to Pages Functions free quota limits and lacks custom zone WAF rules.
-
-2. **Tier 2 (Hardened: Static 307 Relay - Documented Here)**
-   - Used when you have a backend compatibility Worker / custom domain.
-   - Pages acts strictly as a lightweight, function-free public door issuing 307 redirects.
-   - Decouples public URLs from the origin, enables query cache-busting defense on the backend zone, and allows spawning unlimited disposable public addresses at zero invocation cost.
+Cividge public media URLs use a function-free Pages project that issues static
+307 redirects. The canonical KV Worker is the only delivery implementation.
+The application Pages project does not own lifecycle state and must not be
+given a second media-delivery implementation or KV binding.
 
 ## Roles (Tier 2 Static Relay)
 
@@ -25,7 +17,7 @@ Cividge's public delivery-domain selector when the relay is enabled.
 ```text
 https://<project>.pages.dev/<file>
   → 307
-https://<backend>/<marker>/<file>
+https://<backend>/r/<project>.pages.dev/<file>
 ```
 
 The public project name becomes the Pages hostname. For example,
@@ -38,13 +30,14 @@ When deploying a new project name, initialize it first with:
 Start from Cividge's
 `compatibility-layer/filebase/_redirects.template`, copying it to an empty
 folder as `_redirects`. Replace
-`__FILEBASE_COMPATIBILITY_ORIGIN__` with the backend compatibility origin,
-without a trailing slash.
+`__FILEBASE_PUBLIC_HOST__` with the exact public Pages hostname (for example
+`content-relay.pages.dev`). The backend origin is the canonical relay Worker
+declared by the maintained template.
 
 The resulting rule must look like:
 
 ```text
-/* https://ipfs-relay.example.com/r/:splat 307
+/* https://relay.example.com/r/content-relay.pages.dev/:splat 307
 ```
 
 Deploy:
@@ -59,15 +52,17 @@ Then verify:
 curl.exe -I "https://content-relay.pages.dev/example.webp?x=random"
 ```
 
-The Location must use the backend's `/r/example.webp` path. The query-removal
-rule belongs on the backend custom-domain zone; it must preserve `/r/`.
+The Location must use the backend's
+`/r/content-relay.pages.dev/example.webp` path. The query-removal rule belongs
+on the backend custom-domain zone; it must preserve `/r/`.
 
 In Cividge, add and select `https://content-relay.pages.dev` under **Filebase
 delivery domain**. In the KV Worker configuration, add the public hostname to
 `STATIC_RELAY_PUBLIC_HOSTS` (comma-separated list, e.g. `host1.pages.dev,host2.pages.dev`)
 and the backend hostname to `STATIC_RELAY_BACKEND_HOSTS` when they are not already
-present, then redeploy the worker. The worker automatically searches across all
-registered relay hosts.
+present, then redeploy the worker. The Worker rejects unknown relay identifiers
+and performs one lookup for `content-relay.pages.dev:example.webp`; it does not
+search across registered hosts.
 
 ## R2
 

@@ -46,6 +46,15 @@ specification explicitly says otherwise.
    a mandatory cron sweep. Once an expired Link is accessed, it must no longer
    serve the Object. Its physical cleanup remains subject to the last-reference
    rule.
+9. **Lifecycle authority** — The SQLite-backed Durable Object named from the
+   canonical ObjectRef (`r2:<s3Key>` or `ipfs:<cid>`) owns the authoritative
+   Link relation and lifecycle state. Delivery KV is a projection and
+   localStorage is neither an Object authority nor a last-reference oracle.
+10. **Actuator separation** — R2 cleanup is executed by the Worker. Filebase
+   and Kubo capability holders may be browser-local, but can execute only an
+   authorized Placement task and must report `released` or `retryable`; their
+   report never authorizes release. Browser-held storage credentials are an
+   explicit out-of-band trust boundary.
 
 ## Required lifecycle transitions
 
@@ -53,12 +62,34 @@ specification explicitly says otherwise.
 | --- | --- |
 | New upload | Store or identify an Object, then register its Link. A successful response must not advertise a Link before its registry entry is usable. |
 | Duplicate Filebase content | Reuse the matching CID and register a new Alias/Link; do not re-upload identical bytes solely to obtain a different filename. |
-| Rename or new delivery domain | Create or update a Link while retaining the same Object/CID. |
+| Rename or new delivery domain | Create a new peer Link while retaining the source Link and the same Object/CID. A duplicate canonical Link key is a conflict, not an update. |
 | Change TTL or password | Modify only the selected Link's policy. |
-| Delete one of several links | Remove that Link only; retain the shared Object/CID and preservation pin. |
+| Delete one of several links | Begin authoritative removal, delete that Link's delivery projection, then complete authoritative removal; retain the shared Object/CID and preservation pin. Every partial failure is retryable with the same ObjectRef and Link key. |
 | Expiry on access | Invalidate the expired Link and return the configured not-found response; do not clean up a shared Object/CID. |
-| Delete or expire the final link | Permit physical cleanup and/or Kubo unpin according to the configured storage policy. |
-| Filebase capacity release | Before releasing a Filebase copy that still needs preservation, attempt the configured Kubo pin flow; a failed or deferred pin must remain recoverable. |
+| Delete or expire the final link | Make the Object release-eligible only after the authoritative Link set and pending-removal set are empty. Physical cleanup still requires a valid Placement claim. |
+| Filebase capacity release | Before releasing a Filebase copy that still needs preservation, transition Kubo through `PIN_REQUESTED → PINNING → PRESENT`. `pinning` is not preservation. A failed attempt becomes retryable and must not release the source. |
+
+## Authoritative mutation and actuator protocol
+
+- Every lifecycle mutation requires the admin capability. An upload-only or
+  test-upload token is not a lifecycle capability.
+- A Placement executor receives a task containing canonical ObjectRef,
+  Placement kind, operation, claim ID, and generation. Only the matching
+  current claim may advance state.
+- Duplicate reports for the same completed claim are idempotent. A report for
+  an older generation or a contradictory outcome is rejected.
+- R2 deletion may be executed by the Worker. Filebase deletion and Kubo unpin
+  may be executed by browser/local capability holders, but the capability
+  holder never decides whether release is allowed.
+- Delivery KV is updated from authoritative Placement state after a successful
+  report. Client-supplied `kuboStatus` is not authority.
+
+## Observation and UI retirement
+
+HEAD/audit failures are observations, not lifecycle mutations. Three
+consecutive drifting observations may retire an item from the local UI cache,
+but must not delete a Link, request Object release, or perform physical cleanup.
+One successful observation resets the confidence counter.
 
 ## Verification matrix
 
@@ -75,6 +106,8 @@ state and request construction that feed those API tests.
 | 6 | Replay upload/register/alias/pin requests; assert one logical Link per requested name and no additional pin count. |
 | 7 | Simulate a failure after storage upload and before KV registration, then retry; assert a usable single Link and no accidental cleanup. |
 | 8 | Access an expired Link; assert a not-found response, then confirm that another active alias to the same Object remains usable. |
+| 9–10 | Fail KV deletion and authority completion separately; retry the same Link removal and assert no early release. Replay, stale, and contradictory Placement reports and assert deterministic acceptance/rejection. |
+| Observation | Record three HEAD failures and assert local UI retirement only; record success and assert the counter resets. |
 
 ## Change rule
 

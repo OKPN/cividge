@@ -9,9 +9,11 @@ Use this skill when a user wants a board-facing, disposable `pages.dev` media UR
 that redirects to their real Cividge delivery origin (Security-Hardened Step 2),
 or wants to create/register such a static Pages relay with Wrangler.
 
-> **Note on Architecture Tiers**:
-> - **Tier 1 (Starter / Standalone Pages)**: Users without a custom domain can deploy Cividge directly to Pages with KV binding. Media is served directly by Pages Functions.
-> - **Tier 2 (Hardened Static 307 Relay - This Skill)**: Users with a delivery Worker / custom domain use function-free static `_redirects` to spawn disposable `pages.dev` addresses. This decouples the public address from the backend origin, neutralizes query cache-busting attacks, and allows unlimited zero-cost relays.
+Current Cividge has one delivery architecture: public media Pages projects are
+function-free `_redirects` relays, and the KV Worker is the single delivery
+plane. The Cividge application Pages project is only the static UI plus the
+explicit `/api/upload` proxy. Do not recreate the removed Pages Functions + KV
+media-delivery path.
 
 It is not for deploying the Cividge frontend itself, changing storage credentials, or adding Cloudflare DNS custom domains.
 
@@ -21,7 +23,7 @@ Do not reverse these roles:
 
 ```text
 public, pasted URL: https://<chosen-project>.pages.dev/<file>
-             307 → backend delivery origin: https://<worker-or-custom-host>/r/<file>
+             307 → backend delivery origin: https://<worker-or-custom-host>/r/<chosen-project>.pages.dev/<file>
 ```
 
 For Filebase, the public Pages URL is selected in Cividge's **Filebase delivery
@@ -37,7 +39,7 @@ delivery origin. A Pages URL is the public entry, not the backend host.
    provided. The name determines the public `https://<project>.pages.dev` URL.
    Do not invent or replace an existing public project without authorization.
 3. Copy the matching template to a new, minimal deployment folder and replace
-   only its origin placeholder. The folder must contain `_redirects` and no
+   its documented placeholders. The folder must contain `_redirects` and no
    `functions/` directory: otherwise media requests can consume Pages Function
    invocations.
 4. If deploying a brand new Pages project name, initialize it first:
@@ -48,11 +50,13 @@ delivery origin. A Pages URL is the public entry, not the backend host.
    the active environment before executing it.
 5. Verify a real or deliberately harmless test path with `curl.exe -I`. Confirm
    a single 307, the preserved filename path, the intended backend hostname,
-   and the expected fixed `/r/` marker (Filebase) or `?r` query (R2).
+   and the expected fixed relay identifier. Filebase uses
+   `/r/<public-pages-host>/<file>`; follow the current R2 template for R2.
 6. In `cividge-kv-worker/wrangler.toml`, append the new public hostname to
    `STATIC_RELAY_PUBLIC_HOSTS` as a comma-separated list (e.g. `host1.pages.dev,host2.pages.dev`),
-   then redeploy the worker (`npx wrangler deploy`). The worker automatically
-   searches all configured relay hosts.
+   then redeploy the worker (`npx wrangler deploy`). The Worker validates that
+   the relay identifier is allowed and performs exactly one canonical
+   `host:filename` KV lookup; it never scans other hosts.
 7. Only after verification, add/select the resulting Pages URL in Cividge's
    matching delivery-domain control. If UI automation is unavailable, tell the
    user exactly which field receives the public Pages URL. Do not put the

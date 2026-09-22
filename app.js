@@ -13,6 +13,7 @@ import {
   isVideoThumbnailParentKey,
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
+import { isDriftRetired, observeDrift } from "./drift-policy.js";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -1033,7 +1034,7 @@ function getCustomKvWorkerUrl() {
 function getKvApiEndpoint() {
   const customUrl = getCustomKvWorkerUrl();
   if (customUrl) {
-    if (customUrl.endsWith("/api/cividge-kv") || customUrl.endsWith("/api/ipfs-kv")) {
+    if (customUrl.endsWith("/api/cividge-kv")) {
       return customUrl;
     }
     return `${customUrl}/api/cividge-kv`;
@@ -1049,8 +1050,8 @@ function getKvDeliveryBaseDomain() {
   }
   const customUrl = getCustomKvWorkerUrl();
   if (customUrl) {
-    // 末尾の /api/cividge-kv または /api/ipfs-kv があれば除去して配信オリジンを取得
-    return customUrl.replace(/\/api\/(cividge-kv|ipfs-kv)\/?$/, "");
+    // 末尾の canonical control-plane path を除去して配信オリジンを取得
+    return customUrl.replace(/\/api\/cividge-kv\/?$/, "");
   }
   return (typeof window !== "undefined" ? window.location.origin : "").replace(/\/$/, "");
 }
@@ -1077,7 +1078,7 @@ function buildKvKey(domainOrUrl, filename) {
   return host ? `${host}:${filename}` : filename;
 }
 
-async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null, civitaiTemporary = undefined, contentCid = null, backend = null) {
+async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null, civitaiTemporary = undefined, contentCid = null, backend = null, mutationOptions = {}) {
   if (!key) return;
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
@@ -1089,6 +1090,7 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
   }
   try {
     const payload = { key, cid: cid || "", size, mime, s3Key: s3Key || key };
+    if (mutationOptions.createOnly) payload.createOnly = true;
     if (contentCid) payload.contentCid = contentCid;
     if (backend) payload.backend = backend;
     // Civitai 転送専用の短期置き場だけを、次回の明示更新で回収できるようにする。
@@ -1169,7 +1171,138 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
   }
 }
 
-async function deleteKvCid(key, { makeTombstone = null } = {}) {
+function getLifecycleApiEndpoint() {
+  const worker = getCustomKvWorkerUrl()
+    .replace(/\/api\/cividge-kv\/?$/, "")
+    .replace(/\/$/, "");
+  return worker ? `${worker}/api/lifecycle` : "";
+}
+
+function getObjectRefForUi(provider, s3Key, cid) {
+  const normalized = normalizeDeliveryProvider(provider);
+  if (normalized === "r2") return s3Key ? `r2:${s3Key}` : "";
+  return isValidIpfsCid(cid) ? `ipfs:${cid.toLowerCase()}` : "";
+}
+
+async function lifecycleRequest(payload) {
+  if (!hasAdminAccess()) return null;
+  const endpoint = getLifecycleApiEndpoint();
+  if (!endpoint) return null;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${getAdminApiToken()}` },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || `Lifecycle error (${response.status})`);
+  return result;
+}
+
+// The browser can execute Filebase/Kubo capabilities, but never decides that an
+// Object is unreferenced. It claims a task authorized by the Durable Object and
+// reports the outcome for retryable bookkeeping.
+async function executeAuthorizedBrowserReleaseTasks(objectRef, tasks = []) {
+  for (const task of tasks) {
+    if (task.operation !== "release") continue;
+    const claimed = await lifecycleRequest({ action: "claimPlacement", objectRef, placement: task.kind, operation: "release" });
+    const claim = claimed.claim;
+    try {
+      if (task.kind === "filebase") {
+        const s3 = getS3Client("filebase");
+        const bucket = getBucketName("filebase");
+        if (!s3 || !bucket) throw new Error("Filebase is not configured in this browser");
+        await safeDeleteS3Objects(s3, bucket, [claim.locator.key, claim.locator.thumbnailKey].filter(Boolean));
+      } else if (task.kind === "kubo") {
+        const result = await unpinFromKubo(claim.locator.cid);
+        if (!result?.success) throw new Error(result?.error || "Kubo unpin failed");
+      } else {
+        throw new Error(`Unsupported browser placement: ${task.kind}`);
+      }
+      await lifecycleRequest({
+        action: "reportPlacement",
+        objectRef,
+        placement: task.kind,
+        claimId: claim.claimId,
+        generation: claim.generation,
+        operation: "release",
+        outcome: "released",
+      });
+    } catch (error) {
+      await lifecycleRequest({
+        action: "reportPlacement",
+        objectRef,
+        placement: task.kind,
+        claimId: claim.claimId,
+        generation: claim.generation,
+        operation: "release",
+        outcome: "retryable",
+        error: error.message,
+      }).catch(() => {});
+      throw error;
+    }
+  }
+}
+
+async function beginKuboAcquisition(objectRef, cid) {
+  const requested = await lifecycleRequest({
+    action: "requestPlacementAcquire",
+    objectRef,
+    placement: { kind: "kubo", executor: "browser", locator: { cid } },
+  });
+  if (requested?.lifecycle?.placements?.kubo?.state === "PRESENT") return null;
+  if (requested?.lifecycle?.placements?.kubo?.state === "PINNING") {
+    throw new Error("Kubo pin acquisition is already in progress");
+  }
+  const claimed = await lifecycleRequest({
+    action: "claimPlacement",
+    objectRef,
+    placement: "kubo",
+    operation: "acquire",
+  });
+  return claimed.claim;
+}
+
+async function reportKuboAcquisition(objectRef, claim, outcome, error = null) {
+  return lifecycleRequest({
+    action: "reportPlacement",
+    objectRef,
+    placement: "kubo",
+    claimId: claim.claimId,
+    generation: claim.generation,
+    operation: "acquire",
+    outcome,
+    ...(error ? { error } : {}),
+  });
+}
+
+async function ensureAuthoritativeKuboPin(objectRef, cid, { requestPin = true } = {}) {
+  const claim = await beginKuboAcquisition(objectRef, cid);
+  if (!claim) return true;
+  try {
+    let confirmed = await checkKuboPinned(cid, 1500);
+    if (!confirmed && requestPin) {
+      const requested = await pinToKubo(cid);
+      if (!requested.success) throw new Error(requested.error || "Kubo pin request failed");
+      confirmed = await checkKuboPinned(cid, 5000);
+    }
+    if (!confirmed) throw new Error("Kubo pin has not reached the confirmed PINNED state");
+    await reportKuboAcquisition(objectRef, claim, "present");
+    return true;
+  } catch (error) {
+    await reportKuboAcquisition(objectRef, claim, "retryable", error.message).catch(() => {});
+    throw error;
+  }
+}
+
+async function requestAuthorizedRelease(objectRef, reason, placement = null) {
+  if (!objectRef || !hasAdminAccess()) return null;
+  const action = placement ? "requestPlacementRelease" : "requestRelease";
+  const result = await lifecycleRequest({ action, objectRef, reason, ...(placement ? { placement } : {}) });
+  if (result?.browserTasks?.length) await executeAuthorizedBrowserReleaseTasks(objectRef, result.browserTasks);
+  return result;
+}
+
+async function deleteKvCid(key) {
   if (!key) return;
   if (!hasAdminAccess()) {
     console.log(`[責任分離] 一般ユーザーモードのため、KV削除をスキップしました: ${key}`);
@@ -1177,28 +1310,28 @@ async function deleteKvCid(key, { makeTombstone = null } = {}) {
   }
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
-  try {
-    const sep = endpoint.includes("?") ? "&" : "?";
-    const headers = {};
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-    let url = `${endpoint}${sep}key=${encodeURIComponent(key)}`;
-    if (makeTombstone !== null && makeTombstone !== undefined) {
-      url += `&make_tombstone=${makeTombstone ? "1" : "0"}`;
-      if (makeTombstone) {
-        try {
-          localStorage.setItem("cividge_pending_tombstones", "true");
-        } catch (_) {}
-      }
-    }
-    await fetch(url, {
+  const sep = endpoint.includes("?") ? "&" : "?";
+  const headers = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const remove = async (objectRef = "") => {
+    const retry = objectRef ? `&objectRef=${encodeURIComponent(objectRef)}` : "";
+    const response = await fetch(`${endpoint}${sep}key=${encodeURIComponent(key)}${retry}`, {
       method: "DELETE",
       headers,
     });
-  } catch (e) {
-    console.warn("Failed to delete CID from KV:", e);
+    const result = await response.json().catch(() => ({}));
+    return { response, result };
+  };
+  let attempt = await remove();
+  if (!attempt.response.ok && attempt.result.retryable && attempt.result.objectRef) {
+    attempt = await remove(attempt.result.objectRef);
   }
+  if (!attempt.response.ok) {
+    throw new Error(attempt.result.error || `KV deletion error (${attempt.response.status})`);
+  }
+  return attempt.result;
 }
 
 // --- 🏠 自宅 Kubo (IPFSノード) RPC ヘルパー ---
@@ -1252,58 +1385,6 @@ window.addEventListener("beforeunload", (e) => {
 // [INV-CORE-001] [INV-CORE-003] 画面表示時に裏で全KuboアイテムのKVレコードをregisterKvCid()で
 // 自動上書き連打する自己修復コード（healKuboPinnedKvRecords）は書き込み枠（1日1,000回）破壊防止のため完全撤去。
 
-
-// 🪦 墓標（Unpin予約キュー）の回収処理
-let lastKuboDrainTime = 0;
-async function drainKuboTombstones() {
-  // 🛡️ [INV-CORE-004] 自宅Kuboが設定されていない環境、または管理者KV連携がない場合は走査を完全スキップ（空振り照会根絶）
-  const customRpc = (localStorage.getItem("kuboRpcUrl") || "").trim();
-  if (!hasAdminAccess() || !customRpc) return;
-
-  // 🛡️ [INV-CORE-005] 手元保留フラグがない平時は Worker への墓標問い合わせ（kv.list() 1,000件枠）を完全スキップ（通信0回）
-  const hasPendingTombstones = localStorage.getItem("cividge_pending_tombstones") === "true";
-  if (!hasPendingTombstones) return;
-
-  const now = Date.now();
-  if (now - lastKuboDrainTime < 60000) return; // 少なくとも60秒に1回に制限
-  lastKuboDrainTime = now;
-  const token = getAdminApiToken();
-  const endpoint = getKvApiEndpoint();
-
-  try {
-    const sep = endpoint.includes("?") ? "&" : "?";
-    const headers = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    const res = await fetch(`${endpoint}${sep}tombstones=1`, { headers });
-    if (!res.ok) return;
-    const data = await res.json();
-    const tombstones = data.tombstones || [];
-    if (tombstones.length === 0) {
-      try { localStorage.removeItem("cividge_pending_tombstones"); } catch (_) {}
-      return;
-    }
-
-    console.log(`🪦 墓標回収（ゴーストUnpin）開始: ${tombstones.length}件の削除キューを処理中...`);
-    for (const cid of tombstones) {
-      try {
-        await unpinFromKubo(cid);
-        // KVから墓標を消去
-        await fetch(`${endpoint}${sep}tombstone=${encodeURIComponent(cid)}`, {
-          method: "DELETE",
-          headers,
-        });
-        console.log(`🪦 墓標回収完了: ${cid}`);
-      } catch (err) {
-        console.warn(`🪦 墓標回収エラー (${cid}):`, err);
-      }
-    }
-    // 全件処理後に保留フラグをクリア
-    try { localStorage.removeItem("cividge_pending_tombstones"); } catch (_) {}
-  } catch (e) {
-    console.warn("drainKuboTombstones error:", e);
-  }
-}
 
 // ==========================================
 // 🗃️ 台帳型タプル圧縮ローカルキャッシュ
@@ -1450,28 +1531,6 @@ function addOrUpdateLocalLedgerItem(provider, item) {
   renderCurrentStoragePage();
 }
 
-
-// 🪦 墓標回収の1日1回（24時間）低頻度ガード
-const TOMBSTONE_DRAIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
-async function maybeDrainTombstonesDaily() {
-  // 🛡️ [INV-CORE-004] [INV-CORE-005] 自宅Kubo未設定、KV連携なし、または手元に保留墓標がない平時は完全スキップ（通信0回）
-  const customRpc = (localStorage.getItem("kuboRpcUrl") || "").trim();
-  if (!hasAdminAccess() || !customRpc) return;
-  const hasPendingTombstones = localStorage.getItem("cividge_pending_tombstones") === "true";
-  if (!hasPendingTombstones) return;
-
-  const lastDrainStr = localStorage.getItem("cividge_last_tombstone_drain");
-  const lastDrain = lastDrainStr ? Number(lastDrainStr) : 0;
-  const now = Date.now();
-  if (now - lastDrain < TOMBSTONE_DRAIN_INTERVAL_MS) return;
-  localStorage.setItem("cividge_last_tombstone_drain", String(now));
-  console.log("🪦 前回から24時間経過したため自宅Kubo墓標（アンピン予約キュー）を定期走査します");
-  try {
-    await drainKuboTombstones();
-  } catch (err) {
-    console.warn("maybeDrainTombstonesDaily error:", err);
-  }
-}
 
 async function fetchKvFiles() {
   // 🛡️ KV台帳連携が有効でない場合、一覧取得はスキップ（相乗り・漏洩防止）
@@ -1826,7 +1885,7 @@ function getSelectedDeliveryUrl(result) {
 // 🌐 各ファイルカード専用の固定配信ドメイン管理（プルダウン変更や他ファイル操作で絶対に釣られない完全独立）
 function getFileStoredDomain(itemKey, itemDisplayName, rawAllowedHost) {
   // 1. rawKey に host:filename があればそのホストを絶対優先
-  if (itemKey && itemKey.indexOf(":") > 0 && !itemKey.startsWith("tombstone_") && !itemKey.startsWith("blob_")) {
+  if (itemKey && itemKey.indexOf(":") > 0 && !itemKey.startsWith("blob_")) {
     const host = itemKey.split(":")[0].trim();
     if (host) return host.startsWith("http") ? host : `https://${host}`;
   }
@@ -5994,22 +6053,15 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
 
       const isThumb = isGeneratedVideoThumbnailKey(targetKey);
       const isAlreadyKuboPinned = cid && kuboPinnedSet && kuboPinnedSet.has(cid);
+      const objectRef = cid ? getObjectRefForUi("filebase", meta?.s3Key || targetKey, cid) : "";
 
       // Kuboへ事前にPin留め（サムネイル以外かつ未Pinの場合）
       if (isKuboAvailable && isKuboAutoPin && cid && !isThumb && kuboStatus !== "pinned" && !isAlreadyKuboPinned) {
         activeKuboPins.add(cid);
         try {
-          const pinRes = await pinToKubo(cid);
-          if (pinRes.success) {
-            kuboStatus = "pinned";
-            console.log(`🏠 Kubo 事前救出Pin成功: ${targetKey} (${cid})`);
-          } else {
-            console.warn(`🏠 Kubo Pin失敗: ${targetKey}:`, pinRes.error);
-            if (requiredBytes > 0) {
-              throw new Error(`自宅KuboへのPin退避に失敗したため、ファイル消失を防ぐためアンピンを中断しました: ${targetKey} (${pinRes.error})`);
-            }
-            continue; // 一覧自動チェック時はこのファイルをスキップして保護
-          }
+          await ensureAuthoritativeKuboPin(objectRef, cid);
+          kuboStatus = "pinned";
+          console.log(`🏠 Kubo 事前救出Pin成功: ${targetKey} (${cid})`);
         } catch (pErr) {
           console.warn(`🏠 Kubo Pin通信エラー:`, pErr);
           if (requiredBytes > 0) {
@@ -6020,8 +6072,14 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
           activeKuboPins.delete(cid);
         }
       } else if (isAlreadyKuboPinned) {
-        kuboStatus = "pinned";
-        console.log(`🏠 Kubo 保管済み確認（Pinスキップ）: ${targetKey} (${cid})`);
+        try {
+          await ensureAuthoritativeKuboPin(objectRef, cid, { requestPin: false });
+          kuboStatus = "pinned";
+          console.log(`🏠 Kubo 保管済み確認（Pinスキップ）: ${targetKey} (${cid})`);
+        } catch (error) {
+          console.warn(`Kubo authority confirmation failed for ${targetKey}:`, error);
+          continue;
+        }
       }
 
       filesToUnpin.push(targetKey);
@@ -6032,24 +6090,10 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
 
     if (filesToUnpin.length > 0) {
       console.log(`🪐 Filebase FIFO 自動アンピン実行: ${filesToUnpin.join(", ")} (${formatBytes(freedBytes)} 解放)`);
-      await safeDeleteS3Objects(s3, bucketName, filesToUnpin);
-
-      // KV 側のメタデータを unpinned: true に更新（マルチゲートウェイ配信へ切り替え）
       for (const update of kvUpdates) {
         try {
-          await registerKvCid(
-            update.key,
-            update.cid,
-            update.meta?.size || 0,
-            update.meta?.mime || "",
-            update.meta?.s3Key || update.key,
-            "",
-            null,
-            update.meta?.ttl || 0,
-            update.meta?.expiresAt || null,
-            true, // unpinned: true
-            update.kuboStatus
-          );
+          const objectRef = getObjectRefForUi("filebase", update.meta?.s3Key || update.key, update.cid);
+          await requestAuthorizedRelease(objectRef, "fifo", "filebase");
         } catch (kvErr) {
           console.warn(`Failed to update unpinned status in KV for ${update.key}:`, kvErr);
         }
@@ -6121,38 +6165,25 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
           const res = await s3.send(new GetObjectCommand({ Bucket: bucketName, Key: item.Key }));
           const bytes = await res.Body.transformToByteArray();
           const blob = new Blob([bytes]);
-          const addRes = await addFileToKubo(blob, item.Key);
+          const expectedCid = await calculateFilebaseCid(bytes);
+          const objectRef = getObjectRefForUi("r2", item.Key, expectedCid);
+          const claim = await beginKuboAcquisition(objectRef, expectedCid);
+          let addRes = { success: true, cid: expectedCid };
+          if (claim) {
+            try {
+              addRes = await addFileToKubo(blob, item.Key);
+              if (!addRes.success || !addRes.cid) throw new Error(addRes.error || "Kubo add failed");
+              if (addRes.cid.toLowerCase() !== expectedCid.toLowerCase()) throw new Error("Kubo returned a different content CID");
+              await reportKuboAcquisition(objectRef, claim, "present");
+            } catch (error) {
+              await reportKuboAcquisition(objectRef, claim, "retryable", error.message).catch(() => {});
+              throw error;
+            }
+          }
           if (addRes.success && addRes.cid) {
             storeIpfsCid(item.Key, addRes.cid);
             storeR2Hash(item.Key, addRes.cid);
             preservedInKuboKeys.add(item.Key);
-
-            // KV 台帳の kuboStatus を "pinned"、contentCid を更新（リンクは維持）
-            const matchedKv = kvFiles.find(kv => (kv.metadata?.s3Key || kv.metadata?.k_s3 || kv.name) === item.Key);
-            if (matchedKv) {
-              const meta = matchedKv.metadata || {};
-              await registerKvCid(
-                matchedKv.name,
-                "r2",
-                meta.size || item.Size || 0,
-                meta.mime || blob.type || "",
-                item.Key,
-                "",
-                null,
-                meta.ttl || 0,
-                meta.expiresAt || null,
-                Boolean(meta.unpinned),
-                "pinned",
-                meta.allowedHost || null,
-                false,
-                meta.thumbnailKey || null,
-                meta.width || null,
-                meta.height || null,
-                Boolean(meta.civitaiTemporary),
-                addRes.cid,
-                "r2"
-              );
-            }
           }
         } catch (pinErr) {
           console.warn(`Kubo auto-pin for R2 FIFO failed on ${item.Key}:`, pinErr);
@@ -6160,24 +6191,16 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
       }
     }
 
-    const keysToDelete = itemsToDelete.map(i => i.Key);
-    await s3.send(new DeleteObjectsCommand({
-      Bucket: bucketName,
-      Delete: { Objects: keysToDelete.map(Key => ({ Key })) },
-    }));
-    keysToDelete.forEach(deleteR2Hash);
-
-    // Kubo に保全されなかったもの（Kubo未設定時など）のみ、実体消去後の死んだリンクを KV から削除
-    const linksToDelete = new Set();
-    for (const item of kvFiles) {
-      const linkedS3Key = item.metadata?.s3Key || item.metadata?.k_s3 || item.name;
-      if (keysToDelete.includes(linkedS3Key) && !preservedInKuboKeys.has(linkedS3Key)) {
-        linksToDelete.add(item.name);
-      }
+    let releasedCount = 0;
+    for (const item of itemsToDelete) {
+      if (!preservedInKuboKeys.has(item.Key)) continue;
+      const linkedKv = kvFiles.find(kv => (kv.metadata?.s3Key || kv.metadata?.k_s3 || kv.s3Key || kv.Key) === item.Key);
+      if (!linkedKv) continue;
+      await requestAuthorizedRelease(getObjectRefForUi("r2", item.Key, null), "fifo", "r2");
+      deleteR2Hash(item.Key);
+      releasedCount += 1;
     }
-    for (const key of linksToDelete) await deleteKvCid(key);
-
-    console.log(`⚡ R2 FIFO 自動容量解放: ${keysToDelete.length}件削除 (うちKubo保全: ${preservedInKuboKeys.size}件)`);
+    console.log(`⚡ R2 FIFO authority release: ${releasedCount}件 (Kubo保全確認: ${preservedInKuboKeys.size}件)`);
   } catch (err) {
     console.warn("R2 FIFO ensureStorageCapacity error:", err);
   }
@@ -6938,7 +6961,6 @@ storageTabFilebase?.addEventListener("click", () => {
 reloadR2FilesButton?.addEventListener("click", () => {
   storageCurrentPage = 1;
   fetchAndRenderR2Files({ forceRefresh: true, cleanupExpiredCivitaiTransfers: true });
-  maybeDrainTombstonesDaily();
 });
 
 // 🚀 初回オンボーディング（設定・接続案内カード）の描画
@@ -7253,7 +7275,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
       if (obKvStatus) obKvStatus.textContent = "⚠️ Worker URL と Admin API Token を入力してください。";
       return;
     }
-    const apiEndpoint = (kvUrl.endsWith("/api/cividge-kv") || kvUrl.endsWith("/api/ipfs-kv")) ? kvUrl : `${kvUrl}/api/cividge-kv`;
+    const apiEndpoint = kvUrl.endsWith("/api/cividge-kv") ? kvUrl : `${kvUrl}/api/cividge-kv`;
     const originalText = obKvConnectBtn.textContent;
     obKvConnectBtn.disabled = true;
     obKvConnectBtn.textContent = "🔄 KV 接続を確認中...";
@@ -7267,7 +7289,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
       // 初回は同じ Worker をそのまま配信エッジとして利用できる。
       // 利用者が既に選んだ独自ドメインがある場合は上書きしない。
       if (!getSelectedR2Domain()) {
-        const workerDeliveryDomain = kvUrl.replace(/\/api\/(cividge-kv|ipfs-kv)\/?$/, "");
+        const workerDeliveryDomain = kvUrl.replace(/\/api\/cividge-kv\/?$/, "");
         const domains = getR2DomainList();
         if (!domains.includes(workerDeliveryDomain)) {
           domains.push(workerDeliveryDomain);
@@ -7452,7 +7474,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
         const rawKey = kvItem.name;
         // hostname:filename の形式（別ドメイン個別キー）なら表示ファイル名を抽出
         const colonIdx = rawKey.indexOf(":");
-        const displayName = (colonIdx > 0 && !rawKey.startsWith("tombstone_") && !rawKey.startsWith("blob_"))
+        const displayName = (colonIdx > 0 && !rawKey.startsWith("blob_"))
           ? rawKey.substring(colonIdx + 1)
           : rawKey;
 
@@ -7583,7 +7605,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
 
       for (const kvItem of kvFiles) {
         const rawKey = kvItem.name;
-        if (!rawKey || rawKey.startsWith("tombstone_") || rawKey.startsWith("blob_")) continue;
+        if (!rawKey || rawKey.startsWith("blob_")) continue;
 
         const colonIdx = rawKey.indexOf(":");
         const displayName = (colonIdx > 0)
@@ -7705,7 +7727,8 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
     // ⏳ 期限切れアイテムの一覧非表示化
     // [INV-CORE-001] [INV-CORE-004] 画面表示・閲覧時に裏で勝手に cleanupExpiredStorageItems() を
     // 発火させて deleteKvCid() 連打（書き込み枠浪費）を行う副作用を完全撤去。
-    // 画面上での非表示フィルタリングのみを行い、削除は配信時の単発オンデマンド（cleanupExpiredAlias）に委ねる。
+    // 画面上での非表示フィルタリングのみを行う。公開GETはread-onlyであり、
+    // Link回収とPlacement解放は明示的なlifecycle mutationだけが行う。
     if (contents.length > 0) {
       const nowMs = Date.now();
       const expiredKeySet = new Set(
@@ -7723,6 +7746,8 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
     // 動画の OGP 用ポスターは派生データであり、通常ファイルとして操作させない。
     // 使用量計算と FIFO の対象には残すが、一覧・URL パレットからは隠す。
     contents = contents.filter(item => !isGeneratedVideoThumbnailKey(item.s3Key || item.Key));
+    const driftRetention = getDriftFailCounts();
+    contents = contents.filter(item => !isDriftRetired(driftRetention[item.rawKey || item.Key]));
 
     // （※ 自宅 Kubo 遅延マイグレーションは一覧描画後に実行します）
 
@@ -7833,7 +7858,6 @@ async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bu
   for (const item of expiredItems) {
     const key = item.rawKey || item.Key;
     const s3Key = item.s3Key || item.Key;
-    const cid = item.cid || item.metadata?.cid || item.metadata?.c || "";
     if (!key) continue;
 
     // 🛡️ ストレージ分離ガード: 現在開いているストレージ（provider）とアイテムの所属が不一致なら絶対にKV削除しない
@@ -7845,19 +7869,10 @@ async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bu
     }
 
     try {
-      // Filebaseでは別名/CID共有中の実体を消さない。R2も同じキーを使う別リンクがあれば保守的に残す。
-      const hasSibling = isFilebase && allItems.some(other => {
-        const otherKey = other.rawKey || other.Key;
-        if (otherKey === key) return false;
-        return (s3Key && other.s3Key === s3Key) || (cid && other.cid === cid);
+      const deleted = await deleteKvCid(key);
+      await requestAuthorizedRelease(deleted?.objectRef, "civitai-temporary").catch(error => {
+        console.warn("Civitai lifecycle release deferred:", error);
       });
-
-      const thumbnailKey = getVideoThumbnailKey(s3Key);
-      await deleteKvCid(key);
-      if (!hasSibling && s3 && bucketName && s3Key && item.isFromS3) {
-        if (thumbnailKey) await deleteKvCid(thumbnailKey);
-        await safeDeleteS3Objects(s3, bucketName, [s3Key, thumbnailKey]);
-      }
       clearCivitaiTemporaryTransfer(provider, s3Key);
       clearCivitaiTemporaryTransfer(provider, key);
       cleanedKeys.add(key);
@@ -7877,7 +7892,6 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
   for (const item of expiredItems) {
     const key = item.rawKey || item.Key;
     const s3Key = item.s3Key || item.Key;
-    const cid = item.cid || item.metadata?.cid || item.metadata?.c || "";
     if (!key) continue;
 
     // 🛡️ ストレージ分離ガード: 現在開いているストレージ（provider）とアイテムの所属が不一致なら絶対にKV削除しない
@@ -7889,23 +7903,11 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
     }
 
     try {
-      // Filebaseでは別名/CID共有中の実体を消さない。R2も同じキーを使う別リンクがあれば保守的に残す。
-      const hasSibling = isFilebase && allItems.some(other => {
-        const otherKey = other.rawKey || other.Key;
-        if (otherKey === key) return false;
-        return (s3Key && other.s3Key === s3Key) || (cid && other.cid === cid);
+      console.log(`⏳ 期限切れLinkを回収: ${key}`);
+      const deleted = await deleteKvCid(key);
+      await requestAuthorizedRelease(deleted?.objectRef, "expiry").catch(error => {
+        console.warn("Expiry lifecycle release deferred:", error);
       });
-
-      console.log(`⏳ 期限切れアイテムを回収: ${key} (別名リンク有無: ${hasSibling})`);
-      const thumbnailKey = getVideoThumbnailKey(s3Key);
-      await deleteKvCid(key);
-
-      // 最後のリンク（hasSibling なし）なら、S3 実体およびサムネイルも削除
-      if (!hasSibling && s3 && bucketName && s3Key && item.isFromS3) {
-        if (thumbnailKey) await deleteKvCid(thumbnailKey);
-        await safeDeleteS3Objects(s3, bucketName, [s3Key, thumbnailKey]);
-        console.log(`🗑️ 最後のリンクが期限切れのため S3 実体も削除しました: ${s3Key}`);
-      }
       cleanedKeys.add(key);
     } catch (err) {
       console.warn("Expired storage item cleanup failed:", key, err);
@@ -8326,35 +8328,14 @@ function getDriftFailCounts() {
 function recordDriftCheckResult(rawKey, isAlive) {
   const counts = getDriftFailCounts();
   const now = Date.now();
-
+  const next = observeDrift(counts[rawKey], isAlive, now, DRIFT_FAIL_COOLDOWN_MS);
   if (isAlive) {
-    // 【生存確認】エッジやIPFSから取得できたため、失敗カウントを完全リセット
-    if (counts[rawKey]) {
-      delete counts[rawKey];
-      localStorage.setItem(DRIFT_STORAGE_KEY, JSON.stringify(counts));
-    }
-    return { shouldDelete: false, count: 0 };
-  }
-
-  // 【失敗時】前回の失敗から1時間未満ならカウント加算をスキップ（連打ガード）
-  const entry = counts[rawKey] || { count: 0, lastChecked: 0 };
-  if (now - entry.lastChecked < DRIFT_FAIL_COOLDOWN_MS && entry.count > 0) {
-    return { shouldDelete: false, count: entry.count, skipped: true };
-  }
-
-  entry.count += 1;
-  entry.lastChecked = now;
-  counts[rawKey] = entry;
-  localStorage.setItem(DRIFT_STORAGE_KEY, JSON.stringify(counts));
-
-  // 3回連続失敗 ➔ ゾンビ化確定（KV削除対象）
-  if (entry.count >= 3) {
     delete counts[rawKey];
-    localStorage.setItem(DRIFT_STORAGE_KEY, JSON.stringify(counts));
-    return { shouldDelete: true, count: 3 };
+  } else {
+    counts[rawKey] = next;
   }
-
-  return { shouldDelete: false, count: entry.count };
+  localStorage.setItem(DRIFT_STORAGE_KEY, JSON.stringify(counts));
+  return { shouldRetire: isDriftRetired(next), count: next.count, skipped: Boolean(next.skipped) };
 }
 
 /**
@@ -8415,25 +8396,21 @@ async function auditDriftingFiles(contents) {
 
     const elem = r2FileList?.querySelector(`.result-item[data-key="${CSS.escape(rawKey)}"]`);
     const badge = elem?.querySelector(`.drifting-badge-${CSS.escape(rawKey)}`);
-    if (result.shouldDelete) {
-      console.warn(`💀 漂流ファイルが3回連続で見つからないためKV台帳から自動整理: ${rawKey}`);
-      try {
-        await deleteKvCid(rawKey);
-        if (elem) {
-          elem.style.transition = "opacity 0.4s ease, transform 0.4s ease";
-          elem.style.opacity = "0";
-          elem.style.transform = "scale(0.95)";
-          setTimeout(() => {
-            elem.remove();
-            if (r2FileList.querySelectorAll(".result-item").length === 0) {
-              const lang = getAppLanguage();
-              const dict = i18nDict[lang] || i18nDict.ja;
-              r2FileList.innerHTML = `<span class="item-meta" style="padding: 18px; color: var(--muted); display: block; text-align: center;">${escapeHtml(dict.noFilesR2)}</span>`;
-            }
-          }, 400);
-        }
-      } catch (err) {
-        console.warn("Auto drift cleanup error:", err);
+    if (result.shouldRetire) {
+      console.warn(`🌊 漂流ファイルを3回連続の取得失敗により管理一覧から退役: ${rawKey}`);
+      removeItemsFromLocalLedger(activeStorageTab, [rawKey]);
+      if (elem) {
+        elem.style.transition = "opacity 0.4s ease, transform 0.4s ease";
+        elem.style.opacity = "0";
+        elem.style.transform = "scale(0.95)";
+        setTimeout(() => {
+          elem.remove();
+          if (r2FileList.querySelectorAll(".result-item").length === 0) {
+            const lang = getAppLanguage();
+            const dict = i18nDict[lang] || i18nDict.ja;
+            r2FileList.innerHTML = `<span class="item-meta" style="padding: 18px; color: var(--muted); display: block; text-align: center;">${escapeHtml(dict.noFilesR2)}</span>`;
+          }
+        }, 400);
       }
     } else if (isAlive) {
       if (badge) {
@@ -8619,7 +8596,11 @@ r2FileList?.addEventListener("click", async (e) => {
         const targetCid = isFilebase ? cid : "r2";
         await registerKvCid(
           targetNewKey, targetCid, size, mime, originalS3Key, password, null, ttl, expiresAt,
-          unpinned, kuboStatus, allowedHost, false, getVideoThumbnailKey(originalS3Key)
+          unpinned, kuboStatus, allowedHost, false, getVideoThumbnailKey(originalS3Key),
+          null, null, undefined,
+          currentKv?.contentCid || currentKv?.metadata?.contentCid || null,
+          isFilebase ? "filebase" : "r2",
+          { createOnly: true }
         );
 
         if (isFilebase) {
@@ -8784,7 +8765,8 @@ r2FileList?.addEventListener("click", async (e) => {
           null,
           undefined,
           resolvedCid || null, // contentCid
-          targetBackend // backend: [INV-FRONT-005] 帰属ストレージの完全固定
+          targetBackend, // backend: [INV-FRONT-005] 帰属ストレージの完全固定
+          { createOnly: true }
         );
 
         if (resolvedCid) {
@@ -8872,51 +8854,19 @@ r2FileList?.addEventListener("click", async (e) => {
     target.textContent = "解除中...";
 
     try {
-      const res = await unpinFromKubo(cid);
-      if (res.success) {
-        // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（通信ゼロ化）
-        const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
-        const meta = cachedItem?.metadata || cachedItem || {};
-        const isR2 = meta.backend === "r2" || meta.b === "r2" || cachedItem?.backend === "r2" || activeStorageTab === "r2";
-        await registerKvCid(
-          key,
-          isR2 ? "r2" : cid,
-          meta.size || 0,
-          meta.mime || "",
-          meta.s3Key || key,
-          "",
-          null,
-          meta.ttl || 0,
-          meta.expiresAt || null,
-          Boolean(meta.unpinned),
-          "not_pinned",
-          meta.allowedHost || null,
-          false,
-          meta.thumbnailKey || null,
-          meta.width || null,
-          meta.height || null,
-          Boolean(meta.civitaiTemporary),
-          meta.contentCid || meta.c_cid || (isR2 ? cid : null),
-          isR2 ? "r2" : null
-        );
-
-        // 🚀 [INV-CORE-005] Local-First: 手元台帳の kuboStatus を更新して即時再描画（サーバー全件フェッチゼロ化）
-        if (cachedItem) {
-          addOrUpdateLocalLedgerItem(activeStorageTab, {
-            ...cachedItem,
-            kuboStatus: "not_pinned",
-            metadata: {
-              ...(cachedItem.metadata || {}),
-              kuboStatus: "not_pinned",
-            },
-          });
-        } else {
-          renderCurrentStoragePage();
-        }
+      const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const meta = cachedItem?.metadata || cachedItem || {};
+      const isR2 = meta.backend === "r2" || meta.b === "r2" || cachedItem?.backend === "r2" || activeStorageTab === "r2";
+      const objectRef = getObjectRefForUi(isR2 ? "r2" : "filebase", meta.s3Key || key, cid);
+      await requestAuthorizedRelease(objectRef, "manual-placement", "kubo");
+      if (cachedItem) {
+        addOrUpdateLocalLedgerItem(activeStorageTab, {
+          ...cachedItem,
+          kuboStatus: "not_pinned",
+          metadata: { ...(cachedItem.metadata || {}), kuboStatus: "not_pinned" },
+        });
       } else {
-        await showCustomAlert(`Kubo Pin解除に失敗しました: ${res.error}`, "❌ エラー");
-        target.disabled = false;
-        target.textContent = origText;
+        renderCurrentStoragePage();
       }
     } catch (err) {
       await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
@@ -8982,13 +8932,28 @@ r2FileList?.addEventListener("click", async (e) => {
 
         if (!blob) throw new Error("実体データの取得に失敗しました");
 
+        const expectedCid = await calculateFilebaseCid(new Uint8Array(await blob.arrayBuffer()));
+        const objectRef = getObjectRefForUi("r2", s3Key, expectedCid);
+        const acquisitionClaim = await beginKuboAcquisition(objectRef, expectedCid);
+
         // Kubo RPC /api/v0/add?pin=true で実体を直接注入
-        const addRes = await addFileToKubo(blob, key);
-        if (!addRes.success) {
-          throw new Error(`Kuboへの実体注入に失敗しました: ${addRes.error}`);
+        let addRes = { success: true, cid: expectedCid };
+        if (acquisitionClaim) {
+          try {
+            addRes = await addFileToKubo(blob, key);
+            if (!addRes.success) throw new Error(`Kuboへの実体注入に失敗しました: ${addRes.error}`);
+            const confirmedCid = addRes.cid || expectedCid;
+            if (confirmedCid.toLowerCase() !== expectedCid.toLowerCase()) {
+              throw new Error("Kubo returned a different content CID");
+            }
+            await reportKuboAcquisition(objectRef, acquisitionClaim, "present");
+          } catch (error) {
+            await reportKuboAcquisition(objectRef, acquisitionClaim, "retryable", error.message).catch(() => {});
+            throw error;
+          }
         }
 
-        const realCid = addRes.cid || (await calculateFilebaseCid(new Uint8Array(await blob.arrayBuffer())));
+        const realCid = addRes.cid || expectedCid;
         if (realCid) {
           storeIpfsCid(key, realCid);
           storeIpfsCid(s3Key, realCid);
@@ -8996,30 +8961,8 @@ r2FileList?.addEventListener("click", async (e) => {
           storeR2Hash(s3Key, realCid);
         }
 
-        // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（KV照会通信ゼロ化）
+        // Projection metadata is synchronized from the lifecycle authority.
         const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
-        const meta = cachedItem?.metadata || cachedItem || {};
-        await registerKvCid(
-          key,
-          "r2",
-          meta.size || blob.size || 0,
-          meta.mime || blob.type || "",
-          meta.s3Key || key,
-          "",
-          null,
-          meta.ttl || 0,
-          meta.expiresAt || null,
-          Boolean(meta.unpinned),
-          "pinned",
-          meta.allowedHost || null,
-          false,
-          meta.thumbnailKey || null,
-          meta.width || null,
-          meta.height || null,
-          Boolean(meta.civitaiTemporary),
-          realCid || (isValidIpfsCid(cid) ? cid : null),
-          "r2"
-        );
 
         // 🚀 [INV-CORE-005] Local-First: 手元台帳を即座に更新して再描画（サーバー全件フェッチゼロ化）
         if (cachedItem) {
@@ -9066,7 +9009,14 @@ r2FileList?.addEventListener("click", async (e) => {
       return;
     }
 
+    let acquisitionClaim = null;
+    let acquisitionObjectRef = "";
+    let acquisitionSettled = false;
     try {
+      const cachedBeforePin = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const sourceMeta = cachedBeforePin?.metadata || cachedBeforePin || {};
+      acquisitionObjectRef = getObjectRefForUi("filebase", sourceMeta.s3Key || key, cid);
+      acquisitionClaim = await beginKuboAcquisition(acquisitionObjectRef, cid);
       activeKuboPins.add(cid);
       const pinRes = await pinToKubo(cid);
       if (pinRes.success) {
@@ -9080,25 +9030,10 @@ r2FileList?.addEventListener("click", async (e) => {
             if (isPinned) {
               clearInterval(pollInterval);
               activeKuboPins.delete(cid);
+              await reportKuboAcquisition(acquisitionObjectRef, acquisitionClaim, "present");
+              acquisitionSettled = true;
               console.log(`🏠 Kubo P2P同期完了を検知: ${key}`);
-              // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（KV照会通信ゼロ化）
               const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
-              const meta = cachedItem?.metadata || cachedItem || {};
-              await registerKvCid(
-                key,
-                cid,
-                meta.size || 0,
-                meta.mime || "",
-                meta.s3Key || key,
-                "",
-                null,
-                meta.ttl || 0,
-                meta.expiresAt || null,
-                Boolean(meta.unpinned),
-                "pinned"
-              );
-
-              // 🚀 [INV-CORE-005] Local-First: 手元台帳を即座に更新して再描画（サーバー全件フェッチゼロ化）
               if (cachedItem) {
                 addOrUpdateLocalLedgerItem(activeStorageTab, {
                   ...cachedItem,
@@ -9121,6 +9056,10 @@ r2FileList?.addEventListener("click", async (e) => {
         setTimeout(() => {
           clearInterval(pollInterval);
           activeKuboPins.delete(cid);
+          if (!acquisitionSettled) {
+            reportKuboAcquisition(acquisitionObjectRef, acquisitionClaim, "retryable", "Kubo pin confirmation timed out").catch(() => {});
+            acquisitionSettled = true;
+          }
           if (target && target.textContent === "同期中...") {
             target.disabled = false;
             target.textContent = origText;
@@ -9134,12 +9073,18 @@ r2FileList?.addEventListener("click", async (e) => {
         );
       } else {
         activeKuboPins.delete(cid);
+        await reportKuboAcquisition(acquisitionObjectRef, acquisitionClaim, "retryable", pinRes.error || "Kubo pin request failed").catch(() => {});
+        acquisitionSettled = true;
         await showCustomAlert(`Kubo Pin要求に失敗しました: ${pinRes.error}`, "❌ エラー");
         target.disabled = false;
         target.textContent = origText;
       }
     } catch (err) {
       activeKuboPins.delete(cid);
+      if (acquisitionClaim && !acquisitionSettled) {
+        await reportKuboAcquisition(acquisitionObjectRef, acquisitionClaim, "retryable", err.message).catch(() => {});
+        acquisitionSettled = true;
+      }
       await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
       target.disabled = false;
       target.textContent = origText;
@@ -9163,16 +9108,11 @@ r2FileList?.addEventListener("click", async (e) => {
     if (!ok) return;
 
     try {
-      const command = new DeleteObjectCommand({
-        Bucket: bucketName,
-        Key: s3Key,
-      });
-      await s3.send(command);
-
       // 🚀 [INV-CORE-005] 手元台帳から既存のメタデータを取得（kv.getWithMetadata 通信ゼロ化）
       const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
       const meta = cachedItem?.metadata || cachedItem || {};
       let currentKuboStatus = meta.kuboStatus || "not_pinned";
+      const objectRef = getObjectRefForUi("filebase", meta.s3Key || s3Key || key, cid);
 
       const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
       if (currentKuboStatus !== "pinned" && isKuboAutoPin && cid) {
@@ -9180,10 +9120,8 @@ r2FileList?.addEventListener("click", async (e) => {
         if (kuboCheck.online) {
           activeKuboPins.add(cid);
           try {
-            const pinRes = await pinToKubo(cid);
-            if (pinRes.success) {
-              currentKuboStatus = "pinned";
-            }
+            await ensureAuthoritativeKuboPin(objectRef, cid);
+            currentKuboStatus = "pinned";
           } finally {
             activeKuboPins.delete(cid);
           }
@@ -9191,19 +9129,8 @@ r2FileList?.addEventListener("click", async (e) => {
       }
 
       if (key && cid) {
-        await registerKvCid(
-          key,
-          cid,
-          meta.size || 0,
-          meta.mime || "",
-          meta.s3Key || s3Key || key,
-          "",
-          null,
-          meta.ttl || 0,
-          meta.expiresAt || null,
-          true,
-          currentKuboStatus
-        );
+        // Only the authority can grant the Filebase actuator task.
+        await requestAuthorizedRelease(objectRef, "manual-placement", "filebase");
       }
 
       // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳の該当アイテムを更新し即座に再描画
@@ -9237,14 +9164,7 @@ r2FileList?.addEventListener("click", async (e) => {
     if (!ok) return;
 
     try {
-      const r2S3 = getS3Client("r2");
-      const r2Bucket = getBucketName("r2");
-      if (!r2S3 || !r2Bucket) throw new Error("R2 is not configured");
-
-      await r2S3.send(new DeleteObjectCommand({
-        Bucket: r2Bucket,
-        Key: s3Key,
-      }));
+      await requestAuthorizedRelease(getObjectRefForUi("r2", s3Key, cid), "manual-placement", "r2");
 
       // ローカルハッシュキャッシュをパージ
       deleteR2Hash(s3Key);
@@ -9273,144 +9193,20 @@ r2FileList?.addEventListener("click", async (e) => {
   // 🚫 リンク抹消：KV から削除して即座に 404 化し、共有リンクが無ければ S3 の実体も削除
   if (target.classList.contains("delete-r2-file-btn")) {
     const key = target.dataset.key;
-    const s3Key = target.dataset.s3key || key;
-    const cid = target.dataset.cid || "";
-    const isFromOrigin = target.dataset.origin === "1";
-
+    // The lifecycle authority, not this rendered page, decides whether this
+    // was the final Link and whether physical cleanup may start.
     if (!key) return;
-
-    if (isFilebase) {
-      // 画面上の他のアイテムで、同じ S3実体 または CID を共有している別名リンクを探索
-      const allItems = Array.from(r2FileList.querySelectorAll(".result-item"));
-      const siblingLinks = allItems
-        .filter(el => el.dataset.key !== key)
-        .filter(el => {
-          const elS3Key = el.dataset.s3key;
-          const elCid = el.dataset.cid;
-          if (s3Key && elS3Key && elS3Key === s3Key) return true;
-          if (cid && elCid && elCid === cid) return true;
-          return false;
-        })
-        .map(el => el.dataset.key);
-
-      let deleteOriginAlso = false;
-
-      if (siblingLinks.length > 0) {
-        // 他のリンクと実体を共有している場合
-        const siblingNames = siblingLinks.map(name => `'${name}'`).join("、");
-        const confirmMsg = `ファイル（リンク）'${key}' を削除しますか？\n\n⚠️ このファイルの実体は、以下の他の名前（エイリアス）とも共有されています：\n【共有中】: ${siblingNames}\n\n・[OK] を押すと、'${key}' のURLのみを削除（即座に404化）します。\n（他のリンク '${siblingLinks[0]}' などは引き続き閲覧できます）`;
-        const ok = await showCustomConfirm(confirmMsg, "⚠️ リンク削除の確認");
-        if (!ok) return;
-
-        // オプション: 実体ごと全部消したいか確認
-        if (isFromOrigin) {
-          deleteOriginAlso = await showCustomConfirm(
-            `【完全削除の確認】\n\nクラウド実体（Filebase）も完全に削除し、共有している他のリンク（${siblingNames}）もすべて無効化しますか？\n\n・[すべて完全削除]: 実体も含めてすべて完全削除\n・[リンクのみ削除]: '${key}' のリンクのみ削除（推奨）`,
-            "🗑️ 完全削除の確認",
-            "すべて完全削除",
-            "リンクのみ削除"
-          );
-        }
-      } else {
-        // 単独リンクの場合
-        const confirmMsg = `ファイル '${key}' を削除しますか？\n\n・URL は即座に 404 になり閲覧できなくなります。\n・クラウドおよび自宅Kuboからも安全に消去されます。`;
-        const ok = await showCustomConfirm(confirmMsg, "🗑️ ファイル削除の確認", "削除する");
-        if (!ok) return;
-        deleteOriginAlso = isFromOrigin;
-      }
-
-      try {
-        const willDeleteAll = (siblingLinks.length === 0 || deleteOriginAlso);
-        // 1. 対象リンクの KV マッピングを削除（他で使われていなければ墓標発行指示）
-        await deleteKvCid(key, { makeTombstone: willDeleteAll });
-
-        // 2. 「すべて抹消」が選択された場合、共有している兄弟リンクの KV も一括削除
-        if (siblingLinks.length > 0 && deleteOriginAlso) {
-          for (const sKey of siblingLinks) {
-            await deleteKvCid(sKey, { makeTombstone: false });
-          }
-        }
-
-        // 3. 他に共有リンクがないか、あるいは「実体ごとすべて抹消」が選ばれた場合のみ S3 実体を削除
-        if (deleteOriginAlso && s3 && bucketName && s3Key) {
-          const thumbnailKey = getVideoThumbnailKey(s3Key);
-          if (thumbnailKey) await deleteKvCid(thumbnailKey, { makeTombstone: false });
-          const keysToDelete = [s3Key, thumbnailKey].filter(Boolean);
-          await safeDeleteS3Objects(s3, bucketName, keysToDelete);
-        }
-
-
-        // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳から差分削除し即座に再描画（サーバーへの全件フェッチ完全撤去）
-        const deletedKeys = [key, ...(siblingLinks.length > 0 && deleteOriginAlso ? siblingLinks : [])];
-        removeItemsFromLocalLedger(activeStorageTab, deletedKeys, { purgeOriginAlso: deleteOriginAlso });
-      } catch (err) {
-        await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
-      }
-      return;
-    }
-
-    // Cloudflare R2 モードの場合: 🔗 対称的ハードリンク（参照カウント）モデル
-    // コピー元・コピー先の役割・主従関係を完全撤廃し、同一実体へのリンク数のみで状態遷移
-    const resolvedS3Key = target.dataset.s3key || target.closest(".result-item")?.dataset?.s3key || key;
-    const allItems = Array.from(r2FileList.querySelectorAll(".result-item"));
-    const siblingLinks = allItems
-      .filter(el => el.dataset.key !== key)
-      .filter(el => {
-        const elS3Key = el.dataset.s3key;
-        const elDisplayName = el.dataset.displayname;
-        if (resolvedS3Key && (elS3Key === resolvedS3Key || elDisplayName === resolvedS3Key)) return true;
-        return false;
-      })
-      .map(el => el.dataset.key);
-
-    let deleteOriginAlso = false;
-
-    if (siblingLinks.length > 0) {
-      // 🔗 参照数 2 以上: どのカードも対等な「参照リンク（エイリアス）」
-      // デフォルトは「このリンクのみ削除（実体は残す）」
-      const siblingNames = siblingLinks.map(name => `'${name}'`).join("、");
-      const confirmMsg = `リンク '${key}' を削除しますか？\n\n⚠️ このファイルの実体は、以下の他のドメイン（リンク）とも共有されています：\n【共有中】: ${siblingNames}\n\n・[OK] を押すと、'${key}' のURLのみを削除（即座に404化）します。\n（他のリンク '${siblingLinks[0]}' などは引き続き閲覧できます）`;
-      const ok = await showCustomConfirm(confirmMsg, "⚠️ リンク削除の確認");
-      if (!ok) return;
-
-      deleteOriginAlso = await showCustomConfirm(
-        `【完全削除の確認】\n\nR2 バケット内の実体ファイルも完全に削除し、共有している他のリンク（${siblingNames}）もすべて無効化しますか？\n\n・[すべて完全削除]: 実体も含めてすべて完全削除\n・[リンクのみ削除]: '${key}' のリンクのみ削除（推奨）`,
-        "🗑️ 完全削除の確認",
-        "すべて完全削除",
-        "リンクのみ削除"
-      );
-    } else {
-      // 🔗 参照数 1（最後の1個）: 実体と結びついた「最後の唯一の窓口（本物）」
-      // これを削除することは実体そのものの抹消と同義
-      const confirmMsg = `ファイル '${key}' を R2 から削除しますか？\n\n・URL は即座に 404 になり閲覧できなくなります。\n・R2 バケット内の実体も安全に消去されます。`;
-      const ok = await showCustomConfirm(confirmMsg, "🗑️ R2 削除の確認", "削除する");
-      if (!ok) return;
-      deleteOriginAlso = true;
-    }
-
     try {
-      const willDeleteAll = (siblingLinks.length === 0 || deleteOriginAlso);
-      // 1. 対象リンクの KV マッピングを削除
-      await deleteKvCid(key, { makeTombstone: willDeleteAll });
-
-      // 2. 「すべて完全削除」が選択された場合、共有している兄弟リンクの KV も一括削除
-      if (siblingLinks.length > 0 && deleteOriginAlso) {
-        for (const sKey of siblingLinks) {
-          await deleteKvCid(sKey, { makeTombstone: false });
-        }
-      }
-
-      // 3. 最後の1個、または「すべて完全削除」の場合のみ S3 (R2) 実体を削除
-      if (deleteOriginAlso && s3 && bucketName && resolvedS3Key) {
-        const thumbnailKey = getVideoThumbnailKey(resolvedS3Key);
-        if (thumbnailKey) await deleteKvCid(thumbnailKey, { makeTombstone: false });
-        const keysToDelete = [resolvedS3Key, thumbnailKey].filter(Boolean);
-        await safeDeleteS3Objects(s3, bucketName, keysToDelete);
-        keysToDelete.forEach(deleteR2Hash);
-      }
-      // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳から差分削除し即座に再描画（サーバーへの全件フェッチ完全撤去）
-      const deletedKeys = [key, ...(siblingLinks.length > 0 && deleteOriginAlso ? siblingLinks : [])];
-      removeItemsFromLocalLedger(activeStorageTab, deletedKeys, { purgeOriginAlso: deleteOriginAlso });
+      const ok = await showCustomConfirm(
+        `リンク '${key}' を削除しますか？\n\nURLは即座に404になります。実体のrelease可否はサーバー側台帳が判断します。`,
+        "🗑️ リンク削除の確認", "削除する"
+      );
+      if (!ok) return;
+      const deleted = await deleteKvCid(key);
+      await requestAuthorizedRelease(deleted?.objectRef, "manual-delete").catch(error => {
+        console.warn("Object retained because release is not yet authorized:", error);
+      });
+      removeItemsFromLocalLedger(activeStorageTab, [key]);
     } catch (err) {
       await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
     }
@@ -9444,84 +9240,22 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
   );
   if (!ok) return;
 
-  const s3 = getS3Client(activeStorageTab);
-  const bucketName = getBucketName(activeStorageTab);
-  const keys = checkboxes.map(cb => cb.dataset.key);
-
+  // A bulk action is merely repeated Link removal. The lifecycle DO sees the
+  // complete authoritative relation; this page must not infer shared Objects.
   try {
-    const allCached = storageCachedContents || [];
-    const remainingItems = allCached.filter(el => !keys.includes(el.rawKey || el.Key));
-
-    if (isFilebase) {
-      // 🚀 [INV-CORE-005] 残るアイテムの CID を手元台帳で全件走査（サーバーKVリスト枠消費ゼロ！）
-      const remainingCids = new Set();
-      for (const rem of remainingItems) {
-        const c = rem.cid || rem.contentCid || rem.metadata?.cid || rem.metadata?.c || getStoredIpfsCid(rem.Key) || getStoredIpfsCid(rem.rawKey);
-        if (c) remainingCids.add(c);
-      }
-
-      // 選択されたキーの KV マッピングを削除（他リンクと共有されていなければ墓標発行）
-      for (const key of keys) {
-        const item = allCached.find(i => (i.rawKey || i.Key) === key);
-        const itemCid = item?.cid || item?.contentCid || item?.metadata?.cid || item?.metadata?.c || getStoredIpfsCid(key);
-        const isCidShared = itemCid ? remainingCids.has(itemCid) : false;
-        await deleteKvCid(key, { makeTombstone: !isCidShared });
-      }
-
-      // 未選択の残るアイテムの中に、同じ S3実体 を指している別名リンクがあるかチェック
-      const remainingS3Keys = new Set(remainingItems.map(el => el.s3Key || el.Key).filter(Boolean));
-
-      // 選択された各アイテムに対応する S3Key のうち、残るリンクから参照されていない実体のみを S3 から削除
-      const s3KeysToDelete = new Set();
-      for (const cb of checkboxes) {
-        const item = allCached.find(i => (i.rawKey || i.Key) === cb.dataset.key);
-        const itemS3Key = item?.s3Key || cb.dataset.s3key || cb.dataset.key;
-        if (itemS3Key && !remainingS3Keys.has(itemS3Key)) {
-          s3KeysToDelete.add(itemS3Key);
-        }
-      }
-
-      if (s3 && bucketName && s3KeysToDelete.size > 0) {
-        const thumbnailKeys = Array.from(s3KeysToDelete).map(getVideoThumbnailKey).filter(Boolean);
-        for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey, { makeTombstone: false });
-        await safeDeleteS3Objects(s3, bucketName, [...s3KeysToDelete, ...thumbnailKeys]);
-      }
-
-    } else {
-      // ⚡ R2 モード（CID墓標は不要）
-      for (const key of keys) {
-        await deleteKvCid(key, { makeTombstone: false });
-      }
-
-      // 未選択の残るアイテムの中に、同じ S3実体 を指している別名リンクがあるかチェック
-      const remainingS3Keys = new Set(remainingItems.map(el => el.s3Key || el.Key).filter(Boolean));
-
-      // 選択された各アイテムに対応する S3Key のうち、残るリンクから参照されていない実体のみを R2 から削除
-      const s3KeysToDelete = new Set();
-      for (const cb of checkboxes) {
-        const item = allCached.find(i => (i.rawKey || i.Key) === cb.dataset.key);
-        const itemS3Key = item?.s3Key || cb.dataset.s3key || cb.dataset.key;
-        if (itemS3Key && !remainingS3Keys.has(itemS3Key)) {
-          s3KeysToDelete.add(itemS3Key);
-        }
-      }
-
-      if (s3 && bucketName && s3KeysToDelete.size > 0) {
-        const thumbnailKeys = Array.from(s3KeysToDelete).map(getVideoThumbnailKey).filter(Boolean);
-        for (const thumbnailKey of thumbnailKeys) await deleteKvCid(thumbnailKey, { makeTombstone: false });
-        await safeDeleteS3Objects(s3, bucketName, [...s3KeysToDelete, ...thumbnailKeys]);
-        s3KeysToDelete.forEach(deleteR2Hash);
-      }
+    for (const checkbox of checkboxes) {
+      const deleted = await deleteKvCid(checkbox.dataset.key);
+      await requestAuthorizedRelease(deleted?.objectRef, "manual-bulk-delete").catch(error => {
+        console.warn("Bulk release deferred:", error);
+      });
     }
-
-    // 🚀 [INV-CORE-005] Local-First 原則:
-    // サーバーへの再フェッチ（ListObjects / kv.list）を完全撤去！
-    // 手元の台帳キャッシュと localStorage から即座に差分削除して画面を再描画。
-    removeItemsFromLocalLedger(activeStorageTab, keys);
+    removeItemsFromLocalLedger(activeStorageTab, checkboxes.map(cb => cb.dataset.key));
     updateSelectedR2ActionButtonsState();
-  } catch (err) {
-    await showCustomAlert(`一括削除に失敗しました: ${err.message}`, "❌ エラー");
+  } catch (error) {
+    await showCustomAlert(`一括削除に失敗しました: ${error.message}`, "❌ エラー");
   }
+  return;
+
 });
 
 // URL 生成ヘルパー
@@ -10236,7 +9970,7 @@ const downloadSharexBtn = document.querySelector("#downloadSharexBtn");
 function getDedicatedUploadEndpoint() {
   const customWorkerUrl = getCustomKvWorkerUrl();
   if (!customWorkerUrl) return "";
-  const baseDomain = customWorkerUrl.replace(/\/api\/(cividge-kv|ipfs-kv)\/?$/, "").replace(/\/$/, "");
+  const baseDomain = customWorkerUrl.replace(/\/api\/cividge-kv\/?$/, "").replace(/\/$/, "");
   return `${baseDomain}/api/upload`;
 }
 
@@ -10245,9 +9979,28 @@ function getSelectedUploadStorage() {
   return uploadStorageSelect?.value || "filebase";
 }
 
-// 外部投稿は管理 API トークンを流用せず、投稿専用の UPLOAD_TOKEN を使う。
+// 外部投稿は管理 API トークンを流用せず、投稿専用 credential だけを使う。
+// 保存先は接続中の Worker endpoint ごとに分ける。localStorage は UI の
+// recoverable cache であり、credential の authority ではない。
+function getUploadTokenStorageKey(endpoint = getDedicatedUploadEndpoint()) {
+  if (!endpoint) return "";
+  try {
+    return "uploadApiToken:" + new URL(endpoint).origin;
+  } catch (_) {
+    return "";
+  }
+}
+
 function getUploadApiToken() {
-  return (uploadApiTokenInput?.value || localStorage.getItem("uploadApiToken") || "").trim();
+  const storageKey = getUploadTokenStorageKey();
+  return (uploadApiTokenInput?.value || (storageKey ? localStorage.getItem(storageKey) : "") || "").trim();
+}
+
+function loadUploadApiTokenForCurrentWorker() {
+  if (!uploadApiTokenInput) return;
+  const storageKey = getUploadTokenStorageKey();
+  uploadApiTokenInput.value = storageKey ? (localStorage.getItem(storageKey) || "") : "";
+  isUploadTokenVerified = false;
 }
 
 // 外部投稿用プルダウンの選択肢を更新
@@ -10432,10 +10185,10 @@ function updateDedicatedUploadApiUI() {
       uploadTokenNotice.innerHTML = "⚠️ <strong>KV Worker URL が必要です:</strong> 「クラウドストレージ接続設定」で、自分の KV Worker URL を保存してください。";
     } else if (!hasToken) {
       uploadTokenNotice.style.display = "block";
-      uploadTokenNotice.innerHTML = "⚠️ <strong>投稿専用 API トークンが必要です:</strong> Worker に設定した <code>UPLOAD_TOKEN</code> を入力すると、URLコピー・curl例・Windows「送る」登録を利用できます。";
+      uploadTokenNotice.innerHTML = "⚠️ <strong>投稿用 API トークンが必要です:</strong> Worker に設定した <code>UPLOAD_TOKEN</code> または <code>TEST_UPLOAD_TOKEN</code> を入力すると、URLコピー・curl例・Windows「送る」登録を利用できます。";
     } else if (!isUploadTokenVerified) {
       uploadTokenNotice.style.display = "block";
-      uploadTokenNotice.innerHTML = "❌ <strong>トークンが Worker と一致していません:</strong> 入力されたトークンでは認証に失敗しました。Worker の <code>UPLOAD_TOKEN</code> と完全一致しているか確認してください。";
+      uploadTokenNotice.innerHTML = "❌ <strong>トークンが Worker と一致していません:</strong> 入力されたトークンでは認証に失敗しました。Worker の <code>UPLOAD_TOKEN</code> または <code>TEST_UPLOAD_TOKEN</code> と完全一致しているか確認してください。";
     } else {
       uploadTokenNotice.style.display = "none";
     }
@@ -10458,6 +10211,7 @@ r2DomainSelect?.addEventListener("change", () => {
   updateDedicatedUploadApiUI();
 });
 kvWorkerUrl?.addEventListener("change", () => {
+  loadUploadApiTokenForCurrentWorker();
   updateDedicatedUploadApiUI();
   scheduleUploadTokenVerify(100);
 });
@@ -10469,12 +10223,15 @@ if (uploadNamingRuleSelect) {
   });
 }
 if (uploadApiTokenInput) {
-  uploadApiTokenInput.value = localStorage.getItem("uploadApiToken") || "";
+  loadUploadApiTokenForCurrentWorker();
   // [INV-CORE-001] 入力中はローカル保存とUI更新のみ。文字入力ごとの通信連打を完全排除
   uploadApiTokenInput.addEventListener("input", () => {
     const token = uploadApiTokenInput.value.trim();
-    if (token) localStorage.setItem("uploadApiToken", token);
-    else localStorage.removeItem("uploadApiToken");
+    const storageKey = getUploadTokenStorageKey();
+    if (storageKey) {
+      if (token) localStorage.setItem(storageKey, token);
+      else localStorage.removeItem(storageKey);
+    }
     updateDedicatedUploadApiUI();
   });
   // 入力完了時（change）のみ検証を発火
@@ -10492,7 +10249,7 @@ setTimeout(() => {
 copyUploadApiUrlBtn?.addEventListener("click", async () => {
   const token = getUploadApiToken();
   if (!token) {
-    alert("⚠️ 投稿専用 API トークンが未入力です。\nWorker に設定した UPLOAD_TOKEN を入力してください。");
+    alert("⚠️ 投稿用 API トークンが未入力です。\nWorker に設定した UPLOAD_TOKEN または TEST_UPLOAD_TOKEN を入力してください。");
     return;
   }
   const fullUrl = getDedicatedUploadFullUrl();
@@ -10502,7 +10259,7 @@ copyUploadApiUrlBtn?.addEventListener("click", async () => {
 copyCurlCmdBtn?.addEventListener("click", async () => {
   const token = getUploadApiToken();
   if (!token) {
-    alert("⚠️ 投稿専用 API トークンが未入力です。\nWorker に設定した UPLOAD_TOKEN を入力してください。");
+    alert("⚠️ 投稿用 API トークンが未入力です。\nWorker に設定した UPLOAD_TOKEN または TEST_UPLOAD_TOKEN を入力してください。");
     return;
   }
   const endpoint = getDedicatedUploadEndpoint();
@@ -10533,11 +10290,11 @@ copyCurlCmdBtn?.addEventListener("click", async () => {
 downloadSendToBatBtn?.addEventListener("click", async () => {
   const token = getUploadApiToken();
   if (!token) {
-    alert("⚠️ 投稿専用 API トークンが未入力です。Worker の UPLOAD_TOKEN を入力してから登録してください。");
+    alert("⚠️ 投稿用 API トークンが未入力です。Worker の UPLOAD_TOKEN または TEST_UPLOAD_TOKEN を入力してから登録してください。");
     return;
   }
   if (!isUploadTokenVerified) {
-    alert("⚠️ 投稿専用 API トークンが Worker と一致していません。正しい UPLOAD_TOKEN を入力してください。");
+    alert("⚠️ 投稿用 API トークンが Worker と一致していません。正しい UPLOAD_TOKEN または TEST_UPLOAD_TOKEN を入力してください。");
     return;
   }
 
@@ -10681,11 +10438,11 @@ if ($errors.Count -gt 0) {
 downloadSharexBtn?.addEventListener("click", async () => {
   const token = getUploadApiToken();
   if (!token) {
-    alert("⚠️ 投稿専用 API トークンが未入力です。Worker の UPLOAD_TOKEN を入力してからダウンロードしてください。");
+    alert("⚠️ 投稿用 API トークンが未入力です。Worker の UPLOAD_TOKEN または TEST_UPLOAD_TOKEN を入力してからダウンロードしてください。");
     return;
   }
   if (!isUploadTokenVerified) {
-    alert("⚠️ 投稿専用 API トークンが Worker と一致していません。正しい UPLOAD_TOKEN を入力してください。");
+    alert("⚠️ 投稿用 API トークンが Worker と一致していません。正しい UPLOAD_TOKEN または TEST_UPLOAD_TOKEN を入力してください。");
     return;
   }
 
@@ -10789,13 +10546,4 @@ if (document.readyState === "loading") {
 } else {
   setupResponsiveSettingsLayout();
 }
-
-// 🪦 起動5秒後にバックグラウンドで24時間経過判定を行い、必要時のみ低優先度で墓標を定期回収
-window.addEventListener("load", () => {
-  setTimeout(() => {
-    try {
-      maybeDrainTombstonesDaily();
-    } catch (_) {}
-  }, 5000);
-});
 
