@@ -8681,9 +8681,13 @@ r2FileList?.addEventListener("click", async (e) => {
         if (existingItem) {
           addOrUpdateLocalLedgerItem(activeStorageTab, {
             ...existingItem,
-            Key: targetNewKey,
+            // Presentation name and canonical Link identity are distinct.
+            // Keep host:filename only in rawKey; using it as Key makes the
+            // immediate public URL append the host twice until the next reload.
+            Key: newKey,
+            name: newKey,
             rawKey: targetNewKey,
-            displayName: targetNewKey,
+            displayName: newKey,
           });
         } else {
           renderCurrentStoragePage();
