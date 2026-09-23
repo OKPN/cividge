@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Cividge 一時 Link 整理</title>
+<style>
+  :root { color-scheme: dark; font: 16px system-ui,sans-serif; background: #101116; color: #eceef4 }
+  main { max-width: 680px; margin: 6vh auto; padding: 24px; background: #191b23; border: 1px solid #343743; border-radius: 14px }
+  h1 { font-size: 1.35rem }
+  p { line-height: 1.6; color: #bbc2d2 }
+  label { display: block; margin: 16px 0 6px }
+  input { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #495064; border-radius: 7px; background: #10131d; color: inherit; font: inherit }
+  button { margin: 18px 10px 0 0; padding: 11px 16px; border: 0; border-radius: 7px; background: #43b6db; color: #101116; font: inherit; font-weight: 700; cursor: pointer }
+  button:disabled { opacity: .45; cursor: default }
+  #retire { background: #f6a46b }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: #10131d; border-radius: 7px }
+</style>
+<main>
+  <h1>一時 Link 整理</h1>
+  <p>旧状態から残った特定の公開 Link を確認して整理します。操作対象は入力した1件のみです。物理ファイルや同じObjectを使う別Linkには触れません。</p>
+  <label for="worker">KV Worker URL</label>
+  <input id="worker" type="url" autocomplete="url" placeholder="https://your-worker.workers.dev">
+  <label for="token">Admin API Token</label>
+  <input id="token" type="password" autocomplete="off">
+  <label for="key">削除する正確な Link key（host:filename）</label>
+  <input id="key" autocomplete="off" placeholder="example.pages.dev:file.webp">
+  <button id="inspect">状態を確認</button>
+  <button id="retire" disabled>確認した Link を整理</button>
+  <pre id="result" role="status">まだ確認していません。</pre>
+</main>
+<script type="module">
+  const worker = document.querySelector('#worker');
+  const token = document.querySelector('#token');
+  const key = document.querySelector('#key');
+  const inspectButton = document.querySelector('#inspect');
+  const retireButton = document.querySelector('#retire');
+  const result = document.querySelector('#result');
+  const savedWorker = localStorage.getItem('kvWorkerUrl') || '';
+  worker.value = /^https?:\/\//i.test(savedWorker) ? savedWorker : savedWorker ? `https://${savedWorker}` : '';
+  if (savedWorker) {
+    worker.readOnly = true;
+    token.value = localStorage.getItem('adminApiToken') || '';
+  }
+  let inspected = null;
+
+  function invalidate() { inspected = null; retireButton.disabled = true; }
+  for (const input of [worker, token, key]) input.addEventListener('input', invalidate);
+  async function request(action, extra = {}) {
+    const origin = new URL(worker.value.trim().replace(/\/api\/cividge-kv\/?$/, '')).origin;
+    const response = await fetch(origin + '/api/maintenance/retire-old-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token.value.trim() },
+      body: JSON.stringify({ action, key: key.value.trim(), ...extra }),
+      cache: 'no-store',
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data;
+  }
+  inspectButton.addEventListener('click', async () => {
+    invalidate();
+    inspectButton.disabled = true;
+    try {
+      const data = await request('inspect');
+      if (!data.found) { result.textContent = 'このLinkはKVにありません。整理は不要です。'; return; }
+      inspected = data;
+      result.textContent = `対象: ${data.key}\nObjectRef: ${data.objectRef}\nDOのLink所有: ${data.owned ? 'あり（通常のremoveLink）' : 'なし（旧KV投影だけ）'}\n\n内容を確認してから整理してください。`;
+      retireButton.disabled = false;
+    } catch (error) { result.textContent = '確認失敗: ' + error.message; }
+    finally { inspectButton.disabled = false; }
+  });
+  retireButton.addEventListener('click', async () => {
+    if (!inspected || inspected.key !== key.value.trim()) return;
+    if (!confirm(`${inspected.key} を整理します。物理ファイルは削除しません。続行しますか？`)) return;
+    retireButton.disabled = true;
+    try {
+      const data = await request('retire', {
+        expectedFingerprint: inspected.fingerprint,
+        expectedObjectRef: inspected.objectRef,
+      });
+      result.textContent = data.retired
+        ? `${data.key} を整理しました（${data.method}）。一覧の「更新」で表示を同期してください。`
+        : 'Linkはすでにありません。';
+      inspected = null;
+    } catch (error) { result.textContent = '整理失敗: ' + error.message + '\n状態をもう一度確認してください。'; }
+  });
+</script>
+</html>
