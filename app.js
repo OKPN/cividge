@@ -14,6 +14,7 @@ import {
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
 import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "./kubo-placement.js";
+import { normalizeGatewayEndpoint, normalizeGatewaySettings, selectGatewayEndpoint, gatewayRetrievalUrl } from "./ipfs-gateway.js";
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 
 let jxlInitialized = false;
@@ -134,6 +135,13 @@ const i18nDict = {
     kuboAutoPinR2: "Cloudflare R2容量解放時にKuboへ自動Pin留め",
     kuboAutoPin: "Filebase容量解放時にKuboへ自動Pin留め",
     kuboPrioritizePinnedLabel: "Kubo保管済みのファイルを優先して容量解放",
+    publicGatewayTitle: "🌐 IPFS Public Gateway",
+    publicGatewayScope: "このブラウザでCIDを直接開く場合に使用します。公開配信URLのWorker設定は変更しません。",
+    gatewayModeLabel: "選択方式",
+    gatewayAuto: "自動",
+    gatewayManual: "手動",
+    gatewayEndpointLabel: "Gateway",
+    gatewayAdd: "＋ Gatewayを追加",
     kuboGuideSummary: "推奨運用・外出先から接続する場合（任意）",
     kvApiEndpointLabel: "KV 台帳 API エンドポイント URL",
     kvApiEndpointHelp: "※ 各自の Cloudflare Worker を指定可能。未入力時は自サイトの /api/cividge-kv を試行します。",
@@ -379,6 +387,13 @@ const i18nDict = {
     kuboAutoPinR2: "Automatically pin to Kubo when Cloudflare R2 releases capacity",
     kuboAutoPin: "Automatically pin to Kubo when Filebase releases capacity",
     kuboPrioritizePinnedLabel: "Prioritize releasing files already pinned to Kubo",
+    publicGatewayTitle: "🌐 IPFS Public Gateway",
+    publicGatewayScope: "Used when this browser opens a CID directly. This does not change the public delivery Worker's routing.",
+    gatewayModeLabel: "Selection policy",
+    gatewayAuto: "Automatic",
+    gatewayManual: "Manual",
+    gatewayEndpointLabel: "Gateway",
+    gatewayAdd: "＋ Add Gateway",
     kuboGuideSummary: "Recommended operation and remote access (optional)",
     kuboGuideBody: "<p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">What does this do?</strong><br>It uses your PC or server as an IPFS node and pins a CID before Filebase releases capacity. As long as Kubo remains online and retains the pin, you preserve a copy of that CID. This is a preservation layer, not your only backup.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Minimum setup</strong><br>1. Install and start Kubo. 2. At home keep <code>http://127.0.0.1:5001</code>. 3. Enable automatic pinning only after <strong>🔌 Test connection</strong> succeeds. When Kubo is offline, Cividge safely pauses Filebase FIFO to avoid data loss.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Delivery and caching</strong><br>Cividge delivery URLs use edge caching, so cached visits reduce load on Filebase and IPFS nodes. Initial visits and cache misses still access an upstream. Kubo RPC is for pin operations; it does not by itself make Kubo the permanent first delivery origin.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Safe remote access</strong><br>Keep the API bound to <code>127.0.0.1:5001</code>; never expose it directly to the internet. For remote pinning, use an HTTPS endpoint available only inside your Tailnet, such as <strong>Tailscale Serve</strong>. Do not use <strong>0.0.0.0:5001</strong>, a public reverse proxy, or router port forwarding.</p>",
     kvApiEndpointLabel: "KV registry API endpoint URL",
@@ -605,6 +620,12 @@ const kuboPrioritizePinned = document.querySelector("#kuboPrioritizePinned");
 const kuboTestButton = document.querySelector("#kuboTestButton");
 const kuboWebUiLink = document.querySelector("#kuboWebUiLink");
 const kuboStatusIndicator = document.querySelector("#kuboStatusIndicator");
+const publicGatewayMode = document.querySelector("#publicGatewayMode");
+const publicGatewaySelected = document.querySelector("#publicGatewaySelected");
+const publicGatewayUrl = document.querySelector("#publicGatewayUrl");
+const publicGatewayRegion = document.querySelector("#publicGatewayRegion");
+const publicGatewayAdd = document.querySelector("#publicGatewayAdd");
+const publicGatewayList = document.querySelector("#publicGatewayList");
 
 // 🛡️ 管理者 / KV台帳設定要素
 const kvWorkerUrl = document.querySelector("#kvWorkerUrl");
@@ -789,6 +810,7 @@ function applyLanguage(lang) {
     renderStorageOnboardingCard();
   }
   loadTemplates(templateSelect ? templateSelect.value : "");
+  renderGatewaySettings();
   render();
 }
 
@@ -1245,55 +1267,9 @@ async function executeAuthorizedBrowserReleaseTasks(objectRef, tasks = []) {
   }
 }
 
-async function beginKuboAcquisition(objectRef, cid) {
-  const requested = await lifecycleRequest({
-    action: "requestPlacementAcquire",
-    objectRef,
-    placement: { kind: "kubo", executor: "browser", locator: { cid } },
-  });
-  if (requested?.lifecycle?.placements?.kubo?.state === "PRESENT") return null;
-  if (requested?.lifecycle?.placements?.kubo?.state === "PINNING") {
-    throw new Error("Kubo pin acquisition is already in progress");
-  }
-  const claimed = await lifecycleRequest({
-    action: "claimPlacement",
-    objectRef,
-    placement: "kubo",
-    operation: "acquire",
-  });
-  return claimed.claim;
-}
-
-async function reportKuboAcquisition(objectRef, claim, outcome, error = null) {
-  return lifecycleRequest({
-    action: "reportPlacement",
-    objectRef,
-    placement: "kubo",
-    claimId: claim.claimId,
-    generation: claim.generation,
-    operation: "acquire",
-    outcome,
-    ...(error ? { error } : {}),
-  });
-}
-
 async function ensureAuthoritativeKuboPin(objectRef, cid, { requestPin = true } = {}) {
-  const claim = await beginKuboAcquisition(objectRef, cid);
-  if (!claim) return true;
-  try {
-    let confirmed = await checkKuboPinned(cid, 1500);
-    if (!confirmed && requestPin) {
-      const requested = await pinToKubo(cid);
-      if (!requested.success) throw new Error(requested.error || "Kubo pin request failed");
-      confirmed = await checkKuboPinned(cid, 5000);
-    }
-    if (!confirmed) throw new Error("Kubo pin has not reached the confirmed PINNED state");
-    await reportKuboAcquisition(objectRef, claim, "present");
-    return true;
-  } catch (error) {
-    await reportKuboAcquisition(objectRef, claim, "retryable", error.message).catch(() => {});
-    throw error;
-  }
+  await kuboPlacementApplication.acquire({ objectRef, cid, existingOnly: !requestPin });
+  return true;
 }
 
 async function requestAuthorizedRelease(objectRef, reason, placement = null) {
@@ -1378,6 +1354,96 @@ const kuboPlacementApplication = createKuboPlacementApplication({
   requestPin: pinToKubo,
 });
 
+const PUBLIC_GATEWAY_SETTINGS_KEY = "cividge_public_gateway_settings_v1";
+
+function loadGatewaySettings() {
+  try {
+    return normalizeGatewaySettings(JSON.parse(localStorage.getItem(PUBLIC_GATEWAY_SETTINGS_KEY) || "{}"));
+  } catch (_) {
+    return normalizeGatewaySettings({});
+  }
+}
+
+function saveGatewaySettings(settings) {
+  localStorage.setItem(PUBLIC_GATEWAY_SETTINGS_KEY, JSON.stringify(normalizeGatewaySettings(settings)));
+  renderGatewaySettings();
+}
+
+function renderGatewaySettings() {
+  if (!publicGatewayMode || !publicGatewaySelected || !publicGatewayList) return;
+  const settings = loadGatewaySettings();
+  const isEn = getAppLanguage() === "en";
+  publicGatewayMode.value = settings.mode;
+  publicGatewaySelected.replaceChildren();
+  for (const endpoint of settings.endpoints) {
+    const option = new Option(`${endpoint.region.toUpperCase()} · ${endpoint.url}${endpoint.enabled ? "" : " (off)"}`, endpoint.url);
+    option.disabled = !endpoint.enabled;
+    publicGatewaySelected.add(option);
+  }
+  publicGatewaySelected.value = settings.selectedUrl;
+  publicGatewaySelected.disabled = settings.mode !== "manual" || !settings.endpoints.length;
+
+  publicGatewayList.replaceChildren();
+  if (!settings.endpoints.length) {
+    const empty = document.createElement("span");
+    empty.textContent = isEn ? "Add an HTTPS /ipfs endpoint to open CIDs directly." : "CIDを直接開くにはHTTPSの /ipfs エンドポイントを追加してください。";
+    publicGatewayList.append(empty);
+  }
+  for (const endpoint of settings.endpoints) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:7px;flex-wrap:wrap";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = endpoint.enabled;
+    toggle.setAttribute("aria-label", `${endpoint.url} enabled`);
+    toggle.addEventListener("change", () => {
+      const current = loadGatewaySettings();
+      const entry = current.endpoints.find(item => item.url === endpoint.url);
+      if (entry) entry.enabled = toggle.checked;
+      saveGatewaySettings(current);
+    });
+    const label = document.createElement("span");
+    label.textContent = `${endpoint.region.toUpperCase()} · ${endpoint.url}`;
+    label.style.cssText = "overflow-wrap:anywhere;flex:1";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost-button";
+    remove.textContent = isEn ? "Remove" : "削除";
+    remove.addEventListener("click", () => {
+      const current = loadGatewaySettings();
+      current.endpoints = current.endpoints.filter(item => item.url !== endpoint.url);
+      if (current.selectedUrl === endpoint.url) current.selectedUrl = "";
+      saveGatewaySettings(current);
+    });
+    row.append(toggle, label, remove);
+    publicGatewayList.append(row);
+  }
+}
+
+publicGatewayMode?.addEventListener("change", () => {
+  const settings = loadGatewaySettings();
+  settings.mode = publicGatewayMode.value;
+  saveGatewaySettings(settings);
+});
+publicGatewaySelected?.addEventListener("change", () => {
+  const settings = loadGatewaySettings();
+  settings.selectedUrl = publicGatewaySelected.value;
+  saveGatewaySettings(settings);
+});
+publicGatewayAdd?.addEventListener("click", async () => {
+  try {
+    const endpoint = normalizeGatewayEndpoint(publicGatewayUrl.value, publicGatewayRegion.value);
+    const settings = loadGatewaySettings();
+    if (settings.endpoints.some(item => item.url === endpoint.url)) throw new Error("Gateway is already registered");
+    settings.endpoints.push(endpoint);
+    if (!settings.selectedUrl) settings.selectedUrl = endpoint.url;
+    saveGatewaySettings(settings);
+    publicGatewayUrl.value = "";
+  } catch (error) {
+    await showCustomAlert(error.message, "IPFS Public Gateway");
+  }
+});
+
 // 🏠 Kubo Pin 同期タスク追跡 & せっかち防止（離脱・リロードガード）
 const activeKuboPins = new Set();
 
@@ -1397,11 +1463,37 @@ window.addEventListener("beforeunload", (e) => {
 // 🗃️ Managed-list / UI projection cache (authorityではない)
 // v3はKubo Placementのclosed stateを保持する。旧schemaは推測migrationせずdropする。
 // ==========================================
-const STORAGE_LEDGER_KEY_PREFIX = "cividge_managed_projection_v3_";
+const STORAGE_LEDGER_KEY_PREFIX = "cividge_managed_projection_v4_";
+const RETIRED_LOCAL_ENTRY_KEY_PREFIX = "cividge_retired_local_entries_v1_";
+
+function localEntryIdentity(item) {
+  return String(item?.s3Key || item?.Key || item?.name || "");
+}
+
+function getRetiredLocalEntries(provider) {
+  try {
+    const entries = JSON.parse(localStorage.getItem(`${RETIRED_LOCAL_ENTRY_KEY_PREFIX}${provider}`) || "[]");
+    return new Set(Array.isArray(entries) ? entries : []);
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function setLocalEntryRetired(provider, item, retired) {
+  const identity = localEntryIdentity(item);
+  if (!identity) return;
+  const entries = getRetiredLocalEntries(provider);
+  if (retired) entries.add(identity);
+  else entries.delete(identity);
+  localStorage.setItem(`${RETIRED_LOCAL_ENTRY_KEY_PREFIX}${provider}`, JSON.stringify([...entries]));
+}
 
 function saveLedgerToLocalStorage(provider, contents) {
   if (!provider || !Array.isArray(contents)) return;
   try {
+    if (contents.some(item => item.entryKind !== "link" && item.entryKind !== "local")) {
+      throw new Error("Managed entry kind is required");
+    }
     const tuples = contents.map(item => [
       item.Key || item.name || "",
       item.contentCid || item.cid || item.metadata?.cid || item.metadata?.c || "",
@@ -1414,6 +1506,7 @@ function saveLedgerToLocalStorage(provider, contents) {
       item.metadata?.allowedHost || item.metadata?.d || "",
       item.metadata?.kuboPlacementState || item.kuboPlacementState ||
         (item.metadata?.kuboStatus === "pinned" ? KUBO_PLACEMENT_STATE.PRESENT : KUBO_PLACEMENT_STATE.ABSENT),
+      item.entryKind,
     ]);
     localStorage.setItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`, JSON.stringify(tuples));
   } catch (e) {
@@ -1428,7 +1521,7 @@ function loadLedgerFromLocalStorage(provider) {
     if (!raw) return [];
     const tuples = JSON.parse(raw);
     if (!Array.isArray(tuples)) return [];
-    return tuples.map(t => {
+    return tuples.filter(t => t[10] === "link" || t[10] === "local").map(t => {
       const name = t[0] || "";
       const cid = t[1] || undefined;
       const size = t[2] || 0;
@@ -1441,6 +1534,7 @@ function loadLedgerFromLocalStorage(provider) {
       const kuboPlacementState = Object.values(KUBO_PLACEMENT_STATE).includes(t[9])
         ? t[9]
         : KUBO_PLACEMENT_STATE.ABSENT;
+      const entryKind = t[10] === "link" ? "link" : "local";
       return {
         Key: name,
         name,
@@ -1455,6 +1549,7 @@ function loadLedgerFromLocalStorage(provider) {
         uploadedProvider: backend,
         backend,
         isFromS3,
+        entryKind,
         metadata: {
           kuboStatus: kuboPlacementState === KUBO_PLACEMENT_STATE.PRESENT ? "pinned" : "not_pinned",
           kuboPlacementState,
@@ -1507,7 +1602,7 @@ function removeItemsFromLocalLedger(provider, keysToRemove, { purgeOriginAlso = 
       if (purgeOriginAlso) {
         return !keySet.has(k1) && !keySet.has(k2) && !keySet.has(k3);
       }
-      return !keySet.has(k2) && (!keySet.has(k1) || k2 !== k1);
+      return !keySet.has(k2 || k1);
     });
   }
 
@@ -1516,10 +1611,18 @@ function removeItemsFromLocalLedger(provider, keysToRemove, { purgeOriginAlso = 
   renderCurrentStoragePage();
 }
 
+function retireManagedEntry(provider, item) {
+  if (item?.entryKind !== "local") throw new Error("Only local managed entries can be retired locally");
+  setLocalEntryRetired(provider, item, true);
+  removeItemsFromLocalLedger(provider, [item.rawKey || item.Key]);
+}
+
 function addOrUpdateLocalLedgerItem(provider, item) {
   if (!provider || !item) return;
+  if (item.entryKind !== "link" && item.entryKind !== "local") throw new Error("Managed entry kind is required");
   const targetKey = item.rawKey || (item.metadata?.d ? `${item.metadata.d}:${item.Key}` : (item.Key || item.name));
   if (!targetKey) return;
+  if (item.entryKind === "local") setLocalEntryRetired(provider, item, false);
 
   if (!Array.isArray(storageCachedContents)) {
     storageCachedContents = loadLedgerFromLocalStorage(provider) || [];
@@ -3648,6 +3751,7 @@ cfClearButton?.addEventListener("click", () => {
   localStorage.removeItem("kuboAutoPinR2");
   localStorage.removeItem("kuboAutoPin");
   localStorage.removeItem("kuboPrioritizePinned");
+  localStorage.removeItem(PUBLIC_GATEWAY_SETTINGS_KEY);
   localStorage.removeItem("kvWorkerUrl");
   localStorage.removeItem("adminApiToken");
 
@@ -3665,6 +3769,7 @@ cfClearButton?.addEventListener("click", () => {
   if (kuboAutoPinCheck) kuboAutoPinCheck.checked = true;
   if (kuboPrioritizePinned) kuboPrioritizePinned.checked = true;
   if (kuboStatusIndicator) kuboStatusIndicator.textContent = "⚪ 未確認";
+  renderGatewaySettings();
 
   if (kvWorkerUrl) kvWorkerUrl.value = "";
   if (adminApiToken) adminApiToken.value = "";
@@ -6177,24 +6282,14 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
           const blob = new Blob([bytes]);
           const expectedCid = await calculateFilebaseCid(bytes);
           const objectRef = getObjectRefForUi("r2", item.Key, expectedCid);
-          const claim = await beginKuboAcquisition(objectRef, expectedCid);
-          let addRes = { success: true, cid: expectedCid };
-          if (claim) {
-            try {
-              addRes = await addFileToKubo(blob, item.Key);
-              if (!addRes.success || !addRes.cid) throw new Error(addRes.error || "Kubo add failed");
-              if (addRes.cid.toLowerCase() !== expectedCid.toLowerCase()) throw new Error("Kubo returned a different content CID");
-              await reportKuboAcquisition(objectRef, claim, "present");
-            } catch (error) {
-              await reportKuboAcquisition(objectRef, claim, "retryable", error.message).catch(() => {});
-              throw error;
-            }
-          }
-          if (addRes.success && addRes.cid) {
-            storeIpfsCid(item.Key, addRes.cid);
-            storeR2Hash(item.Key, addRes.cid);
-            preservedInKuboKeys.add(item.Key);
-          }
+          await kuboPlacementApplication.acquire({
+            objectRef,
+            cid: expectedCid,
+            performAcquire: () => addFileToKubo(blob, item.Key),
+          });
+          storeIpfsCid(item.Key, expectedCid);
+          storeR2Hash(item.Key, expectedCid);
+          preservedInKuboKeys.add(item.Key);
         } catch (pinErr) {
           console.warn(`Kubo auto-pin for R2 FIFO failed on ${item.Key}:`, pinErr);
         }
@@ -6691,6 +6786,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       Key: result.name,
       name: result.name,
       rawKey: uploadKvKey,
+      entryKind: hasAdminAccess() ? "link" : "local",
       s3Key: result.name,
       Size: uploadBytes.length,
       size: uploadBytes.length,
@@ -7558,6 +7654,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
             storageProvider: "filebase",
             Key: displayName,
             rawKey: rawKey,
+            entryKind: "link",
             s3Key: matchedS3.Key,
             Size: matchedS3.Size || kvItem.metadata?.size || 0,
             LastModified: matchedS3.LastModified || (kvItem.metadata?.lastModified ? new Date(kvItem.metadata.lastModified) : null),
@@ -7581,6 +7678,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
             storageProvider: "filebase",
             Key: displayName,
             rawKey: rawKey,
+            entryKind: "link",
             s3Key: null,
             Size: kvItem.metadata?.size || 0,
             LastModified: kvItem.metadata?.lastModified ? new Date(kvItem.metadata.lastModified) : null,
@@ -7601,10 +7699,12 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
       }
 
       // 2. S3 にあるが KV に未登録のアイテムを追加
+      const retiredLocalEntries = getRetiredLocalEntries(requestedProvider);
       for (const s3Item of s3RawList) {
-        if (!consumedS3Keys.has(s3Item.Key)) {
+        if (!consumedS3Keys.has(s3Item.Key) && !retiredLocalEntries.has(s3Item.Key)) {
           contents.push({
             storageProvider: "filebase",
+            entryKind: "local",
             Key: s3Item.Key,
             s3Key: s3Item.Key,
             Size: s3Item.Size || 0,
@@ -7700,6 +7800,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
 
         contents.push({
           storageProvider: "r2",
+          entryKind: "link",
           Key: displayName,
           rawKey: rawKey,
           s3Key: matchedS3 ? matchedS3.Key : (recordedS3Key || displayName),
@@ -7718,12 +7819,14 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
       }
 
       // 2. R2 バケットに存在するが KV に未登録の物理ファイルを追加＆自動KV同期
+      const retiredLocalEntries = getRetiredLocalEntries(requestedProvider);
       for (const s3Item of s3RawList) {
-        if (!consumedS3Keys.has(s3Item.Key) && !processedPhysicalKeys.has(s3Item.Key)) {
+        if (!consumedS3Keys.has(s3Item.Key) && !processedPhysicalKeys.has(s3Item.Key) && !retiredLocalEntries.has(s3Item.Key)) {
           const rawS3Cid = getStoredIpfsCid(s3Item.Key);
           const s3Cid = isValidIpfsCid(rawS3Cid) ? rawS3Cid : null;
           contents.push({
             storageProvider: "r2",
+            entryKind: "local",
             Key: s3Item.Key,
             rawKey: s3Item.Key,
             s3Key: s3Item.Key,
@@ -7743,6 +7846,18 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
           // 書き込み上限枠（1日1,000回）を自爆枯渇させる過保護コードを完全排除。未登録ファイルは表示のみに留める。
         }
       }
+    }
+
+    // A physical-list observation may update a local entry's presence, but it
+    // cannot silently retire that UI entry. Only retireManagedEntry can do so.
+    const observedLocalIds = new Set(contents.filter(item => item.entryKind === "local").map(localEntryIdentity));
+    const retiredLocalEntries = getRetiredLocalEntries(requestedProvider);
+    for (const cached of loadLedgerFromLocalStorage(requestedProvider)) {
+      if (cached.entryKind !== "local") continue;
+      const identity = localEntryIdentity(cached);
+      if (!identity || retiredLocalEntries.has(identity) || observedLocalIds.has(identity)) continue;
+      contents.push({ ...cached, isFromS3: false });
+      observedLocalIds.add(identity);
     }
 
     // Civitai転送専用の踏み台は、利用者が押す「更新」の時だけ後始末する。
@@ -8128,7 +8243,7 @@ function renderCurrentStoragePage() {
         ${r2CardTtlSelect}
         ${r2CardDomainBadge}
         ${!hasPassword ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Civitai の投稿画面を開く">🎨 Civitai</button>` : ""}
-        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${isFromS3 ? '1' : '0'}">${labels.delete}</button>
+        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${isFromS3 ? '1' : '0'}">${item.entryKind === "local" ? (lang === "en" ? "Remove from list" : "一覧から退場") : labels.delete}</button>
       `;
     } else {
       const isFromS3 = Boolean(item.isFromS3);
@@ -8195,7 +8310,7 @@ function renderCurrentStoragePage() {
         ${r2CardTtlSelect}
         ${r2CardDomainBadge}
         ${!hasPassword ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Civitai の投稿画面を開く">🎨 Civitai</button>` : ""}
-        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${item.isFromS3 ? '1' : '0'}">${escapeHtml(dict.deleteNow)}</button>
+        <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${item.isFromS3 ? '1' : '0'}">${item.entryKind === "local" ? (lang === "en" ? "Remove from list" : "一覧から退場") : escapeHtml(dict.deleteNow)}</button>
       `;
     }
 
@@ -8208,6 +8323,7 @@ function renderCurrentStoragePage() {
       cidBadgeHtml = `
         <div style="display: inline-flex; align-items: center; gap: 3px;">
           <button type="button" class="copy-cid-btn" data-cid="${escapeHtml(itemCid)}" style="cursor: pointer; font-size: 10px; font-family: monospace; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="IPFS CID: ${escapeHtml(itemCid)} (クリックでコピー)">📦 ${escapeHtml(shortCid)} 📋</button>
+          <button type="button" class="ipfs-gateway-open-btn" data-cid="${escapeHtml(itemCid)}" style="cursor: pointer; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="${lang === "en" ? "Open CID via selected public Gateway" : "選択した公開GatewayからCIDを開く"}">🌐 IPFS ↗</button>
           <a href="${escapeHtml(indexerUrl)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;">${labels.nodeCheck}</a>
         </div>
       `;
@@ -8839,6 +8955,7 @@ r2FileList?.addEventListener("click", async (e) => {
         // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳にエイリアスレコードを追加して即時描画
         addOrUpdateLocalLedgerItem(activeStorageTab, {
           storageProvider: targetBackend,
+          entryKind: "link",
           Key: displayName,
           rawKey: newDomainKey,
           s3Key: s3Key || displayName,
@@ -8881,6 +8998,24 @@ r2FileList?.addEventListener("click", async (e) => {
     const cid = target.dataset.cid;
     if (cid) {
       await copyToClipboard(cid, target, "📋 コピー完了");
+    }
+    return;
+  }
+
+  if (target.classList.contains("ipfs-gateway-open-btn")) {
+    try {
+      const settings = loadGatewaySettings();
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+      const endpoint = selectGatewayEndpoint(settings, timeZone);
+      const url = gatewayRetrievalUrl(endpoint, target.dataset.cid);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      await showCustomAlert(
+        getAppLanguage() === "en"
+          ? `Set an enabled IPFS Public Gateway first. ${error.message}`
+          : `先に有効なIPFS Public Gatewayを設定してください。${error.message}`,
+        "IPFS Public Gateway"
+      );
     }
     return;
   }
@@ -8990,26 +9125,13 @@ r2FileList?.addEventListener("click", async (e) => {
 
         const expectedCid = await calculateFilebaseCid(new Uint8Array(await blob.arrayBuffer()));
         const objectRef = getObjectRefForUi("r2", s3Key, expectedCid);
-        const acquisitionClaim = await beginKuboAcquisition(objectRef, expectedCid);
+        await kuboPlacementApplication.acquire({
+          objectRef,
+          cid: expectedCid,
+          performAcquire: () => addFileToKubo(blob, key),
+        });
 
-        // Kubo RPC /api/v0/add?pin=true で実体を直接注入
-        let addRes = { success: true, cid: expectedCid };
-        if (acquisitionClaim) {
-          try {
-            addRes = await addFileToKubo(blob, key);
-            if (!addRes.success) throw new Error(`Kuboへの実体注入に失敗しました: ${addRes.error}`);
-            const confirmedCid = addRes.cid || expectedCid;
-            if (confirmedCid.toLowerCase() !== expectedCid.toLowerCase()) {
-              throw new Error("Kubo returned a different content CID");
-            }
-            await reportKuboAcquisition(objectRef, acquisitionClaim, "present");
-          } catch (error) {
-            await reportKuboAcquisition(objectRef, acquisitionClaim, "retryable", error.message).catch(() => {});
-            throw error;
-          }
-        }
-
-        const realCid = addRes.cid || expectedCid;
+        const realCid = expectedCid;
         if (realCid) {
           storeIpfsCid(key, realCid);
           storeIpfsCid(s3Key, realCid);
@@ -9213,11 +9335,21 @@ r2FileList?.addEventListener("click", async (e) => {
     // was the final Link and whether physical cleanup may start.
     if (!key) return;
     try {
+      const item = (storageCachedContents || []).find(entry => (entry.rawKey || entry.Key) === key);
+      if (!item) throw new Error("Managed entry is no longer in the current list");
+      const isLocalEntry = item.entryKind === "local";
       const ok = await showCustomConfirm(
-        `リンク '${key}' を削除しますか？\n\nURLは即座に404になります。実体のrelease可否はサーバー側台帳が判断します。`,
-        "🗑️ リンク削除の確認", "削除する"
+        isLocalEntry
+          ? `'${key}' をこのブラウザの一覧から退場させますか？\n\n物理ファイル、他のLink、Placementには触れません。`
+          : `リンク '${key}' を削除しますか？\n\nURLは即座に404になります。実体のrelease可否はサーバー側台帳が判断します。`,
+        isLocalEntry ? "🗑️ 一覧から退場" : "🗑️ リンク削除の確認", "削除する"
       );
       if (!ok) return;
+      if (isLocalEntry) {
+        retireManagedEntry(activeStorageTab, item);
+        return;
+      }
+      if (!hasAdminAccess()) throw new Error("Link deletion requires the KV Worker admin capability");
       const deleted = await deleteKvCid(key);
       await requestAuthorizedRelease(deleted?.objectRef, "manual-delete").catch(error => {
         console.warn("Object retained because release is not yet authorized:", error);
@@ -9246,11 +9378,8 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
   const checkboxes = Array.from(document.querySelectorAll(".r2-file-checkbox:checked"));
   if (checkboxes.length === 0) return;
 
-  const isFilebase = activeStorageTab === "filebase";
-  const providerLabel = isFilebase ? "Filebase / KV" : "R2";
-
   const ok = await showCustomConfirm(
-    `選択した ${checkboxes.length} 件のファイルを ${providerLabel} から削除しますか？`,
+    `選択した ${checkboxes.length} 件を処理しますか？\n\nLinkは正規のLink削除、ローカル項目は一覧からの退場です。物理ファイルを直接削除しません。`,
     "🗑️ 一括削除の確認",
     "一括削除する"
   );
@@ -9260,6 +9389,13 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
   // complete authoritative relation; this page must not infer shared Objects.
   try {
     for (const checkbox of checkboxes) {
+      const item = (storageCachedContents || []).find(entry => (entry.rawKey || entry.Key) === checkbox.dataset.key);
+      if (!item) throw new Error(`Managed entry is no longer in the current list: ${checkbox.dataset.key}`);
+      if (item.entryKind === "local") {
+        setLocalEntryRetired(activeStorageTab, item, true);
+        continue;
+      }
+      if (!hasAdminAccess()) throw new Error("Link deletion requires the KV Worker admin capability");
       const deleted = await deleteKvCid(checkbox.dataset.key);
       await requestAuthorizedRelease(deleted?.objectRef, "manual-bulk-delete").catch(error => {
         console.warn("Bulk release deferred:", error);

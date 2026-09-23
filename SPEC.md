@@ -120,6 +120,22 @@ consecutive drifting observations may retire an item from the local UI cache,
 but must not delete a Link, request Object release, or perform physical cleanup.
 One successful observation resets the confidence counter.
 
+## Managed List and Gateway boundaries
+
+Every current-schema Managed List entry has an explicit kind. A `link` entry
+retires through canonical `removeLink`; a `local` entry retires through local
+`retireManagedEntry` without requesting physical deletion. R2/Filebase/Kubo
+presence is an observation that may update an entry but cannot itself perform
+the entry's retirement. A physical-only discovery is not a lifecycle Link.
+
+An HTTP Public Gateway is a CID retrieval endpoint, not a Placement, Kubo RPC
+node, Filebase provider route, or libp2p peer. Gateway selection and retrieval
+failures never mutate Object, Link, or Placement lifecycle state. The current
+GatewaySelectionPolicy is stored in this browser's localStorage and consumed
+only by its direct-CID open action. The public delivery Worker retains its
+separate existing upstream routing; browser settings must not be presented as
+changing that route.
+
 ## Verification matrix
 
 Automated tests should live primarily with the Worker, because it owns the KV

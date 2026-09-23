@@ -87,3 +87,42 @@ test("Kubo acquisition failure returns authority to RETRYABLE", async () => {
   assert.equal(reports.at(-1).outcome, "retryable");
   assert.equal(states.at(-1), KUBO_PLACEMENT_STATE.RETRYABLE);
 });
+
+test("R2 import uses the same acquisition protocol and rejects a different CID", async () => {
+  const reports = [];
+  let pinned = false;
+  const application = createKuboPlacementApplication({
+    lifecycleRequest: async body => {
+      if (body.action === "requestPlacementAcquire") {
+        return { lifecycle: { placements: { kubo: { state: "PIN_REQUESTED" } } } };
+      }
+      if (body.action === "claimPlacement") {
+        return { claim: { claimId: "r2-import", generation: 1 }, lifecycle: { placements: { kubo: { state: "PINNING" } } } };
+      }
+      if (body.action === "reportPlacement") {
+        reports.push(body);
+        return { lifecycle: { placements: { kubo: { state: body.outcome === "present" ? "PRESENT" : "RETRYABLE" } } } };
+      }
+      throw new Error(`Unexpected action: ${body.action}`);
+    },
+    checkPinned: async () => pinned,
+    requestPin: async () => { throw new Error("R2 import must use its supplied actuator"); },
+    pollIntervalMs: 1,
+    sleep: async () => {},
+  });
+
+  await application.acquire({
+    objectRef: "r2:photo.webp",
+    cid: "bafy-expected",
+    performAcquire: async () => { pinned = true; return { success: true, cid: "bafy-expected" }; },
+  });
+  assert.equal(reports.at(-1).outcome, "present");
+
+  pinned = false;
+  await assert.rejects(() => application.acquire({
+    objectRef: "r2:photo.webp",
+    cid: "bafy-expected",
+    performAcquire: async () => ({ success: true, cid: "bafy-other" }),
+  }), /different content CID/);
+  assert.equal(reports.at(-1).outcome, "retryable");
+});

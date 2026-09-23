@@ -24,7 +24,7 @@ export function createKuboPlacementApplication({
   if (typeof checkPinned !== "function") throw new Error("checkPinned is required");
   if (typeof requestPin !== "function") throw new Error("requestPin is required");
 
-  async function acquire({ objectRef, cid, onState = () => {} }) {
+  async function acquire({ objectRef, cid, onState = () => {}, performAcquire = requestPin, existingOnly = false }) {
     if (!objectRef || !cid) throw new Error("ObjectRef and CID are required for Kubo acquisition");
 
     onState(KUBO_PLACEMENT_STATE.PIN_REQUESTED);
@@ -65,8 +65,12 @@ export function createKuboPlacementApplication({
     try {
       let confirmed = await checkPinned(cid, 1_500);
       if (!confirmed) {
-        const started = await requestPin(cid);
+        if (existingOnly) throw new Error("Kubo CID is not pinned");
+        const started = await performAcquire(cid);
         if (!started?.success) throw new Error(started?.error || "Kubo pin request failed");
+        if (started.cid && started.cid.toLowerCase() !== cid.toLowerCase()) {
+          throw new Error("Kubo returned a different content CID");
+        }
       }
 
       const deadline = Date.now() + confirmationTimeoutMs;

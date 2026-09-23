@@ -24,6 +24,28 @@
   confirmed storage upload may re-acquire a previously `RELEASED` Placement in
   a new generation before recreating the Link; alias-only `createLink` cannot.
 
+### [INV-MANAGED-LIST-INDEPENDENT-FROM-PLACEMENT]
+
+Managed Listの項目は `link` または `local` として明示する。R2 / Filebase /
+Kuboの実体の出現・消失はObservationであり、一覧項目の作成・退場という
+Mutationそのものではない。明示更新で実体が見えなくなっても、既存の
+local項目は観測状態を更新するだけで残す。
+
+### [INV-MANAGED-ENTRY-REMOVABLE]
+
+現行schemaで表示できる全Managed List項目には決定的な退場操作がある。
+`link` はcanonical `removeLink`、`local` はそのブラウザの
+`retireManagedEntry`へ写像する。local退場は物理Object/Placementも
+他のLinkも削除しない。Filebase/R2実体の直接削除を一覧削除のfallbackに
+使ってはならない。
+
+### [INV-GATEWAY-NOT-PLACEMENT]
+
+Public IPFS GatewayはCIDからHTTPで取得するRetrieval Capabilityであり、
+Object/Link/Placementではない。Gatewayの成功・失敗はObservationであって
+Object/Link/Placementのlifecycleを変更しない。Filebase provider経由の
+retrieval routeとpublic IPFS network gatewayは混同しない。
+
 このドキュメントは、Cividge フロントエンド（UI / Pages）および関連システムが正常に動作するために、**いかなるコード改修やリファクタリングを行っても絶対に崩してはならない性質（不変条件）** を定義したものです。
 
 配信 Worker 側の不変条件については `cividge-kv-worker/INVARIANTS.md` を参照してください。
