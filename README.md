@@ -33,6 +33,7 @@ password gates, retries, and Kubo preservation.
 - Optional Kubo pin preservation before Filebase releases an object.
 - Video Open Graph thumbnails that follow aliases and are deleted with their parent origin object.
 - Optional Windows **Send To** integration and external upload API.
+- One global per-file upload limit: **80 MB (80,000,000 bytes)**, checked on the original and final media bytes by the browser and on received bytes by the Worker API.
 - `X-Image-Width` and `X-Image-Height` response headers for newly uploaded images.
 
 ## Architecture

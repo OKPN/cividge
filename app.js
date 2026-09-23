@@ -14,8 +14,9 @@ import {
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
 import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "./kubo-placement.js";
-import { normalizeGatewayEndpoint, normalizeGatewaySettings, selectGatewayEndpoint, gatewayRetrievalUrl } from "./ipfs-gateway.js";
+import { normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gateway.js";
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
+import { exceedsUploadLimit } from "./upload-limit.js";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -56,7 +57,7 @@ const i18nDict = {
   <summary style="cursor: pointer; font-weight: 600; color: #38bdf8; font-size: 12px;">💡 ストレージの選択基準・運用のコツ（R2 vs Filebase vs Kubo）</summary>
   <div style="margin-top: 6px; font-size: 11.5px; line-height: 1.55; color: #cbd5e1;">
     <ul style="margin: 0; padding-left: 18px;">
-      <li><strong>Cloudflare R2</strong>: ダウンロード転送量（Egress）が<strong>完全無料・無制限</strong>。大量閲覧（バズ）や重い動画（〜128MB）に最適。※クレカ必須、10GBを超えると自動従量課金（上限キャップ不可）のため不要ファイルは定期削除推奨。</li>
+      <li><strong>Cloudflare R2</strong>: ダウンロード転送量（Egress）が<strong>完全無料・無制限</strong>。大量閲覧（バズ）や重い動画（最大80 MB）に最適。※クレカ必須、10GBを超えると自動従量課金（上限キャップ不可）のため不要ファイルは定期削除推奨。</li>
       <li><strong>Filebase（IPFS）</strong>: クレカ不要で安全。画像（1〜2MB）を長期間安定配信するのに最適。※無料枠は容量5GB・転送月10GB（実質5GB目安）のため、重い動画やバズるファイルはR2かKubo併用を推奨。</li>
       <li><strong>自宅 Kubo 連携</strong>: 20MB超の動画や人気ファイルは共有前にKuboへピン留め（Pin）すると、Filebase帯域消費が<strong>ゼロ</strong>になります（※初回のみ自宅の上り回線に少し注意）。</li>
     </ul>
@@ -66,7 +67,9 @@ const i18nDict = {
     addFolder: "フォルダを追加",
     dropText: "ファイルやフォルダをここにドロップ",
     orClick: "またはクリックしてファイルを選択",
-    dropLimitHint: "※ 1ファイルにつき 128MB 未満",
+    dropLimitHint: "※ 1ファイルにつき最大 80 MB",
+    uploadLimitError: "ファイルサイズ ({size} MB) が上限の 80 MB を超えています。",
+    uploadLimitCount: "80 MBを超えるファイル {count} 件を除外しました。",
     settings: "設定",
     enableConvertLabel: "画像を変換する",
     enableRenameLabel: "ファイル名をリネームする",
@@ -136,7 +139,9 @@ const i18nDict = {
     kuboAutoPin: "Filebase容量解放時にKuboへ自動Pin留め",
     kuboPrioritizePinnedLabel: "Kubo保管済みのファイルを優先して容量解放",
     publicGatewayTitle: "🌐 IPFS Public Gateway",
-    publicGatewayScope: "このブラウザでCIDを直接開く場合に使用します。公開配信URLのWorker設定は変更しません。",
+    publicGatewayScope: "Cividgeの公開URLから配信するとき、Delivery WorkerがCIDを取得するために使用します。",
+    gatewayLoad: "Worker設定を読込",
+    gatewaySave: "Worker設定へ保存",
     gatewayModeLabel: "選択方式",
     gatewayAuto: "自動",
     gatewayManual: "手動",
@@ -301,7 +306,7 @@ const i18nDict = {
           <summary style="cursor: pointer; font-weight: 600; color: #38bdf8; font-size: 12px;">💡 Storage Selection Guide & Operational Tips (R2 vs Filebase vs Kubo)</summary>
           <div style="margin-top: 6px; font-size: 11.5px; line-height: 1.55; color: #cbd5e1;">
             <ul style="margin: 0; padding-left: 18px;">
-              <li><strong>Cloudflare R2</strong>: Zero egress cost (100% free downloads). Best for viral traffic and heavy videos (up to 128MB). *Credit card required; automatic pay-as-you-go above 10GB free tier (no cap mechanism).*</li>
+              <li><strong>Cloudflare R2</strong>: Zero egress cost (100% free downloads). Best for viral traffic and heavy videos (up to 80 MB). *Credit card required; automatic pay-as-you-go above 10GB free tier (no cap mechanism).*</li>
               <li><strong>Filebase (IPFS)</strong>: No credit card required. Best for standard images (1–2MB) and decentralized preservation. *Free tier includes 5GB storage & 10GB/month transfer.*</li>
               <li><strong>Self-hosted Kubo Node</strong>: Pinning heavy videos (>20MB) to your Kubo node before sharing completely bypasses Filebase egress quotas via public gateways.</li>
             </ul>
@@ -318,7 +323,9 @@ const i18nDict = {
     addFolder: "Add Folder",
     dropText: "Drop files or folders here",
     orClick: "or click to select files",
-    dropLimitHint: "* Max 128 MB per file",
+    dropLimitHint: "* Max 80 MB per file",
+    uploadLimitError: "File size ({size} MB) exceeds the 80 MB limit.",
+    uploadLimitCount: "Excluded {count} files over the 80 MB limit.",
     settings: "Settings",
     enableConvertLabel: "Convert Images",
     enableRenameLabel: "Rename Files",
@@ -388,7 +395,9 @@ const i18nDict = {
     kuboAutoPin: "Automatically pin to Kubo when Filebase releases capacity",
     kuboPrioritizePinnedLabel: "Prioritize releasing files already pinned to Kubo",
     publicGatewayTitle: "🌐 IPFS Public Gateway",
-    publicGatewayScope: "Used when this browser opens a CID directly. This does not change the public delivery Worker's routing.",
+    publicGatewayScope: "Used by the Delivery Worker to retrieve CIDs for Cividge public URLs.",
+    gatewayLoad: "Load Worker settings",
+    gatewaySave: "Save to Worker",
     gatewayModeLabel: "Selection policy",
     gatewayAuto: "Automatic",
     gatewayManual: "Manual",
@@ -626,6 +635,9 @@ const publicGatewayUrl = document.querySelector("#publicGatewayUrl");
 const publicGatewayRegion = document.querySelector("#publicGatewayRegion");
 const publicGatewayAdd = document.querySelector("#publicGatewayAdd");
 const publicGatewayList = document.querySelector("#publicGatewayList");
+const publicGatewayLoad = document.querySelector("#publicGatewayLoad");
+const publicGatewaySave = document.querySelector("#publicGatewaySave");
+const publicGatewayStatus = document.querySelector("#publicGatewayStatus");
 
 // 🛡️ 管理者 / KV台帳設定要素
 const kvWorkerUrl = document.querySelector("#kvWorkerUrl");
@@ -1115,6 +1127,7 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
     const payload = { key, cid: cid || "", size, mime, s3Key: s3Key || key };
     if (mutationOptions.createOnly) payload.createOnly = true;
     if (mutationOptions.confirmPlacementPresent) payload.confirmPlacementPresent = true;
+    if (mutationOptions.uploadAttemptId) payload.uploadAttemptId = mutationOptions.uploadAttemptId;
     if (contentCid) payload.contentCid = contentCid;
     if (backend) payload.backend = backend;
     // Civitai 転送専用の短期置き場だけを、次回の明示更新で回収できるようにする。
@@ -1183,9 +1196,11 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      if (res.status === 409 || errData.code === "CID_CONFLICT") {
+      if (errData.code === "CID_CONFLICT" || errData.code === "LINK_OBJECT_CONFLICT" || errData.code === "OBJECT_REF_CONFLICT") {
         throw new Error(`同名ファイル「${key}」が別の内容で既に登録されています。ファイル名を変更してください。`);
       }
+      if (errData.code === "RESERVATION_CONFLICT") throw new Error(`このLinkでは別のアップロードが未完了です。保存先の確認・再開が必要です: ${key}`);
+      if (errData.code === "LIFECYCLE_CONFLICT") throw new Error(`Object/Placementの状態遷移が進行中です。後で再試行してください: ${key}`);
       throw new Error(errData.error || `KV登録エラー (${res.status})`);
     }
     return true;
@@ -1220,6 +1235,24 @@ async function lifecycleRequest(payload) {
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error || `Lifecycle error (${response.status})`);
   return result;
+}
+
+async function linkBindingRequest(payload) {
+  if (!hasAdminAccess()) throw new Error("KV Worker URLとAdmin API Tokenが必要です");
+  const worker = getCustomKvWorkerUrl().replace(/\/api\/cividge-kv\/?$/, "");
+  const response = await fetch(`${worker}/api/link-binding`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${getAdminApiToken()}` },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.error || `Link binding error (${response.status})`);
+    error.code = data.code;
+    error.attempt = data.attempt;
+    throw error;
+  }
+  return data;
 }
 
 // The browser can execute Filebase/Kubo capabilities, but never decides that an
@@ -1354,25 +1387,24 @@ const kuboPlacementApplication = createKuboPlacementApplication({
   requestPin: pinToKubo,
 });
 
-const PUBLIC_GATEWAY_SETTINGS_KEY = "cividge_public_gateway_settings_v1";
+// Editor draft only. The canonical runtime configuration is stored by the
+// Delivery Worker; localStorage is not a GatewayConfig authority.
+let gatewayDraft = normalizeGatewaySettings({});
+let gatewayDraftSaved = false;
 
-function loadGatewaySettings() {
-  try {
-    return normalizeGatewaySettings(JSON.parse(localStorage.getItem(PUBLIC_GATEWAY_SETTINGS_KEY) || "{}"));
-  } catch (_) {
-    return normalizeGatewaySettings({});
-  }
-}
-
-function saveGatewaySettings(settings) {
-  localStorage.setItem(PUBLIC_GATEWAY_SETTINGS_KEY, JSON.stringify(normalizeGatewaySettings(settings)));
+function updateGatewayDraft(settings) {
+  gatewayDraft = normalizeGatewaySettings(settings);
+  gatewayDraftSaved = false;
   renderGatewaySettings();
 }
 
 function renderGatewaySettings() {
   if (!publicGatewayMode || !publicGatewaySelected || !publicGatewayList) return;
-  const settings = loadGatewaySettings();
+  const settings = gatewayDraft;
   const isEn = getAppLanguage() === "en";
+  if (publicGatewayStatus) publicGatewayStatus.textContent = gatewayDraftSaved
+    ? (isEn ? "Worker setting loaded/saved. Changes may take time to reach all regions." : "Worker設定を読込・保存済み。全地域への反映には時間がかかる場合があります。")
+    : (isEn ? "Draft only. Save to apply to delivery." : "編集中。配信へ反映するには保存してください。");
   publicGatewayMode.value = settings.mode;
   publicGatewaySelected.replaceChildren();
   for (const endpoint of settings.endpoints) {
@@ -1381,12 +1413,12 @@ function renderGatewaySettings() {
     publicGatewaySelected.add(option);
   }
   publicGatewaySelected.value = settings.selectedUrl;
-  publicGatewaySelected.disabled = settings.mode !== "manual" || !settings.endpoints.length;
+  publicGatewaySelected.disabled = settings.mode !== "manual" || !settings.endpoints.some(item => item.enabled);
 
   publicGatewayList.replaceChildren();
   if (!settings.endpoints.length) {
     const empty = document.createElement("span");
-    empty.textContent = isEn ? "Add an HTTPS /ipfs endpoint to open CIDs directly." : "CIDを直接開くにはHTTPSの /ipfs エンドポイントを追加してください。";
+    empty.textContent = isEn ? "No public Gateway is configured." : "公開Gatewayが設定されていません。";
     publicGatewayList.append(empty);
   }
   for (const endpoint of settings.endpoints) {
@@ -1397,10 +1429,13 @@ function renderGatewaySettings() {
     toggle.checked = endpoint.enabled;
     toggle.setAttribute("aria-label", `${endpoint.url} enabled`);
     toggle.addEventListener("change", () => {
-      const current = loadGatewaySettings();
+      const current = structuredClone(gatewayDraft);
       const entry = current.endpoints.find(item => item.url === endpoint.url);
       if (entry) entry.enabled = toggle.checked;
-      saveGatewaySettings(current);
+      if (!current.endpoints.some(item => item.enabled && item.url === current.selectedUrl)) {
+        current.selectedUrl = current.endpoints.find(item => item.enabled)?.url || "";
+      }
+      updateGatewayDraft(current);
     });
     const label = document.createElement("span");
     label.textContent = `${endpoint.region.toUpperCase()} · ${endpoint.url}`;
@@ -1410,10 +1445,10 @@ function renderGatewaySettings() {
     remove.className = "ghost-button";
     remove.textContent = isEn ? "Remove" : "削除";
     remove.addEventListener("click", () => {
-      const current = loadGatewaySettings();
+      const current = structuredClone(gatewayDraft);
       current.endpoints = current.endpoints.filter(item => item.url !== endpoint.url);
-      if (current.selectedUrl === endpoint.url) current.selectedUrl = "";
-      saveGatewaySettings(current);
+      if (current.selectedUrl === endpoint.url) current.selectedUrl = current.endpoints.find(item => item.enabled)?.url || "";
+      updateGatewayDraft(current);
     });
     row.append(toggle, label, remove);
     publicGatewayList.append(row);
@@ -1421,24 +1456,58 @@ function renderGatewaySettings() {
 }
 
 publicGatewayMode?.addEventListener("change", () => {
-  const settings = loadGatewaySettings();
+  const settings = structuredClone(gatewayDraft);
   settings.mode = publicGatewayMode.value;
-  saveGatewaySettings(settings);
+  if (settings.mode === "manual" && !settings.selectedUrl) settings.selectedUrl = settings.endpoints.find(item => item.enabled)?.url || "";
+  updateGatewayDraft(settings);
 });
 publicGatewaySelected?.addEventListener("change", () => {
-  const settings = loadGatewaySettings();
+  const settings = structuredClone(gatewayDraft);
   settings.selectedUrl = publicGatewaySelected.value;
-  saveGatewaySettings(settings);
+  updateGatewayDraft(settings);
 });
 publicGatewayAdd?.addEventListener("click", async () => {
   try {
     const endpoint = normalizeGatewayEndpoint(publicGatewayUrl.value, publicGatewayRegion.value);
-    const settings = loadGatewaySettings();
+    const settings = structuredClone(gatewayDraft);
     if (settings.endpoints.some(item => item.url === endpoint.url)) throw new Error("Gateway is already registered");
     settings.endpoints.push(endpoint);
     if (!settings.selectedUrl) settings.selectedUrl = endpoint.url;
-    saveGatewaySettings(settings);
+    updateGatewayDraft(settings);
     publicGatewayUrl.value = "";
+  } catch (error) {
+    await showCustomAlert(error.message, "IPFS Public Gateway");
+  }
+});
+
+async function gatewayConfigRequest(method, body) {
+  const worker = getCustomKvWorkerUrl().replace(/\/api\/cividge-kv\/?$/, "");
+  const token = getAdminApiToken();
+  if (!worker || !token) throw new Error("KV Worker URL and Admin API Token are required");
+  const response = await fetch(`${worker}/api/gateway-config`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `GatewayConfig ${method} failed (${response.status})`);
+  return payload.config;
+}
+
+publicGatewayLoad?.addEventListener("click", async () => {
+  try {
+    gatewayDraft = normalizeGatewaySettings(await gatewayConfigRequest("GET"));
+    gatewayDraftSaved = true;
+    renderGatewaySettings();
+  } catch (error) {
+    await showCustomAlert(error.message, "IPFS Public Gateway");
+  }
+});
+publicGatewaySave?.addEventListener("click", async () => {
+  try {
+    gatewayDraft = normalizeGatewaySettings(await gatewayConfigRequest("PUT", gatewayDraft));
+    gatewayDraftSaved = true;
+    renderGatewaySettings();
   } catch (error) {
     await showCustomAlert(error.message, "IPFS Public Gateway");
   }
@@ -3751,7 +3820,6 @@ cfClearButton?.addEventListener("click", () => {
   localStorage.removeItem("kuboAutoPinR2");
   localStorage.removeItem("kuboAutoPin");
   localStorage.removeItem("kuboPrioritizePinned");
-  localStorage.removeItem(PUBLIC_GATEWAY_SETTINGS_KEY);
   localStorage.removeItem("kvWorkerUrl");
   localStorage.removeItem("adminApiToken");
 
@@ -5183,7 +5251,9 @@ function isFileAcceptable(file) {
 
 function addFiles(files) {
   let blockedCount = 0;
+  let oversizedCount = 0;
   const allowed = files.filter((file) => {
+    if (exceedsUploadLimit(file.size)) { oversizedCount++; return false; }
     const ok = isFileAcceptable(file);
     if (!ok) blockedCount++;
     return ok;
@@ -5191,6 +5261,10 @@ function addFiles(files) {
 
   if (blockedCount > 0) {
     alert(`⚠️ 実行ファイルやスクリプトなどの危険なファイル形式（${blockedCount}件）は除外されました。`);
+  }
+  if (oversizedCount > 0) {
+    const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
+    alert(`⚠️ ${dict.uploadLimitCount.replace("{count}", String(oversizedCount))}`);
   }
 
   state.files.push(...allowed);
@@ -6311,6 +6385,84 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
   }
 }
 
+async function inspectManagedPlacement(objectRef, kind) {
+  const response = await lifecycleRequest({ action: "inspect", objectRef });
+  return response?.lifecycle?.placements?.[kind] || null;
+}
+
+async function headManagedStorageObject(s3, bucket, key) {
+  try {
+    return await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+  } catch (error) {
+    if (error?.$metadata?.httpStatusCode === 404 || ["NotFound", "NoSuchKey"].includes(error?.name)) return null;
+    throw error;
+  }
+}
+
+// Link-key reservation is authoritative. A pending attempt records the exact
+// physical locator before PUT, so a later authorized browser can inspect and
+// adopt an interrupted upload instead of guessing from localStorage.
+async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
+  if (!contentCid) throw new Error("最終バイト列のcontent CIDを計算できませんでした");
+  const kind = provider === "filebase" ? "filebase" : "r2";
+  const storageKey = `objects/${contentCid}`;
+  const objectRef = kind === "filebase" ? `ipfs:${contentCid.toLowerCase()}` : `r2:${storageKey}`;
+  const baseDomain = (getSelectedR2Domain(provider) || window.location.origin).replace(/\/$/, "");
+  const linkKey = buildKvKey(baseDomain, result.name);
+  const placement = {
+    kind, executor: kind === "r2" ? "worker" : "browser",
+    locator: { key: storageKey, ...(kind === "filebase" ? { cid: contentCid } : {}) },
+  };
+  let attemptId = crypto.randomUUID();
+  let physicalAlreadyPresent = false;
+  let reservation;
+  try {
+    reservation = await linkBindingRequest({ action: "reserve", linkKey, objectRef, attemptId, placement });
+  } catch (error) {
+    if (error.code !== "RESERVATION_CONFLICT" || error.attempt?.placement?.locator?.key !== storageKey) throw error;
+    if (Date.now() < Number(error.attempt.expiresAt || 0)) {
+      throw new Error("このLinkのuploadはまだ進行中です。中断した場合は数分後に同じファイルを再試行してください。");
+    }
+    // A previous browser may have disappeared after PUT. Only adopt an exact
+    // content-addressed key with matching provider metadata; never adopt an
+    // arbitrary physical file based on filename alone.
+    const pending = error.attempt;
+    reservation = await linkBindingRequest({ action: "takeover", linkKey, objectRef,
+      previousAttemptId: pending.id, attemptId });
+    const head = await headManagedStorageObject(s3, bucket, storageKey);
+    if (head) {
+      const observedCid = getIpfsCidFromS3Response(head);
+      const observedHash = head.Metadata?.hash || head.Metadata?.cid;
+      if (kind === "filebase" ? observedCid !== contentCid : observedHash !== contentCid) {
+        throw new Error("未完了uploadの物理内容を確認できません。対象Linkの保留状態を確認してください。");
+      }
+      physicalAlreadyPresent = true;
+    }
+  }
+
+  let current = await inspectManagedPlacement(objectRef, kind);
+  if (current?.state === "PRESENT") {
+    return { linkKey, baseDomain, objectRef, storageKey: current.locator.key, contentCid,
+      attemptId, attemptGeneration: reservation.binding.attempt?.generation,
+      noPut: true, noOp: reservation.result === "bound", placement: current };
+  }
+  if (reservation.result === "bound") {
+    reservation = await linkBindingRequest({ action: "reserve", linkKey, objectRef, attemptId, placement, acquirePlacement: true });
+  }
+  await lifecycleRequest({ action: "requestPlacementAcquire", objectRef, placement });
+  current = await inspectManagedPlacement(objectRef, kind);
+  if (current?.state === "PRESENT") {
+    return { linkKey, baseDomain, objectRef, storageKey: current.locator.key, contentCid,
+      attemptId, attemptGeneration: reservation.binding.attempt?.generation,
+      noPut: true, noOp: false, placement: current };
+  }
+  const claimed = await lifecycleRequest({ action: "claimPlacement", objectRef, placement: kind, operation: "acquire" });
+  return { linkKey, baseDomain, objectRef, storageKey, contentCid, attemptId,
+    attemptGeneration: reservation.binding.attempt?.generation,
+    noPut: physicalAlreadyPresent, noOp: false, adopted: physicalAlreadyPresent,
+    claim: claimed.claim, placement };
+}
+
 // --- S3 アップロード処理 (R2 / Filebase 独立対応) ---
 async function uploadImage(result, targetProvider = "r2", customPassword = null, uploadOptions = {}) {
   if (!result || !result.blob) return false;
@@ -6327,6 +6479,8 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
   result.isUploading = true;
   result.uploadingProvider = targetProvider;
   render();
+
+  let managedPlan = null;
 
   try {
     const pwdInput = document.querySelector("#tempPasswordInput");
@@ -6345,47 +6499,19 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     const arrayBuffer = await result.blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
 
-    // 個別ファイルサイズ制限: スマホのメモリ安全性(OOMクラッシュ防止)とCloudflareエッジキャッシュ上限を考慮し、128MB未満に設定
-    // See: [INV-FRONT-003] (単一ファイルアップロード上限 128MB)
-    const MAX_SINGLE_FILE_BYTES = 128 * 1024 * 1024; // 128MB
-    if (bytes.length >= MAX_SINGLE_FILE_BYTES) {
-      const sizeMb = (bytes.length / (1024 * 1024)).toFixed(1);
+    // Source and final bytes use the same global decimal 80 MB limit.
+    // See: [INV-FRONT-003].
+    if (exceedsUploadLimit(bytes.length)) {
+      const sizeMb = (bytes.length / 1_000_000).toFixed(1);
+      const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
       await showCustomAlert(
-        `ファイルサイズ (${sizeMb} MB) が上限（128MB未満）に達しています。<br>128MB未満のファイルをアップロードしてください。`,
+        dict.uploadLimitError.replace("{size}", sizeMb),
         "⚠️ 容量オーバー"
       );
       result.isUploading = false;
       result.uploadingProvider = null;
       render();
       return false;
-    }
-
-    // 🛡️ アップロード前同名ファイル衝突チェック:
-    // [INV-CORE-001] [INV-CORE-004] ファイル1件アップロードごとに fetchKvFiles()（kv.list() 全件走査）を
-    // 叩く異常消費を完全撤去。手元のローカル台帳キャッシュを参照し通信ゼロ（0回）で即座に照合する。
-    // （※万が一手元にない場合でも、Worker 側の registerKvCid で 409 CID_CONFLICT が自動検知される）
-    if (hasAdminAccess()) {
-      try {
-        const localList = storageCachedContents || loadLedgerFromLocalStorage(targetProvider) || [];
-        const existingKv = localList.find(f => (f.name || f.Key) === result.name);
-        if (existingKv) {
-          const existingCid = existingKv.contentCid || existingKv.cid || existingKv.metadata?.cid || existingKv.metadata?.c;
-          // アップロード前時点ではまだ新CIDが確定していない場合もあるが、既存ファイルがある場合は念のため警告
-          // （同一内容のリトライであればそのまま許可）
-          if (existingCid && result.ipfsCid && existingCid !== result.ipfsCid) {
-            await showCustomAlert(
-              `同名ファイル「${escapeHtml(result.name)}」が既に異なる内容で登録されています。<br>ファイル名変更（リネーム）を行ってからアップロードしてください。`,
-              "⚠️ ファイル名の衝突"
-            );
-            result.isUploading = false;
-            result.uploadingProvider = null;
-            render();
-            return false;
-          }
-        }
-      } catch (err) {
-        console.debug("Local pre-check skipped:", err);
-      }
     }
 
     let uploadBlob = result.blob;
@@ -6407,6 +6533,11 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       }
     }
 
+    if (exceedsUploadLimit(uploadBytes.byteLength)) {
+      const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
+      throw new Error(dict.uploadLimitError.replace("{size}", (uploadBytes.byteLength / 1_000_000).toFixed(1)));
+    }
+
     let contentType = uploadBlob.type || "";
     if (!contentType || contentType === "application/octet-stream") {
       contentType = getContentTypeFromFilename(result.name);
@@ -6422,7 +6553,45 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     let calculatedCid = null;
     let calculatedHash = null;
 
-    if (isFilebase) {
+    if (hasAdminAccess()) {
+      calculatedCid = await calculateFilebaseCid(uploadBytes);
+      managedPlan = await prepareManagedUpload(result, targetProvider, s3, bucketName, calculatedCid);
+      if (managedPlan.noPut) {
+        if (managedPlan.claim) {
+          await linkBindingRequest({ action: "markPhysical", linkKey: managedPlan.linkKey, attemptId: managedPlan.attemptId,
+            generation: managedPlan.attemptGeneration, cid: calculatedCid });
+          await lifecycleRequest({ action: "reportPlacement", objectRef: managedPlan.objectRef,
+            placement: targetProvider, claimId: managedPlan.claim.claimId,
+            generation: managedPlan.claim.generation, operation: "acquire", outcome: "present" });
+        }
+        if (!managedPlan.noOp) {
+          await registerKvCid(managedPlan.linkKey, isFilebase ? calculatedCid : "r2", uploadBytes.length,
+            contentType, managedPlan.storageKey, password, null, ttlSeconds, expiresAt, false, null,
+            managedPlan.baseDomain, true, null, imageDimensions?.width, imageDimensions?.height,
+            civitaiTemporary, isFilebase ? null : calculatedCid, targetProvider,
+            { createOnly: true, uploadAttemptId: managedPlan.attemptId });
+        }
+        result.isUploaded = true;
+        result.uploadedProvider = targetProvider;
+        result.storageKey = managedPlan.storageKey;
+        result.ipfsCid = calculatedCid;
+        result.mime = contentType;
+        result.kvKey = managedPlan.linkKey;
+        result.proxyUrl = `${managedPlan.baseDomain}/${encodeURIComponent(result.name)}`;
+        setFileStoredDomain(managedPlan.linkKey, managedPlan.baseDomain);
+        addOrUpdateLocalLedgerItem(targetProvider, {
+          storageProvider: targetProvider, entryKind: "link", Key: result.name, name: result.name,
+          rawKey: managedPlan.linkKey, s3Key: managedPlan.storageKey, Size: uploadBytes.length,
+          LastModified: new Date().toISOString(), isFromS3: true, cid: calculatedCid,
+          contentCid: calculatedCid, metadata: { backend: targetProvider, s3Key: managedPlan.storageKey, cid: calculatedCid },
+        });
+        paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
+        renderUrlPalette();
+        return true;
+      }
+    }
+
+    if (!managedPlan && isFilebase) {
       calculatedCid = await calculateFilebaseCid(uploadBytes);
       if (calculatedCid) {
         const duplicate = await findFilebaseObjectByCid(s3, bucketName, calculatedCid);
@@ -6481,7 +6650,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           return true;
         }
       }
-    } else {
+    } else if (!managedPlan) {
       // ⚡ R2 IPFS UnixFS CID 重複検査:
       // Filebase と同一の UnixFS CID を計算し、同一 CID の既存実体があれば PutObject をスキップしてスマートエイリアス化
       calculatedCid = await calculateFilebaseCid(uploadBytes);
@@ -6569,7 +6738,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
 
     const command = new PutObjectCommand({
       Bucket: bucketName,
-      Key: result.name,
+      Key: managedPlan?.storageKey || result.name,
       Body: uploadBytes,
       ContentType: contentType,
       ContentDisposition: contentDisposition,
@@ -6596,7 +6765,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           await new Promise(r => setTimeout(r, 600 + attempt * 500));
           const headOutput = await s3.send(new HeadObjectCommand({
             Bucket: bucketName,
-            Key: result.name,
+            Key: managedPlan?.storageKey || result.name,
           }));
           const hHeaders = headOutput?.$metadata?.httpHeaders || {};
           const candidate = hHeaders["x-amz-meta-cid"] ||
@@ -6610,9 +6779,27 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       }
     }
 
-    result.isUploaded = true;
+    if (managedPlan) {
+      if (isFilebase && ipfsCid !== calculatedCid) {
+        await safeDeleteS3Objects(s3, bucketName, [managedPlan.storageKey]);
+        await lifecycleRequest({ action: "reportPlacement", objectRef: managedPlan.objectRef,
+          placement: targetProvider, claimId: managedPlan.claim.claimId,
+          generation: managedPlan.claim.generation, operation: "acquire", outcome: "retryable",
+          error: "Filebase CID did not match the preflight content CID" });
+        await linkBindingRequest({ action: "abort", linkKey: managedPlan.linkKey,
+          attemptId: managedPlan.attemptId, generation: managedPlan.attemptGeneration, physicalAbsent: true });
+        throw new Error("Filebase CIDが事前計算と一致しないため、保存を取り消しました");
+      }
+      await linkBindingRequest({ action: "markPhysical", linkKey: managedPlan.linkKey,
+        attemptId: managedPlan.attemptId, generation: managedPlan.attemptGeneration,
+        cid: isFilebase ? ipfsCid : calculatedCid });
+      await lifecycleRequest({ action: "reportPlacement", objectRef: managedPlan.objectRef,
+        placement: targetProvider, claimId: managedPlan.claim.claimId,
+        generation: managedPlan.claim.generation, operation: "acquire", outcome: "present" });
+    }
+
     result.uploadedProvider = targetProvider;
-    result.storageKey = result.name;
+    result.storageKey = managedPlan?.storageKey || result.name;
     result.password = password;
     result.hasPassword = Boolean(password);
     result.ttl = ttlSeconds;
@@ -6637,7 +6824,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         ipfsCid || "",
         uploadBytes.length,
         contentType,
-        result.name,
+        result.storageKey,
         password,
         uploadBlob || uploadBytes,
         ttlSeconds,
@@ -6652,7 +6839,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         civitaiTemporary,
         null,
         "filebase",
-        { confirmPlacementPresent: true }
+        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId } : { confirmPlacementPresent: true }
       );
       result.kvKey = fbKvKey;
       
@@ -6687,7 +6874,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         "r2",
         uploadBytes.length,
         contentType,
-        result.name,
+        result.storageKey,
         password,
         uploadBlob || uploadBytes,
         ttlSeconds,
@@ -6702,7 +6889,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         civitaiTemporary,
         calculatedCid,
         "r2",
-        { confirmPlacementPresent: true }
+        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId } : { confirmPlacementPresent: true }
       );
       result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       result.kvKey = r2KvKey;
@@ -6716,6 +6903,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       }
     }
 
+    result.isUploaded = true;
     if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
 
     // 🎬 動画の場合は先頭フレームサムネイル（.thumb.webp）を裏で自動生成・保存
@@ -6787,7 +6975,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       name: result.name,
       rawKey: uploadKvKey,
       entryKind: hasAdminAccess() ? "link" : "local",
-      s3Key: result.name,
+      s3Key: result.storageKey,
       Size: uploadBytes.length,
       size: uploadBytes.length,
       LastModified: new Date().toISOString(),
@@ -6804,7 +6992,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         backend: targetProvider,
         size: uploadBytes.length,
         cid: isFilebase ? (finalCid || "") : "r2",
-        s3Key: result.name,
+        s3Key: result.storageKey,
         expiresAt: expiresAt || null,
         ttl: ttlSeconds || 0,
         allowedHost: baseDomain,
@@ -7701,6 +7889,9 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
       // 2. S3 にあるが KV に未登録のアイテムを追加
       const retiredLocalEntries = getRetiredLocalEntries(requestedProvider);
       for (const s3Item of s3RawList) {
+        // Content-addressed physical objects without a projected Link are
+        // pending Placement observations, never Managed Link cards.
+        if (s3Item.Key.startsWith("objects/")) continue;
         if (!consumedS3Keys.has(s3Item.Key) && !retiredLocalEntries.has(s3Item.Key)) {
           contents.push({
             storageProvider: "filebase",
@@ -7821,6 +8012,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
       // 2. R2 バケットに存在するが KV に未登録の物理ファイルを追加＆自動KV同期
       const retiredLocalEntries = getRetiredLocalEntries(requestedProvider);
       for (const s3Item of s3RawList) {
+        if (s3Item.Key.startsWith("objects/")) continue;
         if (!consumedS3Keys.has(s3Item.Key) && !processedPhysicalKeys.has(s3Item.Key) && !retiredLocalEntries.has(s3Item.Key)) {
           const rawS3Cid = getStoredIpfsCid(s3Item.Key);
           const s3Cid = isValidIpfsCid(rawS3Cid) ? rawS3Cid : null;
@@ -8323,7 +8515,6 @@ function renderCurrentStoragePage() {
       cidBadgeHtml = `
         <div style="display: inline-flex; align-items: center; gap: 3px;">
           <button type="button" class="copy-cid-btn" data-cid="${escapeHtml(itemCid)}" style="cursor: pointer; font-size: 10px; font-family: monospace; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="IPFS CID: ${escapeHtml(itemCid)} (クリックでコピー)">📦 ${escapeHtml(shortCid)} 📋</button>
-          <button type="button" class="ipfs-gateway-open-btn" data-cid="${escapeHtml(itemCid)}" style="cursor: pointer; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="${lang === "en" ? "Open CID via selected public Gateway" : "選択した公開GatewayからCIDを開く"}">🌐 IPFS ↗</button>
           <a href="${escapeHtml(indexerUrl)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;">${labels.nodeCheck}</a>
         </div>
       `;
@@ -8998,24 +9189,6 @@ r2FileList?.addEventListener("click", async (e) => {
     const cid = target.dataset.cid;
     if (cid) {
       await copyToClipboard(cid, target, "📋 コピー完了");
-    }
-    return;
-  }
-
-  if (target.classList.contains("ipfs-gateway-open-btn")) {
-    try {
-      const settings = loadGatewaySettings();
-      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-      const endpoint = selectGatewayEndpoint(settings, timeZone);
-      const url = gatewayRetrievalUrl(endpoint, target.dataset.cid);
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (error) {
-      await showCustomAlert(
-        getAppLanguage() === "en"
-          ? `Set an enabled IPFS Public Gateway first. ${error.message}`
-          : `先に有効なIPFS Public Gatewayを設定してください。${error.message}`,
-        "IPFS Public Gateway"
-      );
     }
     return;
   }

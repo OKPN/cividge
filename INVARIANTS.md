@@ -156,13 +156,13 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 
 ## 2. リソース制限とクライアント安全性 (Resource & Client Safety)
 
-### [INV-FRONT-003] 単一ファイルアップロード上限（128 MB 未満）
+### [INV-FRONT-003] 単一ファイルアップロード上限（十進80 MB以下）
 * **規則 (Rule)**:  
-  ブラウザからの単一ファイルアップロード（`result.blob`）は、**厳格に 128 MB（$128 \times 1024 \times 1024$ バイト）未満に制限しなければならない**。
+  ブラウザ・Worker APIを含むすべての単一ファイルアップロードは、入力と実際に保存する最終バイト列の双方を**80,000,000バイト以下**に制限しなければならない。表示上の「80 MB」は十進単位とする。
 
 * **理由 (Rationale)**:  
   1. **スマホ（iOS / Android）のメモリ保護（OOM クラッシュ防止）**:  
-     Cividge はブラウザ内で CID（ハッシュ）計算や EXIF 処理を行うため、ファイルサイズの約 2.5〜3 倍（128 MB の場合約 300〜380 MB）の JavaScript メモリを瞬間的に消費する。これを超える巨大ファイルを許可すると、特に iOS Safari（Jetsam 制限）等のモバイル環境でブラウザタブが強制クラッシュ（再読み込みループ）を引き起こすため。
+     Cividge はブラウザ内で CID（ハッシュ）計算や EXIF 処理を行うため、入力サイズ以上の JavaScript メモリを瞬間的に消費する。特に iOS Safari 等のモバイル環境でブラウザタブが強制クラッシュするリスクを抑えるため。
   2. **Cloudflare エッジキャッシュの適合性**:  
      Cloudflare の単一ファイルキャッシュ上限（512 MB）に対して十分な安全マージンを確保し、全ファイルが確実にエッジキャッシュされる状態を維持するため。
 
@@ -335,6 +335,14 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 * `PIN_REQUESTED != PINNING != PRESENT`。Pin要求と物理保持確認を混同しない。
 * `PINNING` / `RELEASING` claimはDurable Objectが永続化したleaseを持ち、browser reload、executor消失、network failureの後も有限時間で再claim可能に戻る。
 * claim IDとgenerationが一致するreportだけがPlacementを進める。lease expiry後のstale reportは状態を変えない。
+
+### [INV-FILEBASE-RPC-RELEASE-AUTHORITY] Filebase RPC releaseの決定権
+* Filebase RPC Placementの物理 `pin/rm` は、ObjectLifecycleがreleaseを許可し、Workerがgeneration-bound release claimを取得した後だけ実行できる。Workerが独自に不要性を推測してunpinしてはならない。
+* `pin/rm` 失敗または応答喪失時はretryableに保ち、成功を確認するまでObjectを復活・RELEASED確定してはならない。
+
+### [INV-FILEBASE-RPC-ACTUATOR-SCOPE] Filebase RPC actuatorの所有境界
+* `FILEBASE_DEDICATED_BUCKET=true` は、対象bucketをCividge Worker RPC専用のPlacement namespaceとして運用する明示的な宣言である。defaultはfalse。外部ツール、他アプリケーション、browser S3 uploadのpinを同じbucketに混在させてはならない。
+* Workerはdurableな `cividge_worker_rpc` provenanceを持つ `filebase_rpc` Placementだけをactuateできる。browser/S3の `filebase` Placementや外部所有pinをRPC cleanupへ暗黙に昇格させてはならない。browser側S3 credentialをWorkerへ移さない。
 * KV/localStorage/UIはauthority状態をprojectionし、`PIN_REQUESTED` / `PINNING` を単なる「未保持」へ潰さない。
 
 ### [INV-OBJECT-IMMUTABLE] Object bytesの不変性

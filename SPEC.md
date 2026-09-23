@@ -131,10 +131,13 @@ the entry's retirement. A physical-only discovery is not a lifecycle Link.
 An HTTP Public Gateway is a CID retrieval endpoint, not a Placement, Kubo RPC
 node, Filebase provider route, or libp2p peer. Gateway selection and retrieval
 failures never mutate Object, Link, or Placement lifecycle state. The current
-GatewaySelectionPolicy is stored in this browser's localStorage and consumed
-only by its direct-CID open action. The public delivery Worker retains its
-separate existing upstream routing; browser settings must not be presented as
-changing that route.
+The frontend contains a public bootstrap catalog, but it is not authority.
+An authenticated control-plane API stores the canonical GatewayConfig under
+`config:ipfs_gateways` in the Worker's KV namespace. On an IPFS delivery cache
+miss, the Worker orders enabled peers using the actual viewer request's
+continent or the manual selection, then falls back across peers. Filebase's
+provider gateway remains a separate origin candidate. KV propagation is
+eventual, so a saved change may take time to reach other Cloudflare regions.
 
 ## Verification matrix
 

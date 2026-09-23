@@ -74,7 +74,7 @@
               <span class="drop-icon">+</span>
               <strong data-i18n="dropText">画像やフォルダをここにドロップ</strong>
               <span data-i18n="orClick">またはクリックしてファイルを選択</span>
-              <span class="drop-limit-hint" data-i18n="dropLimitHint" style="font-size: 11.5px; color: var(--muted); opacity: 0.8; letter-spacing: 0.3px; margin-top: -2px;">※ 1ファイルにつき 128MB 未満</span>
+              <span class="drop-limit-hint" data-i18n="dropLimitHint" style="font-size: 11.5px; color: var(--muted); opacity: 0.8; letter-spacing: 0.3px; margin-top: -2px;">※ 1ファイルにつき最大 80 MB</span>
             </label>
             <div class="progress-container">
               <progress id="progressBar" value="0" max="100"></progress>
@@ -432,7 +432,7 @@
                         </div>
                         <div style="padding: 9px; border: 1px solid rgba(56, 189, 248, 0.28); border-radius: 6px; display: flex; flex-direction: column; gap: 7px;">
                           <strong style="color: #7dd3fc; font-size: 12px;" data-i18n="publicGatewayTitle">🌐 IPFS Public Gateway</strong>
-                          <span style="font-size: 10.5px; color: var(--muted);" data-i18n="publicGatewayScope">このブラウザでCIDを直接開く場合に使用します。公開配信URLのWorker設定は変更しません。</span>
+                          <span style="font-size: 10.5px; color: var(--muted);" data-i18n="publicGatewayScope">Cividgeの公開URLから配信するとき、Delivery WorkerがCIDを取得するために使用します。</span>
                           <label class="field"><span data-i18n="gatewayModeLabel">選択方式</span>
                             <select id="publicGatewayMode"><option value="auto" data-i18n="gatewayAuto">自動</option><option value="manual" data-i18n="gatewayManual">手動</option></select>
                           </label>
@@ -447,6 +447,11 @@
                             <button type="button" class="ghost-button" id="publicGatewayAdd" data-i18n="gatewayAdd">＋ Gatewayを追加</button>
                           </div>
                           <div id="publicGatewayList" style="display: flex; flex-direction: column; gap: 5px; font-size: 11px;"></div>
+                          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                            <button type="button" class="ghost-button" id="publicGatewayLoad" data-i18n="gatewayLoad">Worker設定を読込</button>
+                            <button type="button" class="ghost-button" id="publicGatewaySave" data-i18n="gatewaySave">Worker設定へ保存</button>
+                            <span id="publicGatewayStatus" style="font-size:10.5px;color:var(--muted);"></span>
+                          </div>
                         </div>
                         <details style="margin-top: 4px; padding: 8px 9px; border: 1px solid rgba(167, 139, 250, 0.25); border-radius: 6px; color: var(--muted); font-size: 10.5px; line-height: 1.55;">
                           <summary style="cursor: pointer; color: #c4b5fd; font-weight: 600;" data-i18n="kuboGuideSummary">推奨運用・外出先から接続する場合（任意）</summary>

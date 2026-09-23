@@ -1,9 +1,20 @@
-// Browser-side HTTP CID retrieval. These endpoints are peers, not Placements.
+// Frontend bootstrap catalog and editor validation. The Worker KV config is
+// the runtime source of truth; this module never retrieves a CID.
 const REGIONS = new Set(["global", "apac", "eu", "na"]);
+
+export const DEFAULT_PUBLIC_GATEWAYS = Object.freeze([
+  { url: "https://apac.orbitor.dev/ipfs", region: "apac", enabled: true },
+  { url: "https://dget.top/ipfs", region: "global", enabled: true },
+  { url: "https://ipfs.orbitor.dev/ipfs", region: "na", enabled: true },
+  { url: "https://eu.orbitor.dev/ipfs", region: "eu", enabled: true },
+  { url: "https://latam.orbitor.dev/ipfs", region: "global", enabled: true },
+]);
 
 export function normalizeGatewayEndpoint(value, region = "global") {
   const parsed = new URL(String(value || "").trim());
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+  if (parsed.protocol !== "https:" || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash ||
+      parsed.hostname === "localhost" || parsed.hostname.endsWith(".local") || parsed.hostname.endsWith(".internal") ||
+      parsed.hostname.includes(":") || /^\d+(?:\.\d+){3}$/.test(parsed.hostname)) {
     throw new Error("A public Gateway must be an HTTPS URL without credentials or query");
   }
   if (parsed.hostname === "ipfs.filebase.io") {
@@ -18,7 +29,7 @@ export function normalizeGatewayEndpoint(value, region = "global") {
 export function normalizeGatewaySettings(input) {
   const endpoints = [];
   const seen = new Set();
-  for (const raw of Array.isArray(input?.endpoints) ? input.endpoints : []) {
+  for (const raw of Array.isArray(input?.endpoints) ? input.endpoints : DEFAULT_PUBLIC_GATEWAYS) {
     try {
       const endpoint = normalizeGatewayEndpoint(raw.url, raw.region);
       if (seen.has(endpoint.url)) continue;
@@ -32,31 +43,4 @@ export function normalizeGatewaySettings(input) {
     selectedUrl: String(input?.selectedUrl || ""),
     endpoints,
   };
-}
-
-function preferredRegion(timeZone) {
-  if (/^(Asia|Australia|Pacific)\//.test(timeZone)) return "apac";
-  if (/^(Europe|Africa)\//.test(timeZone)) return "eu";
-  if (/^America\//.test(timeZone)) return "na";
-  return "global";
-}
-
-export function selectGatewayEndpoint(settings, timeZone = "") {
-  const normalized = normalizeGatewaySettings(settings);
-  const candidates = normalized.endpoints.filter(endpoint => endpoint.enabled);
-  if (normalized.mode === "manual") {
-    return candidates.find(endpoint => endpoint.url === normalized.selectedUrl) || null;
-  }
-  const region = preferredRegion(timeZone);
-  return candidates.find(endpoint => endpoint.region === region)
-    || candidates.find(endpoint => endpoint.region === "global")
-    || candidates[0]
-    || null;
-}
-
-export function gatewayRetrievalUrl(endpoint, cid) {
-  if (!endpoint || !/^(Qm[1-9A-HJ-NP-Za-km-z]+|baf[a-z2-7]+)$/i.test(String(cid || ""))) {
-    throw new Error("A selected Gateway and valid CID are required");
-  }
-  return `${normalizeGatewayEndpoint(endpoint.url, endpoint.region).url}/${encodeURIComponent(cid)}`;
 }
