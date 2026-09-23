@@ -20,6 +20,9 @@
 - Worker executes R2 work. Browser/local holders execute Filebase/Kubo only
   after an issued task and report success or retryable failure. Their
   credentials are an explicit boundary, not lifecycle authority.
+- Re-uploading the same bytes to the same canonical Link is idempotent. A
+  confirmed storage upload may re-acquire a previously `RELEASED` Placement in
+  a new generation before recreating the Link; alias-only `createLink` cannot.
 
 このドキュメントは、Cividge フロントエンド（UI / Pages）および関連システムが正常に動作するために、**いかなるコード改修やリファクタリングを行っても絶対に崩してはならない性質（不変条件）** を定義したものです。
 

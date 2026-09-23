@@ -72,6 +72,7 @@ specification explicitly says otherwise.
 | --- | --- |
 | New upload | Store or identify an Object, then register its Link. A successful response must not advertise a Link before its registry entry is usable. |
 | Duplicate Filebase content | Reuse the matching CID and register a new Alias/Link; do not re-upload identical bytes solely to obtain a different filename. |
+| Re-upload after release | The same canonical Link and content CID are accepted idempotently after the upload confirms a PRESENT Placement. The lifecycle authority advances the Placement generation, republishes the Link projection, and purges the stale 404; alias-only Link creation cannot resurrect released storage. |
 | Rename or new delivery domain | Create a new peer Link while retaining the source Link and the same Object/CID. A duplicate canonical Link key is a conflict, not an update. |
 | Change TTL or password | Modify only the selected Link's policy. |
 | Delete one of several links | Begin authoritative removal, delete that Link's delivery projection, then complete authoritative removal; retain the shared Object/CID and preservation pin. Every partial failure is retryable with the same ObjectRef and Link key. |

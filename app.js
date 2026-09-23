@@ -1092,6 +1092,7 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
   try {
     const payload = { key, cid: cid || "", size, mime, s3Key: s3Key || key };
     if (mutationOptions.createOnly) payload.createOnly = true;
+    if (mutationOptions.confirmPlacementPresent) payload.confirmPlacementPresent = true;
     if (contentCid) payload.contentCid = contentCid;
     if (backend) payload.backend = backend;
     // Civitai 転送専用の短期置き場だけを、次回の明示更新で回収できるようにする。
@@ -6367,7 +6368,10 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             getVideoThumbnailKey(duplicate.key),
             imageDimensions?.width,
             imageDimensions?.height,
-            civitaiTemporary
+            civitaiTemporary,
+            null,
+            "filebase",
+            { confirmPlacementPresent: true }
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
           storeIpfsCid(kvKey, duplicate.cid);
@@ -6427,7 +6431,8 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             imageDimensions?.height,
             civitaiTemporary,
             calculatedCid,
-            "r2"
+            "r2",
+            { confirmPlacementPresent: true }
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
           storeR2Hash(kvKey, calculatedCid);
@@ -6532,7 +6537,28 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       // CID の有無に関わらず、KV にメタデータ（パスワード含む）を登録（※一般ユーザー時は自動スキップ）
       // [INV-CORE-006] 🌐 選択されている配信ドメインのみを allowedHost として渡し、host:filename 均一キーで登録
       const fbKvKey = buildKvKey(baseDomain, result.name);
-      await registerKvCid(fbKvKey, ipfsCid || "", uploadBytes.length, contentType, result.name, password, uploadBlob || uploadBytes, ttlSeconds, expiresAt, false, null, baseDomain, true, null, imageDimensions?.width, imageDimensions?.height, civitaiTemporary);
+      await registerKvCid(
+        fbKvKey,
+        ipfsCid || "",
+        uploadBytes.length,
+        contentType,
+        result.name,
+        password,
+        uploadBlob || uploadBytes,
+        ttlSeconds,
+        expiresAt,
+        false,
+        null,
+        baseDomain,
+        true,
+        null,
+        imageDimensions?.width,
+        imageDimensions?.height,
+        civitaiTemporary,
+        null,
+        "filebase",
+        { confirmPlacementPresent: true }
+      );
       result.kvKey = fbKvKey;
       
       if (hasAdminAccess()) {
@@ -6580,7 +6606,8 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         imageDimensions?.height,
         civitaiTemporary,
         calculatedCid,
-        "r2"
+        "r2",
+        { confirmPlacementPresent: true }
       );
       result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       result.kvKey = r2KvKey;
