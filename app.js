@@ -8464,7 +8464,7 @@ r2FileList?.addEventListener("click", async (e) => {
     const oldKey = btn.dataset.key;
     if (!oldKey) return;
 
-    const row = btn.closest(".item-name-row");
+    const row = btn.closest(".item-name-group, .item-name-row");
     if (!row) return;
 
     const article = btn.closest(".result-item");
