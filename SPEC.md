@@ -13,7 +13,7 @@ even if it appears to work in the UI.
 | **Object** | An R2 object, or the byte content addressed by an IPFS CID. |
 | **Link** | A user-facing delivery name, normally `delivery-domain/file-name`, registered in the KV control plane. |
 | **Active link** | A link which has not been manually deleted and has not expired. A password gate may restrict access without making the link inactive. |
-| **Alias** | A second Link that resolves to the same Object or CID. |
+| **Peer Link** | Any additional canonical `host:filename` Link to the same Object. Peer Links have no original/alias hierarchy. |
 | **Preservation pin** | A Kubo pin retained for an IPFS CID to preserve an origin independently of Filebase capacity release. |
 | **Physical cleanup** | Deleting an R2 object, removing a Filebase object, or unpinning a Kubo CID. |
 
@@ -55,6 +55,16 @@ specification explicitly says otherwise.
    authorized Placement task and must report `released` or `retryable`; their
    report never authorizes release. Browser-held storage credentials are an
    explicit out-of-band trust boundary.
+11. **Immutable Object bytes** — Conversion, metadata policy, EXIF processing,
+   and MP4 FastStart complete before Object creation. Different bytes require
+   a new Object and must never overwrite an existing locator before conflict
+   authorization succeeds.
+12. **Placement liveness** — Browser-actuated claims have an authoritative
+   lease. An abandoned `PINNING`/`RELEASING` claim returns to a claimable
+   state, and an older generation can never mutate the recovered Placement.
+13. **Stable relay namespace** — Relay delivery ingress is
+   `/r/<relay-id>/<filename>`. `/r/` is routing/security classification, not
+   Link identity, and must not be flattened or replaced by per-relay WAF rules.
 
 ## Required lifecycle transitions
 
@@ -68,6 +78,7 @@ specification explicitly says otherwise.
 | Expiry on access | Invalidate the expired Link and return the configured not-found response; do not clean up a shared Object/CID. |
 | Delete or expire the final link | Make the Object release-eligible only after the authoritative Link set and pending-removal set are empty. Physical cleanup still requires a valid Placement claim. |
 | Filebase capacity release | Before releasing a Filebase copy that still needs preservation, transition Kubo through `PIN_REQUESTED → PINNING → PRESENT`. `pinning` is not preservation. A failed attempt becomes retryable and must not release the source. |
+| Abandoned actuator | Revoke only the expired claim, return acquisition to `PIN_REQUESTED` (or release to `RETRYABLE`), and reject reports from the expired generation. |
 
 ## Authoritative mutation and actuator protocol
 
@@ -82,7 +93,24 @@ specification explicitly says otherwise.
   may be executed by browser/local capability holders, but the capability
   holder never decides whether release is allowed.
 - Delivery KV is updated from authoritative Placement state after a successful
-  report. Client-supplied `kuboStatus` is not authority.
+  mutation/report. It projects `PIN_REQUESTED`, `PINNING`, `PRESENT`, and
+  `RETRYABLE` without collapsing them. Client-supplied `kuboStatus` is not authority.
+
+## Relay routing and security namespace
+
+`test-up.pages.dev/foo.webp` may statically redirect to
+`relay.k7m.f5.si/r/test-up/foo.webp`. The Worker resolves `test-up` to its
+public host and performs exactly one canonical `host:filename` KV lookup.
+`kv.k7m.f5.si/<filename>` remains a separate direct-delivery capability.
+Zone-wide rate limiting is abuse policy and does not replace the `/r/`
+routing/WAF boundary.
+
+## Verification order
+
+After syntax, build, and startup checks, development stops at a manual
+exploratory checkpoint. Deep concurrency, failure-injection, and production
+E2E testing starts only after ordinary upload, list, delivery, peer-Link,
+Kubo, reload, and delete interactions have no obvious anomaly.
 
 ## Observation and UI retirement
 

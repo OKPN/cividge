@@ -13,6 +13,7 @@ import {
   isVideoThumbnailParentKey,
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
+import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "./kubo-placement.js";
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 
 let jxlInitialized = false;
@@ -1370,6 +1371,11 @@ function clearCivitaiTemporaryTransfer(provider, key) {
   localStorage.setItem(CIVITAI_TEMP_TRANSFER_STORAGE_KEY, JSON.stringify(records));
 }
 const { checkKuboOnline, checkKuboPinned, pinToKubo, getKuboPinnedCids, unpinFromKubo, addFileToKubo } = createKuboClient(getKuboRpcEndpoint);
+const kuboPlacementApplication = createKuboPlacementApplication({
+  lifecycleRequest,
+  checkPinned: checkKuboPinned,
+  requestPin: pinToKubo,
+});
 
 // 🏠 Kubo Pin 同期タスク追跡 & せっかち防止（離脱・リロードガード）
 const activeKuboPins = new Set();
@@ -1387,11 +1393,10 @@ window.addEventListener("beforeunload", (e) => {
 
 
 // ==========================================
-// 🗃️ 台帳型タプル圧縮ローカルキャッシュ
-// キー名を完全排除し [name, cid, size, unixSec, s3Key, backend, isFromS3, isKuboPinned]
-// の配列形式で50-60%圧縮し、5MB枠内で4万件超まで収容可能
+// 🗃️ Managed-list / UI projection cache (authorityではない)
+// v3はKubo Placementのclosed stateを保持する。旧schemaは推測migrationせずdropする。
 // ==========================================
-const STORAGE_LEDGER_KEY_PREFIX = "cividge_ledger_";
+const STORAGE_LEDGER_KEY_PREFIX = "cividge_managed_projection_v3_";
 
 function saveLedgerToLocalStorage(provider, contents) {
   if (!provider || !Array.isArray(contents)) return;
@@ -1404,9 +1409,10 @@ function saveLedgerToLocalStorage(provider, contents) {
       item.s3Key || item.Key || "",
       item.uploadedProvider || item.backend || provider,
       item.isFromS3 ? 1 : 0,
-      item.metadata?.kuboStatus === "pinned" ? 1 : 0,
       item.rawKey || item.Key || "",
-      item.metadata?.allowedHost || item.metadata?.d || ""
+      item.metadata?.allowedHost || item.metadata?.d || "",
+      item.metadata?.kuboPlacementState || item.kuboPlacementState ||
+        (item.metadata?.kuboStatus === "pinned" ? KUBO_PLACEMENT_STATE.PRESENT : KUBO_PLACEMENT_STATE.ABSENT),
     ]);
     localStorage.setItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`, JSON.stringify(tuples));
   } catch (e) {
@@ -1429,9 +1435,11 @@ function loadLedgerFromLocalStorage(provider) {
       const s3Key = t[4] || name;
       const backend = t[5] || provider;
       const isFromS3 = t[6] === 1;
-      const isKuboPinned = t[7] === 1;
-      const rawKey = t[8] || s3Key || name;
-      const allowedHost = t[9] || (rawKey.includes(":") ? rawKey.split(":")[0] : "");
+      const rawKey = t[7] || s3Key || name;
+      const allowedHost = t[8] || (rawKey.includes(":") ? rawKey.split(":")[0] : "");
+      const kuboPlacementState = Object.values(KUBO_PLACEMENT_STATE).includes(t[9])
+        ? t[9]
+        : KUBO_PLACEMENT_STATE.ABSENT;
       return {
         Key: name,
         name,
@@ -1447,7 +1455,8 @@ function loadLedgerFromLocalStorage(provider) {
         backend,
         isFromS3,
         metadata: {
-          kuboStatus: isKuboPinned ? "pinned" : "not_pinned",
+          kuboStatus: kuboPlacementState === KUBO_PLACEMENT_STATE.PRESENT ? "pinned" : "not_pinned",
+          kuboPlacementState,
           cid: cid || undefined,
           allowedHost: allowedHost || undefined,
           d: allowedHost || undefined,
@@ -8041,6 +8050,8 @@ function renderCurrentStoragePage() {
     if (isFilebase) {
       const isFromS3 = Boolean(item.isFromS3);
       const isKuboPinned = item.metadata?.kuboStatus === "pinned";
+      const kuboPlacementState = item.metadata?.kuboPlacementState || item.kuboPlacementState ||
+        (isKuboPinned ? KUBO_PLACEMENT_STATE.PRESENT : KUBO_PLACEMENT_STATE.ABSENT);
 
       const fbBadgeHtml = isFromS3
         ? `<button type="button" class="unpin-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.filebaseStored}</button>`
@@ -8051,6 +8062,13 @@ function renderCurrentStoragePage() {
         kuboBadgeHtml = `<span class="kubo-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.08); color: #64748b; border: 1px dashed rgba(148,163,184,0.25); font-weight: 500; cursor: not-allowed; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboOff}</span>`;
       } else if (isKuboPinned) {
         kuboBadgeHtml = `<button type="button" class="kubo-unpin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboStored}</button>`;
+      } else if (kuboPlacementState === KUBO_PLACEMENT_STATE.PIN_REQUESTED || kuboPlacementState === KUBO_PLACEMENT_STATE.PINNING) {
+        const stateText = kuboPlacementState === KUBO_PLACEMENT_STATE.PINNING
+          ? (lang === "en" ? "Kubo: syncing" : "Kubo: 同期中")
+          : (lang === "en" ? "Kubo: requested" : "Kubo: Pin要求済み");
+        kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" data-placement-state="${escapeHtml(kuboPlacementState)}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(56,189,248,0.12); color: #38bdf8; border: 1px solid rgba(56,189,248,0.35); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;" title="${lang === "en" ? "Click to resume authoritative confirmation" : "クリックしてauthorityの確認を再開"}">⏳ ${stateText}</button>`;
+      } else if (kuboPlacementState === KUBO_PLACEMENT_STATE.RETRYABLE) {
+        kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" data-placement-state="RETRYABLE" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.35); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">↻ ${lang === "en" ? "Kubo: retry" : "Kubo: 再試行"}</button>`;
       } else if (itemCid) {
         kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboMissing}</button>`;
       }
@@ -8088,6 +8106,8 @@ function renderCurrentStoragePage() {
     } else {
       const isFromS3 = Boolean(item.isFromS3);
       const isKuboPinned = item.metadata?.kuboStatus === "pinned";
+      const kuboPlacementState = item.metadata?.kuboPlacementState || item.kuboPlacementState ||
+        (isKuboPinned ? KUBO_PLACEMENT_STATE.PRESENT : KUBO_PLACEMENT_STATE.ABSENT);
 
       let r2BadgeHtml = "";
       if (isFromS3) {
@@ -8107,6 +8127,13 @@ function renderCurrentStoragePage() {
         kuboBadgeHtml = `<span class="kubo-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.08); color: #64748b; border: 1px dashed rgba(148,163,184,0.25); font-weight: 500; cursor: not-allowed; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboOff}</span>`;
       } else if (isKuboPinned) {
         kuboBadgeHtml = `<button type="button" class="kubo-unpin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboStored}</button>`;
+      } else if (kuboPlacementState === KUBO_PLACEMENT_STATE.PIN_REQUESTED || kuboPlacementState === KUBO_PLACEMENT_STATE.PINNING) {
+        const stateText = kuboPlacementState === KUBO_PLACEMENT_STATE.PINNING
+          ? (lang === "en" ? "Kubo: syncing" : "Kubo: 同期中")
+          : (lang === "en" ? "Kubo: requested" : "Kubo: Pin要求済み");
+        kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-provider="r2" data-placement-state="${escapeHtml(kuboPlacementState)}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(56,189,248,0.12); color: #38bdf8; border: 1px solid rgba(56,189,248,0.35); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">⏳ ${stateText}</button>`;
+      } else if (kuboPlacementState === KUBO_PLACEMENT_STATE.RETRYABLE) {
+        kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-provider="r2" data-placement-state="RETRYABLE" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.35); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">↻ ${lang === "en" ? "Kubo: retry" : "Kubo: 再試行"}</button>`;
       } else if (itemCid) {
         kuboBadgeHtml = `<button type="button" class="kubo-pin-manual-btn kubo-badge-${escapeHtml(itemKey)}" data-key="${escapeHtml(itemKey)}" data-cid="${escapeHtml(itemCid || "")}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-provider="r2" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; display: inline-flex; align-items: center; gap: 3px;">${labels.kuboMissing}</button>`;
       } else {
@@ -9007,85 +9034,45 @@ r2FileList?.addEventListener("click", async (e) => {
       return;
     }
 
-    let acquisitionClaim = null;
-    let acquisitionObjectRef = "";
-    let acquisitionSettled = false;
     try {
       const cachedBeforePin = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
       const sourceMeta = cachedBeforePin?.metadata || cachedBeforePin || {};
-      acquisitionObjectRef = getObjectRefForUi("filebase", sourceMeta.s3Key || key, cid);
-      acquisitionClaim = await beginKuboAcquisition(acquisitionObjectRef, cid);
+      const acquisitionObjectRef = getObjectRefForUi("filebase", sourceMeta.s3Key || key, cid);
       activeKuboPins.add(cid);
-      const pinRes = await pinToKubo(cid);
-      if (pinRes.success) {
-        target.textContent = "同期中...";
-        target.title = "KuboがP2Pでブロックをダウンロード中...";
-
-        // バックグラウンドで完了をポーリング検知
-        const pollInterval = setInterval(async () => {
-          try {
-            const isPinned = await checkKuboPinned(cid, 1000);
-            if (isPinned) {
-              clearInterval(pollInterval);
-              activeKuboPins.delete(cid);
-              await reportKuboAcquisition(acquisitionObjectRef, acquisitionClaim, "present");
-              acquisitionSettled = true;
-              console.log(`🏠 Kubo P2P同期完了を検知: ${key}`);
-              const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
-              if (cachedItem) {
-                addOrUpdateLocalLedgerItem(activeStorageTab, {
-                  ...cachedItem,
-                  kuboStatus: "pinned",
-                  metadata: {
-                    ...(cachedItem.metadata || {}),
-                    kuboStatus: "pinned",
-                  },
-                });
-              } else {
-                renderCurrentStoragePage();
-              }
-            }
-          } catch (pErr) {
-            console.warn(`Kubo poll error for ${cid}:`, pErr);
-          }
-        }, 3000);
-
-        // 3分経過したら定期ポーリング停止（タイムアウト時もガード解除＆UI復元）
-        setTimeout(() => {
-          clearInterval(pollInterval);
-          activeKuboPins.delete(cid);
-          if (!acquisitionSettled) {
-            reportKuboAcquisition(acquisitionObjectRef, acquisitionClaim, "retryable", "Kubo pin confirmation timed out").catch(() => {});
-            acquisitionSettled = true;
-          }
-          if (target && target.textContent === "同期中...") {
-            target.disabled = false;
-            target.textContent = origText;
-            target.title = "同期に時間がかかっています。後ほど一覧を更新してください";
-          }
-        }, 180000);
-
-        await showCustomAlert(
-          `自宅 Kubo ノードへ P2P Pin留め要求を送信しました！\n\nKuboがバックグラウンドで世界中のIPFSノードからブロックを取得・同期しています。\n完了すると自動的に『🏠 Kubo: 保持中』へ変わります。\n\n※ P2P同期中はページを更新（リロード）せずそのままお待ちください。`,
-          "📡 P2P 同期開始"
-        );
+      await kuboPlacementApplication.acquire({
+        objectRef: acquisitionObjectRef,
+        cid,
+        onState(state) {
+          target.dataset.placementState = state;
+          if (state === KUBO_PLACEMENT_STATE.PIN_REQUESTED) target.textContent = "Pin要求中...";
+          else if (state === KUBO_PLACEMENT_STATE.PINNING) target.textContent = "同期中...";
+          else if (state === KUBO_PLACEMENT_STATE.RETRYABLE) target.textContent = "再試行";
+          else if (state === KUBO_PLACEMENT_STATE.PRESENT) target.textContent = "🏠 Kubo: 保持中";
+        },
+      });
+      activeKuboPins.delete(cid);
+      const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      if (cachedItem) {
+        addOrUpdateLocalLedgerItem(activeStorageTab, {
+          ...cachedItem,
+          kuboStatus: "pinned",
+          kuboPlacementState: KUBO_PLACEMENT_STATE.PRESENT,
+          metadata: {
+            ...(cachedItem.metadata || {}),
+            kuboStatus: "pinned",
+            kuboPlacementState: KUBO_PLACEMENT_STATE.PRESENT,
+          },
+        });
       } else {
-        activeKuboPins.delete(cid);
-        await reportKuboAcquisition(acquisitionObjectRef, acquisitionClaim, "retryable", pinRes.error || "Kubo pin request failed").catch(() => {});
-        acquisitionSettled = true;
-        await showCustomAlert(`Kubo Pin要求に失敗しました: ${pinRes.error}`, "❌ エラー");
-        target.disabled = false;
-        target.textContent = origText;
+        renderCurrentStoragePage();
       }
+      await showCustomAlert(`✅ 自宅 Kubo ノードで Pin を確認しました。\n\nCID: ${cid}`, "🎉 保全完了");
     } catch (err) {
       activeKuboPins.delete(cid);
-      if (acquisitionClaim && !acquisitionSettled) {
-        await reportKuboAcquisition(acquisitionObjectRef, acquisitionClaim, "retryable", err.message).catch(() => {});
-        acquisitionSettled = true;
-      }
       await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
       target.disabled = false;
-      target.textContent = origText;
+      target.textContent = "再試行";
+      target.title = origText;
     }
     return;
   }

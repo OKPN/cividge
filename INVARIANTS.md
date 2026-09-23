@@ -297,3 +297,27 @@
 * **規則 (Rule)**:  
   すべての配信ドメインおよび静的リレーは完全に対等であり、特定のホストを暗黙のデフォルトとして優遇したり、フォールバック採用してはならない (MUST NOT)。  
   リクエストから配信ドメインが一意に特定できない場合、憶測で特定ホストのキーを探しに行かず、即座に「404 Not Found」として門前払いしなければならない。また、単体キーへのフォールバック照会も行わず、特定されたドメインのキー（`host:filename`）のみを 1 回で照会しなければならない。
+
+---
+
+### [INV-RELAY-NAMESPACE-STABLE] Relay namespaceの固定
+* `relay.k7m.f5.si` の公開ingressは `/r/<relay-id>/<filename>` に固定する。
+* `/r/` はrouting/security classificationであり、Objectやcanonical Link identityの一部ではない。
+* Workerはrelay-idをpublic hostへ解決し、`<public-host>:<filename>` を1回だけKV照会する。
+* `/r/` をflattenしたり、relay-idの集合をCloudflare Security Ruleへ漏らしてはならない。Zone-level Rate Limitは別のabuse-control policyである。
+
+### [INV-PLACEMENT-LIVENESS] Placement claimの生存性
+* `PIN_REQUESTED != PINNING != PRESENT`。Pin要求と物理保持確認を混同しない。
+* `PINNING` / `RELEASING` claimはDurable Objectが永続化したleaseを持ち、browser reload、executor消失、network failureの後も有限時間で再claim可能に戻る。
+* claim IDとgenerationが一致するreportだけがPlacementを進める。lease expiry後のstale reportは状態を変えない。
+* KV/localStorage/UIはauthority状態をprojectionし、`PIN_REQUESTED` / `PINNING` を単なる「未保持」へ潰さない。
+
+### [INV-OBJECT-IMMUTABLE] Object bytesの不変性
+* Object creation完了後にbyte sequenceを変更しない。embedded metadataもObject bytesの一部である。
+* conversion、metadata除去/保存、EXIF処理、MP4 FastStartはObject creation前に完了させる。異なるbytesはnew Objectとする。
+* conflict判定より前に既存physical locatorへ異なるbytesをPUTしてはならない。localStorageの事前checkを安全性の根拠にしない。
+
+### [INV-VERIFY-HUMAN-FIRST] Human-first verification
+* syntax/build/起動可能性の後、通常操作のHuman Exploratory Checkpointを必ず通過させる。
+* 通常ユーザーが容易に発見できる不具合が残る間は、高コストなdeep E2E/failure injectionへ進まない。
+* Human testは操作の連続性と期待を検査し、machine testはrace、stale generation、retry、idempotencyなど人間に観測困難な状態空間を検査する。
