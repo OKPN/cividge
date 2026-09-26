@@ -6440,8 +6440,14 @@ async function headManagedStorageObject(s3, bucket, key) {
 async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
   if (!contentCid) throw new Error("最終バイト列のcontent CIDを計算できませんでした");
   const kind = provider === "filebase" ? "filebase" : "r2";
-  const storageKey = `objects/${contentCid}`;
-  const objectRef = kind === "filebase" ? `ipfs:${contentCid.toLowerCase()}` : `r2:${storageKey}`;
+  const canonicalStorageKey = `objects/${contentCid}`;
+  const objectRef = kind === "filebase" ? `ipfs:${contentCid.toLowerCase()}` : `r2:${canonicalStorageKey}`;
+  // A Filebase ObjectRef may already own a different physical locator. Its
+  // durable Placement, not the new upload's filename, selects the key to
+  // inspect/reacquire. Never PUT to another key for the same ObjectRef.
+  const ownedPlacement = kind === "filebase" ? await inspectManagedPlacement(objectRef, kind) : null;
+  const ownedKey = ownedPlacement?.locator?.cid === contentCid ? ownedPlacement.locator.key : null;
+  const storageKey = typeof ownedKey === "string" && ownedKey ? ownedKey : canonicalStorageKey;
   const baseDomain = (getSelectedR2Domain(provider) || window.location.origin).replace(/\/$/, "");
   const linkKey = buildKvKey(baseDomain, result.name);
   const placement = {
@@ -6478,7 +6484,7 @@ async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
   let current = await inspectManagedPlacement(objectRef, kind);
   if (current && ["RELEASE_PENDING", "RETRYABLE", "RELEASED"].includes(current.state)) {
     // An explicit retry may settle an uncertain release only after inspecting
-    // the exact content-addressed locator. No PUT happens before this check.
+    // the exact durable Placement locator. No PUT happens before this check.
     let observation;
     let observedCid;
     if (kind === "filebase") {
