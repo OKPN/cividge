@@ -24,6 +24,14 @@
   confirmed storage upload may re-acquire a previously `RELEASED` Placement in
   a new generation before recreating the Link; alias-only `createLink` cannot.
 
+### [INV-KV-DISPOSABLE-PROJECTION]
+
+KVは公開配信のLink projectionとGatewayConfig等のruntime設定を保持するが、
+Object/Link/Placementのlifecycle authorityではない。旧schemaのKV recordに
+互換性の権利はない。空のKV namespaceへの切替はsemantic cutoverの境界にできる。
+ただしKVを破棄・再作成しても、Durable Objectの正本やR2/Filebase/Kuboの
+物理実体は削除されない。KV missをObject解放の許可と解釈してはならない。
+
 ### [INV-MANAGED-LIST-INDEPENDENT-FROM-PLACEMENT]
 
 Managed Listの項目は `link` または `local` として明示する。R2 / Filebase /
@@ -330,6 +338,27 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 * `/r/` はrouting/security classificationであり、Objectやcanonical Link identityの一部ではない。
 * Workerはrelay-idをpublic hostへ解決し、`<public-host>:<filename>` を1回だけKV照会する。
 * `/r/` をflattenしたり、relay-idの集合をCloudflare Security Ruleへ漏らしてはならない。Zone-level Rate Limitは別のabuse-control policyである。
+
+### [INV-RELAY-IDENTITY-CONSISTENT] 公開入口とrelay identityの一致
+* pages.dev互換性テストは、選択したpublic hostとredirect後の `/r/<relay-id>/...` が同じidentityを表し、Workerの応答がそのcanonical public hostを確認した場合だけ合格とする。
+* relay-idはcanonical hostそのもの、またはallowlist内で一意なfirst-labelだけを認める。他の登録済みrelay経由で得た200/webpは選択hostの合格ではない。
+
+### [INV-NO-RESURRECTION-AFTER-DELETE] Link削除後の再昇格禁止
+* authoritative delete後、古いKV projection、storage observation、localStorage、削除前に開始した非同期取得で同じLink世代をactive UIへ戻してはならない。
+* LinkBindingはRETIREDと単調増加するLink generationを保持し、管理一覧はBOUNDかつKV projectionのgenerationが一致するLinkだけを表示する。公開GETの単一KV照会にはDOを追加しない。
+
+### [INV-DELETE-VISIBILITY-MONOTONIC] 削除表示の単調性
+* 削除成功後のUIはVISIBLE→ABSENTの一方向とする。明示的な再upload/rebindで新generationを作る場合だけ、同じcanonical keyを再表示できる。
+
+### [INV-RETRYABLE-RELEASE-CONVERGES] 再upload時の解放状態の収束
+* `RELEASE_PENDING` / `RETRYABLE` は同一ObjectRefを永久に使用不能にしない。明示的な再uploadでは、PUT前に同一locatorをread-onlyで調べ、物理保持が確認できれば`PRESENT`、不在なら`RELEASED`へ収束させる。
+* 進行中のrelease claimや異なるlocator・異なるCIDを推測で上書きしない。過去のrelease失敗を消去して直したことにはしない。
+
+### [INV-CANONICAL-404-SELF-CONTAINED] 人が開く404
+* navigation向けcanonical 404 HTMLは画像をdata URIで内包し、一つのHTTP responseだけで描画できる。別request、relay、KV、storage、古いedge cacheへの依存を持たない。
+
+### [INV-READ-YOUR-WRITES] 設定変更後の表示
+* LinkのTTL変更をacknowledgeした後、管理UIは古いKV観測を現在値へ再採用しない。LinkBindingの同一generationに属する単調なpolicy revisionを管理一覧に反映する。
 
 ### [INV-PLACEMENT-LIVENESS] Placement claimの生存性
 * `PIN_REQUESTED != PINNING != PRESENT`。Pin要求と物理保持確認を混同しない。

@@ -105,6 +105,10 @@ public host and performs exactly one canonical `host:filename` KV lookup.
 `kv.k7m.f5.si/<filename>` remains a separate direct-delivery capability.
 Zone-wide rate limiting is abuse policy and does not replace the `/r/`
 routing/WAF boundary.
+The Pages compatibility probe accepts a selected host only when its final
+`/r/<relay-id>/404-character.webp` path and the Worker's canonical relay-host
+response identify that same host. A 200 response through another relay is not
+proof that the selected host is configured.
 
 ## Verification order
 
@@ -127,6 +131,18 @@ retires through canonical `removeLink`; a `local` entry retires through local
 `retireManagedEntry` without requesting physical deletion. R2/Filebase/Kubo
 presence is an observation that may update an entry but cannot itself perform
 the entry's retirement. A physical-only discovery is not a lifecycle Link.
+After authoritative deletion, LinkBinding retains a RETIRED generation.
+The admin list shows only BOUND Links whose KV projection carries that exact
+generation; a stale KV row cannot revive a deleted Link. The browser discards
+pre-delete in-flight list results and persisted Link rows are not display
+authority on reload. Explicit re-upload/rebind creates a newer generation.
+An explicit upload may reconcile an uncertain Placement release only after a
+read-only inspection of the same physical locator: verified presence restores
+PRESENT, absence settles RELEASED before a fresh acquisition. An active
+release claim cannot be bypassed. Human-facing navigation 404 HTML embeds
+its character image; stale edge 404 variants cannot replace that page.
+The admin list projects acknowledged Link expiry policy from LinkBinding,
+not an older eventually consistent KV metadata value.
 
 An HTTP Public Gateway is a CID retrieval endpoint, not a Placement, Kubo RPC
 node, Filebase provider route, or libp2p peer. Gateway selection and retrieval

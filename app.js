@@ -17,6 +17,7 @@ import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "./kubo-pla
 import { normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gateway.js";
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
+import { matchesSelectedRelayProbe } from "./relay-compat.js";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -1127,6 +1128,7 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
     const payload = { key, cid: cid || "", size, mime, s3Key: s3Key || key };
     if (mutationOptions.createOnly) payload.createOnly = true;
     if (mutationOptions.confirmPlacementPresent) payload.confirmPlacementPresent = true;
+    if (mutationOptions.policyChange) payload.policyChange = true;
     if (mutationOptions.uploadAttemptId) payload.uploadAttemptId = mutationOptions.uploadAttemptId;
     if (contentCid) payload.contentCid = contentCid;
     if (backend) payload.backend = backend;
@@ -1313,7 +1315,7 @@ async function requestAuthorizedRelease(objectRef, reason, placement = null) {
   return result;
 }
 
-async function deleteKvCid(key) {
+async function deleteKvCid(key, expectedGeneration = null) {
   if (!key) return;
   if (!hasAdminAccess()) {
     console.log(`[責任分離] 一般ユーザーモードのため、KV削除をスキップしました: ${key}`);
@@ -1328,7 +1330,8 @@ async function deleteKvCid(key) {
   }
   const remove = async (objectRef = "") => {
     const retry = objectRef ? `&objectRef=${encodeURIComponent(objectRef)}` : "";
-    const response = await fetch(`${endpoint}${sep}key=${encodeURIComponent(key)}${retry}`, {
+    const generation = expectedGeneration == null ? "" : `&generation=${encodeURIComponent(expectedGeneration)}`;
+    const response = await fetch(`${endpoint}${sep}key=${encodeURIComponent(key)}${retry}${generation}`, {
       method: "DELETE",
       headers,
     });
@@ -1342,6 +1345,7 @@ async function deleteKvCid(key) {
   if (!attempt.response.ok) {
     throw new Error(attempt.result.error || `KV deletion error (${attempt.response.status})`);
   }
+  removeCommittedLinkFromUi(key);
   return attempt.result;
 }
 
@@ -1638,6 +1642,12 @@ function loadLedgerFromLocalStorage(provider) {
   }
 }
 
+function loadDisplayCache(provider) {
+  // Persisted Link rows are observations, not proof that the current binding
+  // generation is still active. Only an authoritative list may show them.
+  return loadLedgerFromLocalStorage(provider).filter(item => item.entryKind === "local");
+}
+
 // 🚀 [INV-CORE-005] Local-First 台帳キャッシュ管理ヘルパー群
 // 操作（追加・削除・リネーム・設定変更）時に手元の台帳キャッシュと localStorage を即時差分更新し、
 // サーバーへの再フェッチ通信（kv.list / ListObjects）を完全ゼロ化する。
@@ -1677,6 +1687,27 @@ function removeItemsFromLocalLedger(provider, keysToRemove, { purgeOriginAlso = 
 
   saveLedgerToLocalStorage(provider, storageCachedContents || []);
   recalculateStorageUsage(provider);
+  renderCurrentStoragePage();
+}
+
+function removeCommittedLinkFromUi(linkKey) {
+  // Invalidate every storage response that started before the authoritative
+  // delete committed. Neither it nor the persisted UI cache may re-show this
+  // generation; a later explicit upload can add a new Link normally.
+  storageFetchGeneration++;
+  const keep = item => item.entryKind !== "link" || (item.rawKey || item.Key) !== linkKey;
+  for (const provider of ["r2", "filebase"]) {
+    saveLedgerToLocalStorage(provider, loadLedgerFromLocalStorage(provider).filter(keep));
+  }
+  storageCachedContents = (storageCachedContents || []).filter(keep);
+  paletteFiles = paletteFiles.filter(file => {
+    try {
+      const url = new URL(file.url);
+      return `${url.hostname.toLowerCase()}:${decodeURIComponent(url.pathname.slice(1))}` !== linkKey;
+    } catch (_) { return true; }
+  });
+  renderUrlPalette();
+  recalculateStorageUsage(activeStorageTab);
   renderCurrentStoragePage();
 }
 
@@ -3493,7 +3524,7 @@ function showDomainAddForm(form, input) {
 }
 
 // --- 🌐 配信ドメイン互換レイヤ検証＆排他ガードユーティリティ [INV-FRONT-006] ---
-const DOMAIN_COMPAT_STORAGE_KEY = "cividge_domain_compat_flags";
+const DOMAIN_COMPAT_STORAGE_KEY = "cividge_domain_compat_flags_v2";
 
 function getDomainCompatFlags() {
   try {
@@ -3533,7 +3564,7 @@ async function verifyDomainCompatLayer(domainUrl) {
     });
     clearTimeout(tid);
 
-    const isWorker = res.ok && (res.headers.get("content-type") || "").includes("webp");
+    const isWorker = matchesSelectedRelayProbe(cleanUrl, res);
     setDomainCompatFlag(domainUrl, isWorker);
     return isWorker;
   } catch (e) {
@@ -5890,7 +5921,9 @@ r2FileList?.addEventListener("change", (e) => {
         expiresAt,
         false,
         null,
-        currentDomain
+        currentDomain,
+        false, null, null, null, undefined, null, null,
+        { policyChange: true }
       ).then(() => {
         // 成功フィードバック
         e.target.style.transition = "all 0.2s ease";
@@ -5929,7 +5962,9 @@ fileList?.addEventListener("change", (e) => {
           result.expiresAt,
           false,
           null,
-          null
+          null,
+          false, null, null, null, undefined, null, null,
+          { policyChange: true }
         ).then(() => {
           e.target.style.transition = "all 0.2s ease";
           e.target.style.borderColor = "#22c55e";
@@ -6441,6 +6476,21 @@ async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
   }
 
   let current = await inspectManagedPlacement(objectRef, kind);
+  if (current && ["RELEASE_PENDING", "RETRYABLE", "RELEASED"].includes(current.state)) {
+    // An explicit retry may settle an uncertain release only after inspecting
+    // the exact content-addressed locator. No PUT happens before this check.
+    let observation;
+    let observedCid;
+    if (kind === "filebase") {
+      const head = await headManagedStorageObject(s3, bucket, storageKey);
+      observedCid = head ? getIpfsCidFromS3Response(head) : null;
+      if (head && observedCid !== contentCid) throw new Error("既存Filebase ObjectのCIDを確認できません");
+      observation = head ? "present" : "absent";
+    }
+    await lifecycleRequest({ action: "reconcilePlacementForAcquire", objectRef, placement,
+      ...(kind === "filebase" ? { observation, ...(observedCid ? { observedCid } : {}) } : {}) });
+    current = await inspectManagedPlacement(objectRef, kind);
+  }
   if (current?.state === "PRESENT") {
     return { linkKey, baseDomain, objectRef, storageKey: current.locator.key, contentCid,
       attemptId, attemptGeneration: reservation.binding.attempt?.generation,
@@ -7253,13 +7303,10 @@ storageTabR2?.addEventListener("click", () => {
   updateStorageTabsUi();
   syncStorageLimitControl();
   renderR2DomainSelect("r2");
-  const cached = loadLedgerFromLocalStorage("r2");
-  if (cached && cached.length > 0) {
-    storageCachedContents = cached;
-    renderCurrentStoragePage();
-  } else {
-    fetchAndRenderR2Files();
-  }
+  const cached = loadDisplayCache("r2");
+  storageCachedContents = cached;
+  if (cached.length > 0) renderCurrentStoragePage();
+  fetchAndRenderR2Files({ forceRefresh: true });
 });
 
 storageTabFilebase?.addEventListener("click", () => {
@@ -7269,13 +7316,10 @@ storageTabFilebase?.addEventListener("click", () => {
   updateStorageTabsUi();
   syncStorageLimitControl();
   renderR2DomainSelect("filebase");
-  const cached = loadLedgerFromLocalStorage("filebase");
-  if (cached && cached.length > 0) {
-    storageCachedContents = cached;
-    renderCurrentStoragePage();
-  } else {
-    fetchAndRenderR2Files();
-  }
+  const cached = loadDisplayCache("filebase");
+  storageCachedContents = cached;
+  if (cached.length > 0) renderCurrentStoragePage();
+  fetchAndRenderR2Files({ forceRefresh: true });
 });
 
 reloadR2FilesButton?.addEventListener("click", () => {
@@ -7701,13 +7745,13 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
   // 🚀 [INV-CORE-005] Local-First 原則:
   // 明示的な強制更新（forceRefresh === true）でない場合、手元キャッシュがあればサーバー通信（KV/S3）を完全スキップ！
   if (!storageCachedContents || storageCachedContents.length === 0) {
-    const localLedger = loadLedgerFromLocalStorage(requestedProvider);
+    const localLedger = loadDisplayCache(requestedProvider);
     if (localLedger && localLedger.length > 0) {
       storageCachedContents = localLedger;
     }
   }
 
-  if (!forceRefresh && storageCachedContents && storageCachedContents.length > 0) {
+  if (!forceRefresh && !hasKvAccess && storageCachedContents && storageCachedContents.length > 0) {
     recalculateStorageUsage(requestedProvider);
     renderCurrentStoragePage();
     return;
@@ -8094,6 +8138,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
 
     // （※ 自宅 Kubo 遅延マイグレーションは一覧描画後に実行します）
 
+    if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
     paletteFiles = contents.map(item => {
       const itemKey = item.rawKey || item.Key || "";
       const itemDisplayName = item.Key || "";
@@ -8212,7 +8257,7 @@ async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bu
     }
 
     try {
-      const deleted = await deleteKvCid(key);
+      const deleted = await deleteKvCid(key, item.metadata?.g);
       await requestAuthorizedRelease(deleted?.objectRef, "civitai-temporary").catch(error => {
         console.warn("Civitai lifecycle release deferred:", error);
       });
@@ -8247,7 +8292,7 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
 
     try {
       console.log(`⏳ 期限切れLinkを回収: ${key}`);
-      const deleted = await deleteKvCid(key);
+      const deleted = await deleteKvCid(key, item.metadata?.g);
       await requestAuthorizedRelease(deleted?.objectRef, "expiry").catch(error => {
         console.warn("Expiry lifecycle release deferred:", error);
       });
@@ -9523,7 +9568,7 @@ r2FileList?.addEventListener("click", async (e) => {
         return;
       }
       if (!hasAdminAccess()) throw new Error("Link deletion requires the KV Worker admin capability");
-      const deleted = await deleteKvCid(key);
+      const deleted = await deleteKvCid(key, item.metadata?.g);
       await requestAuthorizedRelease(deleted?.objectRef, "manual-delete").catch(error => {
         console.warn("Object retained because release is not yet authorized:", error);
       });
@@ -9569,7 +9614,7 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
         continue;
       }
       if (!hasAdminAccess()) throw new Error("Link deletion requires the KV Worker admin capability");
-      const deleted = await deleteKvCid(checkbox.dataset.key);
+      const deleted = await deleteKvCid(checkbox.dataset.key, item.metadata?.g);
       await requestAuthorizedRelease(deleted?.objectRef, "manual-bulk-delete").catch(error => {
         console.warn("Bulk release deferred:", error);
       });
