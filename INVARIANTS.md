@@ -32,6 +32,13 @@ Object/Link/Placementのlifecycle authorityではない。旧schemaのKV record�
 ただしKVを破棄・再作成しても、Durable Objectの正本やR2/Filebase/Kuboの
 物理実体は削除されない。KV missをObject解放の許可と解釈してはならない。
 
+### [INV-FRESH-AUTHORITY-CUTOVER]
+
+既存Linkをすべて破棄するclean cutoverでは、ObjectLifecycleとLinkBindingの
+双方を空の新namespaceへ向け、配信KVとbrowser managed-list cacheも新世代に
+する。同じCIDは新authorityで再利用可能であり、特定CIDを永久に排除しない。
+R2/Filebase/Kuboの旧物理実体は自動削除しない。物理観測をLinkへ昇格させない。
+
 ### [INV-MANAGED-LIST-INDEPENDENT-FROM-PLACEMENT]
 
 Managed Listの項目は `link` または `local` として明示する。R2 / Filebase /

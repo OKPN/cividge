@@ -1536,7 +1536,9 @@ window.addEventListener("beforeunload", (e) => {
 // 🗃️ Managed-list / UI projection cache (authorityではない)
 // v3はKubo Placementのclosed stateを保持する。旧schemaは推測migrationせずdropする。
 // ==========================================
-const STORAGE_LEDGER_KEY_PREFIX = "cividge_managed_projection_v4_";
+// A fresh lifecycle/KV authority must not import a prior browser observation.
+// Settings and credentials stay in their existing keys.
+const STORAGE_LEDGER_KEY_PREFIX = "cividge_managed_projection_v5_";
 const RETIRED_LOCAL_ENTRY_KEY_PREFIX = "cividge_retired_local_entries_v1_";
 
 function localEntryIdentity(item) {
