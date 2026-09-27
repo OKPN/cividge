@@ -41,6 +41,9 @@
   no write, repair, delete, or release.
 - Object release requires an authoritative empty Link set. FIFO, expiry,
   manual delete, and Civitai cleanup only request release.
+- **[INV-FIFO-IS-POLICY-NOT-AUTHORITY]** FIFO may select cleanup candidates
+  and request release, but it cannot authorize an Object or Placement
+  transition. Physical actuation follows an ObjectLifecycle-issued claim.
 - Public delivery distinguishes a successful canonical KV miss (404) from a
   KV read failure or a known Link whose origin cannot be fetched (503,
   `no-store`). The latter must never be cached as a missing Link.
@@ -432,3 +435,18 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 * syntax/build/起動可能性の後、通常操作のHuman Exploratory Checkpointを必ず通過させる。
 * 通常ユーザーが容易に発見できる不具合が残る間は、高コストなdeep E2E/failure injectionへ進まない。
 * Human testは操作の連続性と期待を検査し、machine testはrace、stale generation、retry、idempotencyなど人間に観測困難な状態空間を検査する。
+
+### [INV-FEATURE-STATE-HAS-OWNER] Feature stateの所有者
+* 可変なapplication stateには、意味上のfeature ownerを一つ定める。無関係なmoduleが同じcanonical stateを独立に変更してはならない。
+* 管理一覧のcanonical snapshotと非同期観測generationは、一つのmanaged ownerを経由して更新する。R2用、Filebase用、View用に別の正本を増やさない。
+
+### [INV-VIEW-DOES-NOT-OWN-DOMAIN-STATE] Viewとdomain stateの境界
+* UIは状態を表示し、利用者のintentを収集するprojectionである。描画処理そのものをmanaged/upload stateのauthorityにしてはならない。
+* 表示上の区別や操作段階を追加しても、保存・実行時にはcanonical domain stateへ正規化する。
+
+### [INV-VIEW-IS-NETWORK-FREE] 管理Viewの描画とI/Oの分離
+* 管理カードの描画はmanaged snapshotからDOMを作るだけで、storage、Worker、providerへの観測を開始しない。
+* 画像読み込み失敗後のS3フォールバックは描画ではなく、独立したpresentation eventから実行する。
+
+### [INV-RENDER-DOES-NOT-OBSERVE] 観測の採用境界
+* 描画は採用済み観測を利用するが、authoritativeな観測を生成しない。FilebaseのCIDがprojection/cacheにない場合の物理照会は明示的なrefresh generationに属し、staleな結果をmanaged snapshotへ採用しない。

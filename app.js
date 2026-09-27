@@ -1,15 +1,25 @@
+import { createR2Content } from "./storage/r2-content.js";
+import { createManagedController } from "./managed/managed-controller.js";
+import { observeMissingFilebaseCids } from "./managed/filebase-cid-observation.js";
+import { createStorageCapacityExecution } from "./storage/capacity-execution.js";
+import { createFilebaseContent } from "./storage/filebase-content.js";
+import { createImageConverter } from "./upload/conversion.js";
+import { createUploadState } from "./upload/upload-state.js";
+import { createManagedPreflight } from "./upload/managed-preflight.js";
+import { createUploadOrchestrator } from "./upload/upload-orchestrator.js";
+import { createVideoThumbnailRegistration } from "./upload/video-thumbnail.js";
+import { recordUploadedWorkflow } from "./upload/workflow-cache.js";
+import { getRetiredLocalEntries, setLocalEntryRetired, saveLedgerToLocalStorage, loadLedgerFromLocalStorage, loadDisplayCache } from "./managed/managed-cache.js";
+import { createWorkerClient } from "./api/worker-client.js";
+import { createFilenameTools } from "./upload/filename-policy.js";
+import { createStorageConnections } from "./storage/connections.js";
+import { i18nDict } from "./ui/i18n.js";
+import { detectComfyMetadata } from "./media/metadata.js";
 import QRCode from "qrcode";
 import * as fflate from "fflate";
-import encodeJxl, { init as initJxl } from "@jsquash/jxl/encode.js";
-import jxlWasmUrl from "@jsquash/jxl/codec/enc/jxl_enc.wasm?url";
-import { importer as importUnixFs } from "ipfs-unixfs-importer";
-import { BlackHoleBlockstore } from "blockstore-core";
 import {
   extensions,
-  getContentTypeFromFilename,
-  getImageDimensions,
   isWorkerDerivedR2Key,
-  isVideoThumbnailParentKey,
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
 import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "./kubo-placement.js";
@@ -17,539 +27,19 @@ import { normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gatew
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
 import { matchesSelectedRelayProbe } from "./relay-compat.js";
-import { objectIdFromFinalBytes } from "./object-id.js";
-import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, filterManagedContents, requireConvertedBlob, fetchManagedFiles } from "./view-policy.js";
+import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, fetchManagedFiles } from "./view-policy.js";
 
-let jxlInitialized = false;
-async function ensureJxl() {
-  if (!jxlInitialized) {
-    try {
-      const res = await fetch(jxlWasmUrl);
-      if (!res.ok) throw new Error(`WASM fetch failed: HTTP ${res.status}`);
-      const wasmBytes = await res.arrayBuffer();
-      const wasmModule = await WebAssembly.compile(wasmBytes);
-      await initJxl(wasmModule);
-      jxlInitialized = true;
-    } catch (e) {
-      console.error("Failed to init JXL encoder:", e);
-      throw e;
-    }
-  }
-}
 import {
   S3Client,
   GetObjectCommand,
-  PutObjectCommand,
   ListObjectsV2Command,
-  DeleteObjectCommand,
-  DeleteObjectsCommand,
   CopyObjectCommand,
   HeadObjectCommand,
   PutBucketCorsCommand,
 } from "@aws-sdk/client-s3";
 
-// --- 多言語 (i18n) 辞書 ---
-const i18nDict = {
-  ja: {
-    siteTitle: "Cividge",
-    eyebrow: "ブラウザで変換し、自分のストレージへ直接保存・配信",
-    whatIsSiteSummary: "❓ どのようなサイト？",
-    whatIsSiteBody: `<strong>Civitai Bridge（Cividge）</strong>は、ブラウザ内でメディアを変換し、自分の Cloudflare R2 または Filebase（IPFS）へ保存・配信する個人用アップローダです。<br><span style="display: inline-block; margin-top: 6px; font-size: 12px; color: #a5b4fc;">必要に応じて KV Worker により別名 URL・期限・閲覧パスワードを管理でき、Kubo ノードは IPFS コンテンツの保全先として利用できます。接続情報はこのブラウザの localStorage に保存されます。</span>
-<details style="margin-top: 10px; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 6px; padding: 6px 10px;">
-  <summary style="cursor: pointer; font-weight: 600; color: #38bdf8; font-size: 12px;">💡 ストレージの選択基準・運用のコツ（R2 vs Filebase vs Kubo）</summary>
-  <div style="margin-top: 6px; font-size: 11.5px; line-height: 1.55; color: #cbd5e1;">
-    <ul style="margin: 0; padding-left: 18px;">
-      <li><strong>Cloudflare R2</strong>: ダウンロード転送量（Egress）が<strong>完全無料・無制限</strong>。大量閲覧（バズ）や重い動画（最大80 MB）に最適。※クレカ必須、10GBを超えると自動従量課金（上限キャップ不可）のため不要ファイルは定期削除推奨。</li>
-      <li><strong>Filebase（IPFS）</strong>: クレカ不要で安全。画像（1〜2MB）を長期間安定配信するのに最適。※無料枠は容量5GB・転送月10GB（実質5GB目安）のため、重い動画やバズるファイルはR2かKubo併用を推奨。</li>
-      <li><strong>自宅 Kubo 連携</strong>: 20MB超の動画や人気ファイルは共有前にKuboへピン留め（Pin）すると、Filebase帯域消費が<strong>ゼロ</strong>になります（※初回のみ自宅の上り回線に少し注意）。</li>
-    </ul>
-  </div>
-</details>`,
-    inputFiles: "入力ファイル",
-    addFolder: "フォルダを追加",
-    dropText: "ファイルやフォルダをここにドロップ",
-    orClick: "またはクリックしてファイルを選択",
-    dropLimitHint: "※ 1ファイルにつき最大 80 MB",
-    uploadLimitError: "ファイルサイズ ({size} MB) が上限の 80 MB を超えています。",
-    uploadLimitCount: "80 MBを超えるファイル {count} 件を除外しました。",
-    settings: "設定",
-    outputFormat: "出力形式",
-    allStorageTab: "すべて",
-    passthroughFormat: "変換しない",
-    quality: "品質",
-    renameRule: "ファイル名ルール",
-    originalName: "元ファイル名",
-    seq01: "連番 (01)",
-    seq001: "連番 (001)",
-    random6: "ランダム (6文字)",
-    previewLabel: "プレビュー:",
-    zipOptionLabel: "🗜️ ZIP形式でまとめて保存する",
-    btnDownload: "📥 ダウンロード",
-    btnUpload: "🟩 アップロード",
-    btnConvertUpload: "🟩 アップロード",
-    btnUploadR2: "⚡ R2へ保存",
-    btnUploadFilebase: "🪐 Filebaseへ保存",
-    r2BillingWarningBadge: "⚠️ 10GB課金注意",
-    r2BillingWarningTooltip: "⚠️ R2は保存容量がアカウント内総量で10GBを超えると自動従量課金が始まります（上限キャップ機能なし）。Cividge以外の用途も含めた総量で判定されるため、課金条件を自身でも必ずご確認ください。",
-    cfTitle: "☁️ クラウドストレージ接続設定",
-    kvAccordionTitle: "📚 KV 配信・管理 Worker",
-    kvAccordionDesc: "R2 / Filebase 共通の短縮 URL、別名リンク、有効期限、パスワード保護を管理する台帳です。",
-    r2AccordionDesc: "R2 の接続情報、R2 専用の配信ドメイン、CORS と容量解放を設定します。",
-    filebaseAccordionDesc: "Filebase の CID・IPFS 保存、Filebase 専用配信ドメイン、任意の Kubo 保全ノードを設定します。",
-    quickR2DomainLabel: "🌐 R2 配信ドメイン",
-    quickFilebaseDomainLabel: "🌐 Filebase 配信ドメイン",
-    r2DomainPlaceholder: "-- R2 ドメインを選択 --",
-    filebaseDomainPlaceholder: "-- Filebase ドメインを選択 --",
-    r2DeliveryTitle: "1️⃣ R2 の公開・配信 URL を設定",
-    filebaseDeliveryTitle: "2️⃣ Filebase の公開・配信 URL を設定",
-    r2CompatibilitySummary: "🛡️ pages.dev 公開互換レイヤー（ランダムクエリ防御）",
-    r2CompatibilityConfigured: "公開入口: ",
-    r2CompatibilityMissing: "⚠ 上の R2 配信ドメインから、静的リレープロジェクトの pages.dev URL を選択してください。",
-    r2CompatibilityInstallSummary: "静的リレープロジェクトを設置する",
-    r2CompatibilityInstallBody: "同梱テンプレートを<strong>公開用の静的 Pages プロジェクト</strong>としてデプロイします。各パスを既存の R2 配信ドメインへ転送します。作成された pages.dev URL を上の R2 配信ドメインに追加して選択してください。投稿ごとのスイッチはありません。",
-    filebaseCompatibilitySummary: "🛡️ pages.dev 公開互換レイヤー（ランダムクエリ防御）",
-    filebaseCompatibilityConfigured: "公開入口: ",
-    filebaseCompatibilityMissing: "⚠ 上の Filebase 配信ドメインから、静的リレープロジェクトの pages.dev URL を選択してください。",
-    filebaseCompatibilityInstallSummary: "静的リレープロジェクトを設置する",
-    filebaseCompatibilityInstallBody: "同梱テンプレートを<strong>公開用の静的 Pages プロジェクト</strong>としてデプロイします。Function・KV・ストレージ認証情報は含みません。各パスを互換 Worker へ転送します。作成された pages.dev URL を上の Filebase 配信ドメインに追加して選択してください。投稿ごとのスイッチはありません。",
-    filebaseCompatibilityCloudflareSummary: "Cloudflare の推奨設定（安定運用）",
-    filebaseCompatibilityCloudflareBody: "互換 Worker を独自ドメインに置く場合のみ設定します。<ol style=\"margin:6px 0 0;padding-left:18px;\"><li><strong>ルール → URL 書き換えルール</strong>: 互換 Worker のホストに一致させ、パスは保持・クエリは空の静的値へ書き換えます。</li><li><strong>セキュリティ → レート制限ルール</strong>: パスが <code>/r/</code> で始まる要求を、1 IP あたり <strong>30件 / 10秒</strong>、アクション <strong>Block</strong>、緩和時間 <strong>10秒</strong> にします。</li><li>必要なら <strong>カスタムルール</strong>で、互換 Worker は <code>/r/</code> と <code>/api/</code> 以外を Block にします。</li></ol>",
-    requiredText: "* 必須",
-    deliveryDomainHintR2: "※ R2 用の Worker URL、pages.dev URL、独自ドメイン、R2 dev URL を何件でも追加・削除できます。選択された URL が画像コピーやパレットの配信ベース URL に使用されます。",
-    deliveryDomainHintFilebase: "※ Filebase / IPFS 用の Worker URL、pages.dev URL、独自ドメインを何件でも追加・削除できます。選択された URL が Filebase への新規投稿の配信ベース URL に使用されます。",
-    deliveryGuideSummary: "配信 URL の作り方・変更方法",
-    r2DeliveryGuide: "最初は KV Worker の <code>https://…workers.dev</code> をそのまま使えます。独自の URL が必要な場合だけ、Pages をデプロイするか Worker に独自ドメインを追加します。<ol><li><code>npx wrangler login</code></li><li>リポジトリのルートで <code>npm run build</code></li><li><code>npx wrangler pages deploy dist --project-name=my-r2-delivery</code></li><li>表示された <code>https://my-r2-delivery.pages.dev</code> を「＋」から追加します。</li></ol>",
-    filebaseDeliveryGuide: "Filebase 用には R2 と<strong>異なる</strong>配信ドメインを使います。新しい Pages プロジェクトを作成し、この Cividge の配信コードをデプロイしてください。<ol><li><code>npx wrangler login</code></li><li>リポジトリのルートで <code>npm run build</code></li><li><code>npx wrangler pages deploy dist --project-name=my-filebase-delivery</code></li><li>表示された <code>https://my-filebase-delivery.pages.dev</code> を「＋」から追加します。</li></ol>",
-    kvWorkerTitle: "📚 KV 台帳連携 (短縮URL・パスワード・BYOC)",
-    kvWorkerRepo: "cividge-kv-worker リポジトリ ↗",
-    r2CorsSummary: "R2 バケットの CORS 設定（ブラウザから接続するため必須）",
-    r2CorsHelp: "R2 → 対象バケット → Settings → CORS Policy → Edit に、フロントエンド URL を許可するポリシーを貼り付けます。配信ドメインではなく、このアプリを開く URL を指定します。",
-    r2CorsCopy: "📋 CORS 設定をコピー",
-    filebaseBucketLabel: "Filebase バケット名 (IPFS Bucket)",
-    filebaseAccessKeyLabel: "Filebase Key (Access Key)",
-    filebaseSecretKeyLabel: "Filebase Secret Key",
-    filebaseCorsAuto: "⚙️ CORS自動設定",
-    kuboTitle: "🏠 自宅 Kubo (IPFS長期保存 Provider)",
-    kuboAccordionTitle: "🏠 自宅 Kubo (IPFSノード永続保存)",
-    kuboAccordionDesc: "自宅 PC / サーバーの Kubo ノードと連携し、R2 や Filebase の容量解放時にファイルを自動保全します。",
-    filebaseAccordionTitle: "🪐 Filebase (IPFS)",
-    kuboTest: "🔌 接続テスト",
-    kuboRpcLabel: "Kubo RPC エンドポイント URL",
-    kuboUnknown: "⚪ 未確認",
-    kuboEndpointHelp: "※ 自宅PCでは http://127.0.0.1:5001、外部/HTTPS時は Tailscale 等のエンドポイントを指定",
-    kuboAutoPinR2: "Cloudflare R2容量解放時にKuboへ自動Pin留め",
-    kuboAutoPin: "Filebase容量解放時にKuboへ自動Pin留め",
-    kuboPrioritizePinnedLabel: "Kubo保管済みのファイルを優先して容量解放",
-    publicGatewayTitle: "🌐 IPFS Public Gateway",
-    publicGatewayScope: "Cividgeの公開URLから配信するとき、Delivery WorkerがCIDを取得するために使用します。",
-    gatewayLoad: "Worker設定を読込",
-    gatewaySave: "Worker設定へ保存",
-    gatewayModeLabel: "選択方式",
-    gatewayAuto: "自動",
-    gatewayManual: "手動",
-    gatewayEndpointLabel: "Gateway",
-    gatewayAdd: "＋ Gatewayを追加",
-    kuboGuideSummary: "推奨運用・外出先から接続する場合（任意）",
-    kvApiEndpointLabel: "KV 台帳 API エンドポイント URL",
-    kvApiEndpointHelp: "※ 各自の Cloudflare Worker を指定可能。未入力時は自サイトの /api/cividge-kv を試行します。",
-    kvApiTokenLabel: "KV API トークン (API Token)",
-    kvApiTokenHelp: "※ トークン未設定時は中央KVを汚さず、安全な IPFS CID 直リン（/i/CID/name）として動作します。",
-    r2AccountLabel: "Account ID",
-    r2AccountSub: "Cloudflare アカウント ID（S3 API URLを貼り付けても自動抽出されます）",
-    r2BucketLabel: "R2 バケット名",
-    r2BucketSub: "対象の Cloudflare R2 バケット名",
-    r2AccessKeyLabel: "Access Key ID",
-    r2AccessKeySub: "R2 API トークンの Access Key ID",
-    r2SecretKeyLabel: "Secret Access Key",
-    r2SecretKeySub: "R2 API トークンの Secret Access Key",
-    r2DomainLabel: "直リンク公開ドメイン URL",
-    r2DomainSub: "カスタムドメイン（コピーボタンで使用）",
-    r2DevDomainLabel: "R2 Dev アドレス (dev URL)",
-    r2DevDomainSub: "R2 パブリック dev アドレス（devコピーで使用）",
-    btnSave: "保存する",
-    btnShareQr: "📱 スマホ共有 (QR)",
-    btnPinBackup: "🔗 PINバックアップ",
-    btnClear: "クリア",
-    topbarSyncBtn: "スマホ共有 / バックアップ",
-    dataSyncHeading: "📦 設定の引き継ぎ & スマホ共有",
-    dataSyncDesc: "Civitai ウォッチリスト、Cloudflare R2 接続情報、画像変換設定を別の端末やスマホへ安全に引き継ぎます。",
-    btnClearAllData: "🗑️ 全クリア",
-    retentionPeriod: "⏳ 有効期間 (時限)",
-    cachePolicyLabel: "キャッシュポリシー",
-    cachePolicyBoard: "掲示板・一時共有（削除反映を優先）",
-    cachePolicyPublished: "ブログ・記録（edge最大7日）",
-    cachePolicyHint: "Filebase・Kuboに保持されていない場合、公開edgeは最大1日です。ブラウザは短いキャッシュのままです。",
-    ttl1h: "1時間 (1時間後消滅)",
-    ttl12h: "12時間 (12時間後消滅)",
-    ttl1d: "1日間 (24時間後消滅)",
-    ttl3d: "3日間 (72時間後消滅)",
-    ttl7d: "7日間 (168時間後消滅)",
-    tempPasswordLabel: "🔑 閲覧パスワード",
-    tempPasswordPlaceholder: "合言葉を設定",
-    passwordIpfsNoticeSummary: "IPFS のパスワード保護について",
-    passwordIpfsNotice: "※ パスワードは Cividge の配信 URL を保護します。IPFS の CID を知る人は、IPFS Gateway 経由で直接取得できる場合があります。秘匿が必要なファイルは投稿しないでください。",
-    optionalText: "(任意)",
-    quickUploadHeading: "🚀 外部投稿 / Windows「送る」連携",
-    uploadReturnDomainLabel: "🌐 返却配信用アドレス (用途別に選択):",
-    uploadApiUrl: "投稿API エンドポイント URL",
-    btnCopyUrl: "📋 URLをコピー",
-    btnCopyCurl: "💻 curl例をコピー",
-    btnDownloadSendTo: "📥 Windows「送る」登録バッチ",
-    btnDownloadSharex: "📥 ShareX 設定 (.sxcu)",
-    uploadNamingRuleLabel: "🏷️ ファイル名ルール (ShareX等):",
-    uploadNamingOriginal: "元の名前を維持 (100文字自動切り詰め)",
-    uploadNamingRandom: "完全ランダム英数字 (名前秘匿)",
-    uploadNamingDateRandom: "日付＋ランダム (20260918_xxxxxx)",
-    uploadTokenStatusUnknown: "⚪ 未検証",
-    uploadTokenStatusChecking: "🟡 検証中...",
-    uploadTokenStatusValid: "🟢 トークン一致 (認証成功)",
-    uploadTokenStatusInvalid: "🔴 トークン不一致 (Worker設定と異なります)",
-    uploadTokenStatusNeedWorker: "⚠️ Worker URL 未設定",
-    uploadApiNote: "※ 本APIで投稿されたファイルは Filebase(IPFS) または R2 に保存され、選択した配信用ドメインの短縮URLが発行されます。",
-    sendToUninstallNote: "※「送る」から解除・削除したい場合: <code>Win + R</code> ➜ <code>shell:sendto</code> で開くフォルダからバッチを削除してください。",
-    passwordBadge: "🔒 パスワード保護",
-    qrModalTitle: "📱 スマホ/別端末でスキャン",
-    qrModalSub: "スマホのカメラ等で下記QRコードを読み取ると、Civitaiウォッチリストや接続設定が安全に直接引き継がれます。",
-    qrModalWarnTitle: "🚨 第三者への共有・公開厳禁",
-    qrModalWarnDesc: "このQRコードやURLにはストレージの<strong>【秘密鍵・認証情報】</strong>が含まれています。配信・SNS・第三者へ絶対に公開しないでください（不正アクセス・データ削除の危険があります）。",
-    btnCopySyncUrl: "📋 引き継ぎURLをコピー",
-    btnClose: "閉じる",
-    civitaiGalleryHeading: "🎨 Civitai ギャラリー & クリエイターウォッチ",
-    civitaiUsernameLabel: "👤 クリエイター:",
-    civitaiAllCreators: "🌐 すべて (新着順)",
-    civitaiNoCreator: "(未登録 - ＋から追加)",
-    civitaiEmptyDesc: "Civitai クリエイターが登録されていません。「＋」ボタンから気になるクリエイター名を追加してください。",
-    civitaiAddCreator: "➕ ウォッチするクリエイターを追加:",
-    civitaiMarkRead: "✓ 既読にする",
-    civitaiNewBadge: "{count}件の新着",
-    civitaiNewOnly: "✨ 新着のみ",
-    civitaiShowAll: "☷ すべて表示",
-    civitaiLoadMore: "↓ 過去の投稿をさらに読み込む",
-    civitaiNoNewItems: "新着の投稿はありません。",
-    civitaiLoadingMore: "過去の投稿を読み込み中…",
-    sendToSecurityTitle: "🔐 個人専用バッチを生成しますか？",
-    sendToSecurityConfirm: "この BAT ファイルには投稿専用の UPLOAD_TOKEN が平文で含まれます。自分の Windows アカウントだけで保管・使用してください。\n\nメール、チャット、Git リポジトリ、共有フォルダへ渡してはいけません。\n紛失・共有した場合は、Worker の UPLOAD_TOKEN を再発行して、古いバッチを削除してください。",
-    sendToSecurityProceed: "理解して生成",
-    sharexSecurityTitle: "🔐 ShareX 設定ファイルを生成しますか？",
-    sharexSecurityConfirm: "この .sxcu ファイルには投稿専用の UPLOAD_TOKEN が平文で含まれます。自分の端末・アカウントだけで保管・使用してください。\n\nメール、チャット、Discord、Git リポジトリ、共有フォルダへ渡してはいけません。\n他人に渡すと、あなたのストレージに画像を勝手にアップロードされる危険があります。\n紛失・共有した場合は、Worker の UPLOAD_TOKEN を再発行してください。",
-    sharexSecurityProceed: "理解してダウンロード",
-    civitaiDeleteConfirm: "登録クリエイター「{name}」をウォッチリストから削除しますか？",
-    civitaiLastOneError: "最低1件のクリエイター登録が必要です。",
-    btnAdd: "追加",
-    btnCancel: "キャンセル",
-    statusWaiting: "待機中",
-    statusReady: "準備完了",
-    textComposerHeading: "💬 テキスト作成支援",
-    templateLabel: "定型文:",
-    promptSave: "定型文を保存",
-    promptDelete: "削除",
-    btnInsertUrlTag: "＋ {url} を挿入",
-    paletteNote: "クリックしてURLを本文（カーソル位置）に挿入:",
-    composerPlaceholder: "ここにチャット等に投稿する文章を書きます。上の画像をクリックしてURLを挿入したり、定型文をロードできます。",
-    btnPromptCopy: "文章をコピーする",
-    r2Heading: "⚡ Cloudflare R2 ストレージ内のファイル",
-    limitLabel: "上限:",
-    autoFifoLabel: "📦 自動容量解放 (FIFO)",
-    btnReload: "更新",
-    btnBatchDelete: "選択削除",
-    copyUrl: "コピー",
-    copyPrompt: "プロンプトコピー",
-    copyAllPrompts: "📝 プロンプト一括コピー",
-    civitaiPrompt: "📝 プロンプト",
-    deleteNow: "削除",
-    copied: "コピー完了!",
-    failed: "失敗",
-    noFilesR2: "ファイルはありません。",
-    selectFileR2: "削除するファイルを選択してください。",
-    confirmBatchDelete: "選択した {count} 件のファイルを R2 ストレージから削除しますか？",
-    confirmSingleDelete: "ファイル '{key}' を R2 ストレージから削除しますか？",
-    deleteSuccess: "削除が完了しました。",
-    saveSuccess: "R2 接続情報を保存しました！",
-    clearSuccess: "接続情報をクリアしました。",
-    missingConfig: "R2 接続情報 (Account ID, バケット名, Access Key, Secret Key) を設定してください。",
-    s3Error: "R2 ストレージ通信エラー",
-    rateReduced: "{rate}% 削減",
-    rateIncreased: "{rate}% 増加",
-    rateUnchanged: "0% 変化なし",
-    nonConverted: "非変換",
-    promptSelect: "-- 定型文を選択 --",
-    promptNew: "＋ 新規定型文として保存",
-    promptNameInput: "定型文のタイトルを入力してください:",
-    promptOverwriteConfirm: "既存の定型文 '{name}' を上書きしますか？",
-    promptSaveSuccess: "定型文 '{name}' を保存しました！",
-    promptDeleteConfirm: "定型文 '{name}' を削除しますか？",
-    promptEmptyNotice: "定型文の内容が空です。",
-  },
-  en: {
-    siteTitle: "Cividge",
-    eyebrow: "Your media. Your storage. Your delivery.",
-    whatIsSiteSummary: "❓ What is this site?",
-    whatIsSiteBody: `
-      <div style="font-size: 13px; line-height: 1.6; color: var(--text);">
-        <p style="margin-bottom: 12px; font-weight: 500;">
-          <strong>Civitai Bridge (Cividge)</strong> is a personal media uploader for AI creators who want to keep control of where their work lives. Convert media in your browser, then upload directly to storage you control: Cloudflare R2 or Filebase/IPFS.
-        </p>
-        <p style="margin: 0 0 12px; font-size: 12px; color: var(--text-secondary);">
-          It began as a practical replacement when Catbox became unavailable on major Japanese anonymous boards: a way to keep sharing generated images without depending on a single public file host.
-        </p>
-
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 14px 0;">
-          <div style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 8px; padding: 10px 12px;">
-            <div style="font-weight: bold; color: #818cf8; margin-bottom: 3px;">🔒 Direct-to-your-storage</div>
-            <div style="font-size: 11.5px; color: var(--muted);">Upload from your browser to storage in your own account. Cividge does not operate a shared upload relay or keep your storage credentials.</div>
-          </div>
-          <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 10px 12px;">
-            <div style="font-weight: bold; color: #34d399; margin-bottom: 3px;">🧭 Controlled delivery</div>
-            <div style="font-size: 11.5px; color: var(--muted);">An optional Worker you deploy yourself adds stable delivery URLs, aliases, expiration, password gates, and delivery control.</div>
-          </div>
-          <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 10px 12px;">
-            <div style="font-weight: bold; color: #38bdf8; margin-bottom: 3px;">🌱 Discover, preserve, and share</div>
-            <div style="font-size: 11.5px; color: var(--muted);">Browse public creator posts with the Civitai API, collect media URLs, and share work through delivery links you control.</div>
-          </div>
-        </div>
-
-        <details style="margin-top: 10px; background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 6px; padding: 6px 10px;">
-          <summary style="cursor: pointer; font-weight: 600; color: #38bdf8; font-size: 12px;">💡 Storage Selection Guide & Operational Tips (R2 vs Filebase vs Kubo)</summary>
-          <div style="margin-top: 6px; font-size: 11.5px; line-height: 1.55; color: #cbd5e1;">
-            <ul style="margin: 0; padding-left: 18px;">
-              <li><strong>Cloudflare R2</strong>: Zero egress cost (100% free downloads). Best for viral traffic and heavy videos (up to 80 MB). *Credit card required; automatic pay-as-you-go above 10GB free tier (no cap mechanism).*</li>
-              <li><strong>Filebase (IPFS)</strong>: No credit card required. Best for standard images (1–2MB) and decentralized preservation. *Free tier includes 5GB storage & 10GB/month transfer.*</li>
-              <li><strong>Self-hosted Kubo Node</strong>: Pinning heavy videos (>20MB) to your Kubo node before sharing completely bypasses Filebase egress quotas via public gateways.</li>
-            </ul>
-          </div>
-        </details>
-
-        <div style="margin-top: 14px; padding: 10px 12px; background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 11.5px; color: var(--muted);">
-          <strong style="color: #fbbf24;">📌 Independent tool notice:</strong><br>
-          Storage credentials remain in this browser and are sent to the storage provider you configure. Cividge is independent software and is not affiliated with or endorsed by Civitai.
-        </div>
-      </div>
-    `,
-    inputFiles: "Input Files",
-    addFolder: "Add Folder",
-    dropText: "Drop files or folders here",
-    orClick: "or click to select files",
-    dropLimitHint: "* Max 80 MB per file",
-    uploadLimitError: "File size ({size} MB) exceeds the 80 MB limit.",
-    uploadLimitCount: "Excluded {count} files over the 80 MB limit.",
-    settings: "Settings",
-    outputFormat: "Output Format",
-    allStorageTab: "All",
-    passthroughFormat: "No conversion",
-    quality: "Quality",
-    renameRule: "Filename Rule",
-    originalName: "Original Name",
-    seq01: "Sequence (01)",
-    seq001: "Sequence (001)",
-    random6: "Random (6 chars)",
-    previewLabel: "Preview:",
-    zipOptionLabel: "🗜️ Save all in ZIP archive",
-    btnDownload: "📥 Download",
-    btnUpload: "🟩 Upload",
-    btnConvertUpload: "🟩 Upload",
-    btnUploadR2: "⚡ Save to R2",
-    btnUploadFilebase: "🪐 Save to Filebase",
-    r2BillingWarningBadge: "⚠️ 10GB Billing Warning",
-    r2BillingWarningTooltip: "⚠️ R2 begins automatic pay-as-you-go billing once account storage exceeds 10GB (no hard cap). It is calculated based on your total account usage, so please verify billing terms yourself.",
-    cfTitle: "☁️ Cloud Storage Settings",
-    kvAccordionTitle: "📚 KV Delivery & Management Worker",
-    kvAccordionDesc: "The shared registry for R2 and Filebase: short URLs, aliases, expiry, and password protection.",
-    r2AccordionDesc: "Configure R2 credentials, R2-only delivery domains, CORS, and capacity release.",
-    filebaseAccordionDesc: "Configure Filebase CID/IPFS storage, Filebase-only delivery domains, and an optional Kubo preservation node.",
-    quickR2DomainLabel: "🌐 R2 delivery domain",
-    quickFilebaseDomainLabel: "🌐 Filebase delivery domain",
-    r2DomainPlaceholder: "-- Select R2 domain --",
-    filebaseDomainPlaceholder: "-- Select Filebase domain --",
-    r2DeliveryTitle: "1️⃣ Set the R2 public / delivery URL",
-    filebaseDeliveryTitle: "2️⃣ Set the Filebase public / delivery URL",
-    r2CompatibilitySummary: "🛡️ pages.dev public compatibility layer (query-busting defense)",
-    r2CompatibilityConfigured: "Public entry: ",
-    r2CompatibilityMissing: "⚠ Select the static relay project's pages.dev URL from the R2 delivery-domain list above.",
-    r2CompatibilityInstallSummary: "Install the static relay project",
-    r2CompatibilityInstallBody: "Deploy the included template as the <strong>public static Pages project</strong>. It redirects each path to the existing R2 delivery domain. Add the resulting pages.dev URL to the R2 delivery-domain list above and select it. There is no per-upload switch.",
-    filebaseCompatibilitySummary: "🛡️ pages.dev public compatibility layer (query-busting defense)",
-    filebaseCompatibilityConfigured: "Public entry: ",
-    filebaseCompatibilityMissing: "⚠ Select the static relay project's pages.dev URL from the Filebase delivery-domain list above.",
-    filebaseCompatibilityInstallSummary: "Install the static relay project",
-    filebaseCompatibilityInstallBody: "Deploy the included template as the <strong>public static Pages project</strong>. It contains no Functions, KV, or storage credentials; it redirects each path to the compatibility Worker. Add the resulting pages.dev URL to the Filebase delivery-domain list above and select it. There is no per-upload switch.",
-    filebaseCompatibilityCloudflareSummary: "Recommended Cloudflare settings",
-    filebaseCompatibilityCloudflareBody: "Only needed when the compatibility Worker uses your own domain.<ol style=\"margin:6px 0 0;padding-left:18px;\"><li><strong>Rules → URL Rewrite Rules</strong>: match the compatibility Worker host, preserve the path, and rewrite the query to an empty static value.</li><li><strong>Security → Rate Limiting Rules</strong>: for paths starting with <code>/r/</code>, use <strong>30 requests / 10 seconds per IP</strong>, <strong>Block</strong>, and a <strong>10-second</strong> mitigation timeout.</li><li>If appropriate, add a <strong>Custom Rule</strong> that blocks all compatibility-Worker paths except <code>/r/</code> and <code>/api/</code>.</li></ol>",
-    requiredText: "* Required",
-    deliveryDomainHintR2: "Add or remove R2 Worker URLs, pages.dev URLs, custom domains, or R2 dev URLs. The selected URL is used as the delivery base for copied image URLs and the palette.",
-    deliveryDomainHintFilebase: "Add or remove Filebase/IPFS Worker URLs, pages.dev URLs, or custom domains. The selected URL is used as the delivery base for new Filebase uploads.",
-    deliveryGuideSummary: "Create or change a delivery URL",
-    r2DeliveryGuide: "Start with the KV Worker <code>https://…workers.dev</code> URL. Only deploy Pages or add a Worker custom domain when you need a separate URL.<ol><li><code>npx wrangler login</code></li><li>Run <code>npm run build</code> at the repository root</li><li><code>npx wrangler pages deploy dist --project-name=my-r2-delivery</code></li><li>Add the shown <code>https://my-r2-delivery.pages.dev</code> URL using ＋.</li></ol>",
-    filebaseDeliveryGuide: "Use a delivery domain <strong>separate</strong> from R2 for Filebase. Create a new Pages project and deploy this Cividge delivery code.<ol><li><code>npx wrangler login</code></li><li>Run <code>npm run build</code> at the repository root</li><li><code>npx wrangler pages deploy dist --project-name=my-filebase-delivery</code></li><li>Add the shown <code>https://my-filebase-delivery.pages.dev</code> URL using ＋.</li></ol>",
-    kvWorkerTitle: "📚 KV Registry Integration (short URLs, passwords, BYOC)",
-    kvWorkerRepo: "cividge-kv-worker repository ↗",
-    r2CorsSummary: "R2 bucket CORS policy (required for browser access)",
-    r2CorsHelp: "In R2 → your bucket → Settings → CORS Policy → Edit, paste a policy that allows the frontend URL. Use the URL where this app is opened, not the delivery domain.",
-    r2CorsCopy: "📋 Copy CORS policy",
-    filebaseBucketLabel: "Filebase bucket name (IPFS bucket)",
-    filebaseAccessKeyLabel: "Filebase key (Access Key)",
-    filebaseSecretKeyLabel: "Filebase Secret Key",
-    filebaseCorsAuto: "⚙️ Configure CORS",
-    kuboTitle: "🏠 Home Kubo (IPFS preservation provider)",
-    kuboAccordionTitle: "🏠 Home Kubo (IPFS Preservation Node)",
-    kuboAccordionDesc: "Integrates with your home Kubo node to automatically preserve files when R2 or Filebase releases capacity.",
-    filebaseAccordionTitle: "🪐 Filebase (IPFS)",
-    kuboTest: "🔌 Test connection",
-    kuboRpcLabel: "Kubo RPC endpoint URL",
-    kuboUnknown: "⚪ Not checked",
-    kuboEndpointHelp: "At home use http://127.0.0.1:5001; for remote HTTPS access use a Tailscale or similar endpoint.",
-    kuboAutoPinR2: "Automatically pin to Kubo when Cloudflare R2 releases capacity",
-    kuboAutoPin: "Automatically pin to Kubo when Filebase releases capacity",
-    kuboPrioritizePinnedLabel: "Prioritize releasing files already pinned to Kubo",
-    publicGatewayTitle: "🌐 IPFS Public Gateway",
-    publicGatewayScope: "Used by the Delivery Worker to retrieve CIDs for Cividge public URLs.",
-    gatewayLoad: "Load Worker settings",
-    gatewaySave: "Save to Worker",
-    gatewayModeLabel: "Selection policy",
-    gatewayAuto: "Automatic",
-    gatewayManual: "Manual",
-    gatewayEndpointLabel: "Gateway",
-    gatewayAdd: "＋ Add Gateway",
-    kuboGuideSummary: "Recommended operation and remote access (optional)",
-    kuboGuideBody: "<p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">What does this do?</strong><br>It uses your PC or server as an IPFS node and pins a CID before Filebase releases capacity. As long as Kubo remains online and retains the pin, you preserve a copy of that CID. This is a preservation layer, not your only backup.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Minimum setup</strong><br>1. Install and start Kubo. 2. At home keep <code>http://127.0.0.1:5001</code>. 3. Enable automatic pinning only after <strong>🔌 Test connection</strong> succeeds. When Kubo is offline, Cividge safely pauses Filebase FIFO to avoid data loss.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Delivery and caching</strong><br>Cividge delivery URLs use edge caching, so cached visits reduce load on Filebase and IPFS nodes. Initial visits and cache misses still access an upstream. Kubo RPC is for pin operations; it does not by itself make Kubo the permanent first delivery origin.</p><p style=\"margin: 7px 0 0;\"><strong style=\"color: #ddd6fe;\">Safe remote access</strong><br>Keep the API bound to <code>127.0.0.1:5001</code>; never expose it directly to the internet. For remote pinning, use an HTTPS endpoint available only inside your Tailnet, such as <strong>Tailscale Serve</strong>. Do not use <strong>0.0.0.0:5001</strong>, a public reverse proxy, or router port forwarding.</p>",
-    kvApiEndpointLabel: "KV registry API endpoint URL",
-    kvApiEndpointHelp: "You can specify your own Cloudflare Worker. When blank, Cividge tries this site's /api/cividge-kv.",
-    kvApiTokenLabel: "KV API token",
-    kvApiTokenHelp: "Without a token, it avoids writing to the shared KV and uses a safe direct IPFS CID link (/i/CID/name).",
-    r2AccountLabel: "Account ID",
-    r2AccountSub: "Cloudflare Account ID",
-    r2BucketLabel: "R2 Bucket Name",
-    r2BucketSub: "Target Cloudflare R2 Bucket Name",
-    r2AccessKeyLabel: "Access Key ID",
-    r2AccessKeySub: "R2 API Token Access Key ID",
-    r2SecretKeyLabel: "Secret Access Key",
-    r2SecretKeySub: "R2 API Token Secret Access Key",
-    r2DomainLabel: "Direct Public Domain URL",
-    r2DomainSub: "Custom domain (used by Copy button)",
-    r2DevDomainLabel: "R2 Dev Address (dev URL)",
-    r2DevDomainSub: "R2 public dev address (used by devCopy button)",
-    btnSave: "Save",
-    btnShareQr: "📱 Share via QR",
-    btnPinBackup: "🔗 PIN Backup",
-    btnClear: "Clear",
-    topbarSyncBtn: "Sync / Backup",
-    dataSyncHeading: "📦 Settings Sync & Mobile Sharing",
-    dataSyncDesc: "Securely sync Civitai creators watch list, Cloudflare R2 credentials, and converter settings to mobile or other devices.",
-    btnClearAllData: "🗑️ Clear All",
-    retentionPeriod: "⏳ Retention (TTL)",
-    cachePolicyLabel: "Cache policy",
-    cachePolicyBoard: "Board / temporary sharing (faster deletion)",
-    cachePolicyPublished: "Published / records (edge up to 7 days)",
-    cachePolicyHint: "Without Filebase or Kubo preservation, the public edge is capped at 1 day. Browser caching stays short.",
-    ttlNever: "Keep Forever (No Expiry)",
-    ttl1h: "1 Hour (Auto-expire)",
-    ttl12h: "12 Hours (Auto-expire)",
-    ttl1d: "1 Day (Auto-expire)",
-    ttl3d: "3 Days (Auto-expire)",
-    ttl7d: "7 Days (Auto-expire)",
-    tempPasswordLabel: "🔑 Access Password",
-    tempPasswordPlaceholder: "Set password phrase",
-    passwordIpfsNoticeSummary: "About IPFS password protection",
-    passwordIpfsNotice: "Password protection applies to the Cividge delivery URL. Anyone who knows an IPFS CID may still retrieve it through an IPFS gateway. Do not upload files that require strict confidentiality.",
-    optionalText: "(Optional)",
-    quickUploadHeading: "🚀 Quick Upload / Windows 'Send To'",
-    uploadReturnDomainLabel: "🌐 Return Delivery Address (Select per purpose):",
-    uploadApiUrl: "Upload API Endpoint URL",
-    btnCopyUrl: "📋 Copy URL",
-    btnCopyCurl: "💻 Copy curl",
-    btnDownloadSendTo: "📥 Windows 'Send To' Batch",
-    btnDownloadSharex: "📥 ShareX Config (.sxcu)",
-    uploadNamingRuleLabel: "🏷️ Filename rule (ShareX etc):",
-    uploadNamingOriginal: "Keep original name (auto 100-char limit)",
-    uploadNamingRandom: "Random alphanumeric (hide original name)",
-    uploadNamingDateRandom: "Date + random (20260918_xxxxxx)",
-    uploadTokenStatusUnknown: "⚪ Not verified",
-    uploadTokenStatusChecking: "🟡 Checking...",
-    uploadTokenStatusValid: "🟢 Token valid (Authenticated)",
-    uploadTokenStatusInvalid: "🔴 Token mismatch (Invalid token)",
-    uploadTokenStatusNeedWorker: "⚠️ Worker URL not configured",
-    uploadApiNote: "※ Files uploaded via this API are stored in Filebase (IPFS) or R2 with a short URL for the selected domain.",
-    sendToUninstallNote: "※ To remove from 'Send To': Press <code>Win + R</code> ➜ type <code>shell:sendto</code> and delete the batch file.",
-    passwordBadge: "🔒 Password Protected",
-    qrModalTitle: "📱 Scan with Mobile / Other Device",
-    qrModalSub: "Scan this QR code with your mobile camera to securely transfer your Civitai watch list, connection settings, and preferences.",
-    qrModalWarnTitle: "🚨 Strictly Confidential — Do NOT Share",
-    qrModalWarnDesc: "This QR code and URL contain your storage <strong>【Secret Keys & Admin Tokens】</strong>. Never share or stream this screen (risk of unauthorized access, deletion, or tampering).",
-    btnCopySyncUrl: "📋 Copy Sync URL",
-    btnClose: "Close",
-    civitaiGalleryHeading: "🎨 Civitai Gallery & Watcher",
-    civitaiUsernameLabel: "👤 Creator:",
-    civitaiAllCreators: "🌐 All (Newest)",
-    civitaiNoCreator: "(No creators - click ＋ to add)",
-    civitaiEmptyDesc: "No Civitai creators registered. Click \"＋\" to add a creator to your watch list.",
-    civitaiAddCreator: "➕ Add Creator to Watch:",
-    civitaiMarkRead: "✓ Mark as Read",
-    civitaiNewBadge: "{count} New",
-    civitaiNewOnly: "✨ New only",
-    civitaiShowAll: "☷ Show all",
-    civitaiLoadMore: "↓ Load older posts",
-    civitaiNoNewItems: "No new posts.",
-    civitaiLoadingMore: "Loading older posts…",
-    sendToSecurityTitle: "🔐 Generate a personal batch file?",
-    sendToSecurityConfirm: "This BAT file contains your upload-only UPLOAD_TOKEN in plain text. Store and use it only under your own Windows account.\n\nNever share it in email, chat, a Git repository, or a shared folder.\nIf it is lost or shared, rotate the Worker's UPLOAD_TOKEN and delete old batch files.",
-    sendToSecurityProceed: "I understand — generate",
-    sharexSecurityTitle: "🔐 Generate ShareX config file?",
-    sharexSecurityConfirm: "This .sxcu file contains your upload-only UPLOAD_TOKEN in plain text. Store and use it only on your own device and account.\n\nNever share it in email, chat, Discord, Git repositories, or public links.\nIf shared, others can upload files to your storage without permission.\nIf compromised, rotate the Worker's UPLOAD_TOKEN immediately.",
-    sharexSecurityProceed: "I understand — download",
-    civitaiDeleteConfirm: "Remove creator \"{name}\" from your watch list?",
-    civitaiLastOneError: "At least one creator must be kept.",
-    btnAdd: "Add",
-    btnCancel: "Cancel",
-    statusWaiting: "Waiting",
-    statusReady: "Ready",
-    textComposerHeading: "💬 Text Composer",
-    templateLabel: "Template:",
-    promptSave: "Save Template",
-    promptDelete: "Delete",
-    btnInsertUrlTag: "＋ Insert {url}",
-    paletteNote: "Click image to insert URL at cursor:",
-    composerPlaceholder: "Write your post here. Click images above to insert direct URLs.",
-    btnPromptCopy: "Copy Post Text",
-    r2Heading: "⚡ Files in Cloudflare R2 Storage",
-    limitLabel: "Limit:",
-    autoFifoLabel: "📦 Automatic capacity release (FIFO)",
-    btnReload: "Reload",
-    btnBatchDelete: "Delete Selected",
-    copyUrl: "Copy",
-    copyPrompt: "Copy Prompt",
-    copyAllPrompts: "📝 Copy All Prompts",
-    civitaiPrompt: "📝 Prompt",
-    deleteNow: "Delete",
-    copied: "Copied!",
-    failed: "Failed",
-    noFilesR2: "No files in storage.",
-    selectFileR2: "Please select files to delete.",
-    confirmBatchDelete: "Are you sure you want to delete {count} selected files from R2?",
-    confirmSingleDelete: "Delete file '{key}' from R2 storage?",
-    deleteSuccess: "Deletion completed.",
-    saveSuccess: "R2 connection settings saved!",
-    clearSuccess: "Connection settings cleared.",
-    missingConfig: "Please configure R2 Account ID, Bucket Name, Access Key, and Secret Key.",
-    s3Error: "R2 storage communication error",
-    rateReduced: "{rate}% reduced",
-    rateIncreased: "{rate}% increased",
-    rateUnchanged: "0% unchanged",
-    nonConverted: "Original",
-    promptSelect: "-- Select template --",
-    promptNew: "+ Save as new template",
-    promptNameInput: "Enter title for template:",
-    promptOverwriteConfirm: "Overwrite existing template '{name}'?",
-    promptSaveSuccess: "Template '{name}' saved!",
-    promptDeleteConfirm: "Delete template '{name}'?",
-    promptEmptyNotice: "Template content is empty.",
-  }
-};
-
 // --- アプリケーション状態 ---
-const state = {
-  files: [],
-  results: [],
-  r2TotalSize: 0,
-};
+const uploadState = createUploadState();
 
 let paletteFiles = [];
 
@@ -581,6 +71,8 @@ const qualityOutput = document.querySelector("#qualityOutput");
 const renamePattern = document.querySelector("#renamePattern");
 const clearRenamePattern = document.querySelector("#clearRenamePattern");
 const enableZipCheck = document.querySelector("#enableZipCheck");
+const { createOutputName, truncateFilename } = createFilenameTools({ isConversionEnabled, getFilenamePolicy: () => canonicalFilenamePolicy(renamePattern?.value) });
+const { convertImage } = createImageConverter({ getConversionMode, isConversionEnabled, qualityRange, createOutputName });
 
 // アクションボタン
 const convertDownloadButton = document.querySelector("#convertDownloadButton");
@@ -732,8 +224,6 @@ const civitaiGalleryState = {
 const storageTabAll = document.querySelector("#storageTabAll");
 const storageTabR2 = document.querySelector("#storageTabR2");
 const storageTabFilebase = document.querySelector("#storageTabFilebase");
-let activeStorageTab = localStorage.getItem("activeStorageTab") === "filebase" ? "filebase" : "r2";
-let managedStorageView = "all";
 
 const r2FileList = document.querySelector("#r2FileList");
 const reloadR2FilesButton = document.querySelector("#reloadR2FilesButton");
@@ -744,12 +234,10 @@ const r2NextPageBtn = document.querySelector("#r2NextPageBtn");
 const r2PageInfo = document.querySelector("#r2PageInfo");
 const r2PerPageSelect = document.querySelector("#r2PerPageSelect");
 
-// 📄 ストレージ一覧ページネーション状態
-let storageCurrentPage = 1;
-let storagePerPage = parseInt(localStorage.getItem("storagePerPage") || "10", 10);
-let storageCachedContents = [];
-// タブ切替中に古い非同期一覧取得が完了して、新しいタブの表示を上書きしないための世代番号。
-let storageFetchGeneration = 0;
+const managedController = createManagedController({ loadDisplayCache, loadLedgerFromLocalStorage,
+  saveLedgerToLocalStorage, setLocalEntryRetired,
+  initialProvider: localStorage.getItem("activeStorageTab") === "filebase" ? "filebase" : "r2",
+  initialPerPage: parseInt(localStorage.getItem("storagePerPage") || "10", 10) });
 const storageLimitRange = document.querySelector("#storageLimitRange");
 const storageLimitInput = document.querySelector("#storageLimitInput");
 const storageLimitOutput = document.querySelector("#storageLimitOutput");
@@ -821,9 +309,9 @@ function applyLanguage(lang) {
   // 言語切替でも、件数0のオンボーディングを含めストレージ領域を必ず
   // 現在の言語で再描画する。従来は一覧が1件以上の場合だけだったため、
   // 未設定時の案内カードが切替後に古いDOMのまま残っていた。
-  const storageConfigured = managedStorageView === "all"
+  const storageConfigured = managedController.getView() === "all"
     ? (isR2Configured() || isFilebaseConfigured() || hasAdminAccess())
-    : (activeStorageTab === "filebase" ? isFilebaseConfigured() : isR2Configured());
+    : (managedController.getActiveProvider() === "filebase" ? isFilebaseConfigured() : isR2Configured());
   if (storageConfigured) {
     renderCurrentStoragePage();
   } else {
@@ -838,102 +326,7 @@ langSelect?.addEventListener("change", (e) => {
   setAppLanguage(e.target.value);
 });
 
-// --- S3 クライアント生成 ＆ ストレージ接続判定ヘルパー ---
-let s3ClientR2 = null;
-let s3ClientFilebase = null;
-
-function isR2Configured() {
-  const accountId = (localStorage.getItem("r2AccountId") || r2AccountId?.value || "").trim();
-  const bucketName = (localStorage.getItem("r2BucketName") || r2BucketName?.value || "").trim();
-  const accessKeyId = (localStorage.getItem("r2AccessKeyId") || r2AccessKeyId?.value || "").trim();
-  const secretAccessKey = (localStorage.getItem("r2SecretAccessKey") || r2SecretAccessKey?.value || "").trim();
-  const domain = getSelectedR2Domain("r2");
-  return Boolean(accountId && bucketName && accessKeyId && secretAccessKey && domain);
-}
-
-function isFilebaseConfigured() {
-  const bucketName = (localStorage.getItem("filebaseBucket") || filebaseBucket?.value || "").trim();
-  const accessKeyId = (localStorage.getItem("filebaseApiKey") || filebaseApiKey?.value || "").trim();
-  const secretAccessKey = (localStorage.getItem("filebaseSecretKey") || filebaseSecretKey?.value || "").trim();
-  const domain = getSelectedR2Domain("filebase");
-  return Boolean(bucketName && accessKeyId && secretAccessKey && domain);
-}
-
-function getBucketName(provider = "r2") {
-  if (provider === "filebase") {
-    return (localStorage.getItem("filebaseBucket") || filebaseBucket?.value || "").trim();
-  }
-  return (localStorage.getItem("r2BucketName") || r2BucketName?.value || "").trim();
-}
-
-function getS3Client(provider = "r2") {
-  if (provider === "filebase") {
-    const accessKeyId = (localStorage.getItem("filebaseApiKey") || filebaseApiKey?.value || "").trim();
-    const secretAccessKey = (localStorage.getItem("filebaseSecretKey") || filebaseSecretKey?.value || "").trim();
-    if (!accessKeyId || !secretAccessKey) return null;
-
-    s3ClientFilebase = new S3Client({
-      region: "us-east-1",
-      endpoint: "https://s3.filebase.io",
-      forcePathStyle: true,
-      credentials: {
-        accessKeyId,
-        secretAccessKey,
-      },
-    });
-    return s3ClientFilebase;
-  }
-
-  // デフォルト: Cloudflare R2
-  const accountId = (localStorage.getItem("r2AccountId") || r2AccountId?.value || "").trim();
-  const accessKeyId = (localStorage.getItem("r2AccessKeyId") || r2AccessKeyId?.value || "").trim();
-  const secretAccessKey = (localStorage.getItem("r2SecretAccessKey") || r2SecretAccessKey?.value || "").trim();
-  if (!accountId || !accessKeyId || !secretAccessKey) return null;
-
-  s3ClientR2 = new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: {
-      accessKeyId,
-      secretAccessKey,
-    },
-  });
-  return s3ClientR2;
-}
-
-/**
- * S3 / R2 オブジェクトの安全な削除
- * DeleteObjectsCommand (POST /?delete) がバケットの CORS (POST未許可等) で失敗した場合、
- * 自動的に DeleteObjectCommand (DELETE /<key>) の並行実行へフォールバックする。
- */
-async function safeDeleteS3Objects(s3, bucketName, keys) {
-  if (!s3 || !bucketName || !keys) return;
-  const keyList = Array.isArray(keys) ? keys : Array.from(keys);
-  const uniqueKeys = Array.from(new Set(keyList.filter(Boolean)));
-  if (uniqueKeys.length === 0) return;
-
-  if (uniqueKeys.length === 1) {
-    await s3.send(new DeleteObjectCommand({
-      Bucket: bucketName,
-      Key: uniqueKeys[0],
-    }));
-    return;
-  }
-
-  try {
-    const command = new DeleteObjectsCommand({
-      Bucket: bucketName,
-      Delete: { Objects: uniqueKeys.map(Key => ({ Key })) },
-    });
-    await s3.send(command);
-  } catch (err) {
-    console.warn("DeleteObjectsCommand failed, falling back to individual DeleteObjectCommand:", err);
-    await Promise.all(uniqueKeys.map(Key => s3.send(new DeleteObjectCommand({
-      Bucket: bucketName,
-      Key,
-    }))));
-  }
-}
+const { isR2Configured, isFilebaseConfigured, getBucketName, getS3Client, safeDeleteS3Objects } = createStorageConnections({ r2AccountId, r2BucketName, r2AccessKeyId, r2SecretAccessKey, filebaseBucket, filebaseApiKey, filebaseSecretKey, getSelectedR2Domain });
 
 // Filebase S3 バケットの CORS 自動設定 (CID 読み取りヘッダー公開)
 async function configureFilebaseCors() {
@@ -1063,9 +456,15 @@ async function loadFallbackImageFromS3(imgElement, key, s3Key = null, provider =
   }
   return false;
 }
-if (typeof window !== "undefined") {
-  window.loadFallbackImageFromS3 = loadFallbackImageFromS3;
-}
+// A failed preview is a presentation event, not a render-time observation.
+r2FileList?.addEventListener("error", event => {
+  const image = event.target;
+  if (!image?.matches?.("img.thumb") || image.dataset.fallbackAttempted === "1") return;
+  const card = image.closest(".result-item");
+  if (!card || !/\.(jpe?g|png|webp|gif|avif)$/i.test(card.dataset.displayname || "")) return;
+  image.dataset.fallbackAttempted = "1";
+  void loadFallbackImageFromS3(image, card.dataset.key, card.dataset.s3key, card.dataset.provider);
+}, true);
 // --- 🛡️ KV台帳エンドポイント ＆ APIトークン（BYOC・責任分離） ---
 function getCustomKvWorkerUrl() {
   const rawUrl = (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim().replace(/\/$/, "");
@@ -1225,7 +624,7 @@ async function objectIdForManagedLink(linkKey) {
 // ObjectId; the LinkBinding authority resolves the exact managed Object.
 async function getObjectRefForUi(provider, s3Key, cid) {
   const normalized = normalizeDeliveryProvider(provider);
-  const candidates = [...(storageCachedContents || []), ...(loadLedgerFromLocalStorage(normalized) || [])];
+  const candidates = [...(managedController.getContents() || []), ...(loadLedgerFromLocalStorage(normalized) || [])];
   const item = candidates.find(entry => entry.entryKind === "link" &&
     entry.storageProvider === normalized &&
     (entry.rawKey === s3Key || entry.s3Key === s3Key || entry.metadata?.s3Key === s3Key ||
@@ -1234,37 +633,7 @@ async function getObjectRefForUi(provider, s3Key, cid) {
   return objectIdForManagedLink(linkKey);
 }
 
-async function lifecycleRequest(payload) {
-  if (!hasAdminAccess()) return null;
-  const endpoint = getLifecycleApiEndpoint();
-  if (!endpoint) return null;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${getAdminApiToken()}` },
-    body: JSON.stringify(payload),
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || `Lifecycle error (${response.status})`);
-  return result;
-}
-
-async function linkBindingRequest(payload) {
-  if (!hasAdminAccess()) throw new Error("KV Worker URLとAdmin API Tokenが必要です");
-  const worker = getCustomKvWorkerUrl().replace(/\/api\/cividge-kv\/?$/, "");
-  const response = await fetch(`${worker}/api/link-binding`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${getAdminApiToken()}` },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.error || `Link binding error (${response.status})`);
-    error.code = data.code;
-    error.attempt = data.attempt;
-    throw error;
-  }
-  return data;
-}
+const { lifecycleRequest, linkBindingRequest, gatewayConfigRequest } = createWorkerClient({ hasAdminAccess, getLifecycleApiEndpoint, getCustomKvWorkerUrl, getAdminApiToken });
 
 // The browser can execute Filebase/Kubo capabilities, but never decides that an
 // Object is unreferenced. It claims a task authorized by the Durable Object and
@@ -1494,20 +863,6 @@ publicGatewayAdd?.addEventListener("click", async () => {
   }
 });
 
-async function gatewayConfigRequest(method, body) {
-  const worker = getCustomKvWorkerUrl().replace(/\/api\/cividge-kv\/?$/, "");
-  const token = getAdminApiToken();
-  if (!worker || !token) throw new Error("KV Worker URL and Admin API Token are required");
-  const response = await fetch(`${worker}/api/gateway-config`, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `GatewayConfig ${method} failed (${response.status})`);
-  return payload.config;
-}
-
 publicGatewayLoad?.addEventListener("click", async () => {
   try {
     gatewayDraft = normalizeGatewaySettings(await gatewayConfigRequest("GET"));
@@ -1542,124 +897,6 @@ window.addEventListener("beforeunload", (e) => {
 // 自動上書き連打する自己修復コード（healKuboPinnedKvRecords）は書き込み枠（1日1,000回）破壊防止のため完全撤去。
 
 
-// ==========================================
-// 🗃️ Managed-list / UI projection cache (authorityではない)
-// v3はKubo Placementのclosed stateを保持する。旧schemaは推測migrationせずdropする。
-// ==========================================
-// A fresh lifecycle/KV authority must not import a prior browser observation.
-// Settings and credentials stay in their existing keys.
-const STORAGE_LEDGER_KEY_PREFIX = "cividge_managed_projection_v5_";
-const RETIRED_LOCAL_ENTRY_KEY_PREFIX = "cividge_retired_local_entries_v1_";
-
-function localEntryIdentity(item) {
-  return String(item?.s3Key || item?.Key || item?.name || "");
-}
-
-function getRetiredLocalEntries(provider) {
-  try {
-    const entries = JSON.parse(localStorage.getItem(`${RETIRED_LOCAL_ENTRY_KEY_PREFIX}${provider}`) || "[]");
-    return new Set(Array.isArray(entries) ? entries : []);
-  } catch (_) {
-    return new Set();
-  }
-}
-
-function setLocalEntryRetired(provider, item, retired) {
-  const identity = localEntryIdentity(item);
-  if (!identity) return;
-  const entries = getRetiredLocalEntries(provider);
-  if (retired) entries.add(identity);
-  else entries.delete(identity);
-  localStorage.setItem(`${RETIRED_LOCAL_ENTRY_KEY_PREFIX}${provider}`, JSON.stringify([...entries]));
-}
-
-function saveLedgerToLocalStorage(provider, contents) {
-  if (!provider || !Array.isArray(contents)) return;
-  try {
-    if (contents.some(item => item.entryKind !== "link" && item.entryKind !== "local")) {
-      throw new Error("Managed entry kind is required");
-    }
-    const tuples = contents.map(item => [
-      item.Key || item.name || "",
-      item.contentCid || item.cid || item.metadata?.cid || item.metadata?.c || "",
-      item.Size || item.size || 0,
-      item.LastModified ? Math.floor(new Date(item.LastModified).getTime() / 1000) : (item.updated ? Math.floor(new Date(item.updated).getTime() / 1000) : 0),
-      item.s3Key || item.Key || "",
-      item.uploadedProvider || item.backend || provider,
-      item.isFromS3 ? 1 : 0,
-      item.rawKey || item.Key || "",
-      item.metadata?.allowedHost || item.metadata?.d || "",
-      item.metadata?.kuboPlacementState || item.kuboPlacementState ||
-        (item.metadata?.kuboStatus === "pinned" ? KUBO_PLACEMENT_STATE.PRESENT : KUBO_PLACEMENT_STATE.ABSENT),
-      item.entryKind,
-    ]);
-    localStorage.setItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`, JSON.stringify(tuples));
-  } catch (e) {
-    console.warn("saveLedgerToLocalStorage error:", e);
-  }
-}
-
-function loadLedgerFromLocalStorage(provider) {
-  if (!provider) return [];
-  try {
-    const raw = localStorage.getItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`);
-    if (!raw) return [];
-    const tuples = JSON.parse(raw);
-    if (!Array.isArray(tuples)) return [];
-    return tuples.filter(t => t[10] === "link" || t[10] === "local").map(t => {
-      const name = t[0] || "";
-      const cid = t[1] || undefined;
-      const size = t[2] || 0;
-      const dateIso = t[3] ? new Date(t[3] * 1000).toISOString() : new Date().toISOString();
-      const s3Key = t[4] || name;
-      const backend = t[5] || provider;
-      const isFromS3 = t[6] === 1;
-      const rawKey = t[7] || s3Key || name;
-      const allowedHost = t[8] || (rawKey.includes(":") ? rawKey.split(":")[0] : "");
-      const kuboPlacementState = Object.values(KUBO_PLACEMENT_STATE).includes(t[9])
-        ? t[9]
-        : KUBO_PLACEMENT_STATE.ABSENT;
-      const entryKind = t[10] === "link" ? "link" : "local";
-      return {
-        Key: name,
-        name,
-        cid,
-        contentCid: cid,
-        Size: size,
-        size,
-        LastModified: dateIso,
-        updated: dateIso,
-        s3Key,
-        rawKey,
-        uploadedProvider: backend,
-        backend,
-        isFromS3,
-        entryKind,
-        metadata: {
-          kuboStatus: kuboPlacementState === KUBO_PLACEMENT_STATE.PRESENT ? "pinned" : "not_pinned",
-          kuboPlacementState,
-          cid: cid || undefined,
-          allowedHost: allowedHost || undefined,
-          d: allowedHost || undefined,
-          s3Key,
-          backend
-        },
-        storageProvider: provider,
-        isCached: true
-      };
-    });
-  } catch (e) {
-    console.warn("loadLedgerFromLocalStorage error:", e);
-    return [];
-  }
-}
-
-function loadDisplayCache(provider) {
-  // Persisted Link rows are observations, not proof that the current binding
-  // generation is still active. Only an authoritative list may show them.
-  return loadLedgerFromLocalStorage(provider).filter(item => item.entryKind === "local");
-}
-
 // 🚀 [INV-CORE-005] Local-First 台帳キャッシュ管理ヘルパー群
 // 操作（追加・削除・リネーム・設定変更）時に手元の台帳キャッシュと localStorage を即時差分更新し、
 // サーバーへの再フェッチ通信（kv.list / ListObjects）を完全ゼロ化する。
@@ -1668,38 +905,19 @@ function recalculateStorageUsage(provider) {
   const isFilebase = provider === "filebase";
   const countedKeys = new Set();
   let uniqueTotalSize = 0;
-  for (const c of (storageCachedContents || [])) {
+  for (const c of (managedController.getContents() || [])) {
     if (c.storageProvider !== provider || !c.isFromS3) continue;
     const eKey = isFilebase ? (c.cid || getStoredIpfsCid(c.Key) || c.s3Key || c.Key) : (c.s3Key || c.Key);
     if (eKey && countedKeys.has(eKey)) continue;
     if (eKey) countedKeys.add(eKey);
     uniqueTotalSize += (c.Size || c.size || 0);
   }
-  state.r2TotalSize = uniqueTotalSize;
+  managedController.setTotalSize(uniqueTotalSize);
   updateStorageUsageUI();
 }
 
 function removeItemsFromLocalLedger(provider, keysToRemove, { purgeOriginAlso = false } = {}) {
-  if (!provider) return;
-  const keyList = Array.isArray(keysToRemove) ? keysToRemove : [keysToRemove];
-  const keySet = new Set(keyList.filter(Boolean));
-  if (keySet.size === 0) return;
-  storageFetchGeneration++;
-
-  if (Array.isArray(storageCachedContents)) {
-    storageCachedContents = storageCachedContents.filter(item => {
-      if (item.storageProvider !== provider) return true;
-      const k1 = item.Key || item.name;
-      const k2 = item.rawKey;
-      const k3 = item.s3Key;
-      if (purgeOriginAlso) {
-        return !keySet.has(k1) && !keySet.has(k2) && !keySet.has(k3);
-      }
-      return !keySet.has(k2 || k1);
-    });
-  }
-
-  saveLedgerToLocalStorage(provider, (storageCachedContents || []).filter(item => item.storageProvider === provider));
+  if (!managedController.removeLocalItems(provider, keysToRemove, { purgeOriginAlso })) return;
   recalculateStorageUsage(provider);
   renderCurrentStoragePage();
 }
@@ -1708,54 +926,22 @@ function removeCommittedLinkFromUi(linkKey) {
   // Invalidate every storage response that started before the authoritative
   // delete committed. Neither it nor the persisted UI cache may re-show this
   // generation; a later explicit upload can add a new Link normally.
-  storageFetchGeneration++;
-  const keep = item => item.entryKind !== "link" || (item.rawKey || item.Key) !== linkKey;
-  for (const provider of ["r2", "filebase"]) {
-    saveLedgerToLocalStorage(provider, loadLedgerFromLocalStorage(provider).filter(keep));
-  }
-  storageCachedContents = (storageCachedContents || []).filter(keep);
-  paletteFiles = paletteFiles.filter(file => {
-    try {
-      const url = new URL(file.url);
-      return `${url.hostname.toLowerCase()}:${decodeURIComponent(url.pathname.slice(1))}` !== linkKey;
-    } catch (_) { return true; }
-  });
+  paletteFiles = managedController.applyCommittedDelete(linkKey, paletteFiles);
   renderUrlPalette();
-  recalculateStorageUsage(activeStorageTab);
+  recalculateStorageUsage(managedController.getActiveProvider());
   renderCurrentStoragePage();
   updateSelectedR2ActionButtonsState();
 }
 
 function retireManagedEntry(provider, item) {
-  if (item?.entryKind !== "local") throw new Error("Only local managed entries can be retired locally");
-  setLocalEntryRetired(provider, item, true);
-  removeItemsFromLocalLedger(provider, [item.rawKey || item.Key]);
+  if (managedController.retireLocal(provider, item)) {
+    recalculateStorageUsage(provider);
+    renderCurrentStoragePage();
+  }
 }
 
 function addOrUpdateLocalLedgerItem(provider, item) {
-  if (!provider || !item) return;
-  if (item.entryKind !== "link" && item.entryKind !== "local") throw new Error("Managed entry kind is required");
-  const targetKey = item.rawKey || (item.metadata?.d ? `${item.metadata.d}:${item.Key}` : (item.Key || item.name));
-  if (!targetKey) return;
-  storageFetchGeneration++;
-  if (item.entryKind === "local") setLocalEntryRetired(provider, item, false);
-
-  if (!Array.isArray(storageCachedContents)) {
-    storageCachedContents = loadLedgerFromLocalStorage(provider) || [];
-  }
-
-  const existingIdx = storageCachedContents.findIndex(existing => {
-    const existingRawKey = existing.rawKey || (existing.metadata?.d ? `${existing.metadata.d}:${existing.Key}` : (existing.Key || existing.name));
-    return existing.storageProvider === provider && existingRawKey === targetKey;
-  });
-
-  if (existingIdx >= 0) {
-    storageCachedContents[existingIdx] = { ...storageCachedContents[existingIdx], ...item, storageProvider: provider };
-  } else {
-    storageCachedContents.unshift({ ...item, storageProvider: provider });
-  }
-
-  saveLedgerToLocalStorage(provider, storageCachedContents.filter(entry => entry.storageProvider === provider));
+  if (!managedController.upsert(provider, item)) return;
   recalculateStorageUsage(provider);
   renderCurrentStoragePage();
 }
@@ -1795,7 +981,7 @@ async function fetchKvRecord(key) {
   }
 }
 
-function getR2DomainList(provider = activeStorageTab) {
+function getR2DomainList(provider = managedController.getActiveProvider()) {
   const storageProvider = normalizeDeliveryProvider(provider);
   const listKey = storageProvider === "filebase" ? "filebaseDomainList" : "r2DomainList";
   let list = [];
@@ -1826,12 +1012,12 @@ function getR2DomainList(provider = activeStorageTab) {
   return [...new Set(list.map(d => d.trim().replace(/\/$/, "")).filter(Boolean))];
 }
 
-function saveR2DomainList(list, provider = activeStorageTab) {
+function saveR2DomainList(list, provider = managedController.getActiveProvider()) {
   const key = normalizeDeliveryProvider(provider) === "filebase" ? "filebaseDomainList" : "r2DomainList";
   localStorage.setItem(key, JSON.stringify(list));
 }
 
-function getSelectedR2Domain(provider = activeStorageTab) {
+function getSelectedR2Domain(provider = managedController.getActiveProvider()) {
   const storageProvider = normalizeDeliveryProvider(provider);
   const list = getR2DomainList(storageProvider);
   const selectedKey = storageProvider === "filebase" ? "filebaseSelectedDomain" : "r2SelectedDomain";
@@ -1842,7 +1028,7 @@ function getSelectedR2Domain(provider = activeStorageTab) {
   return list.length > 0 ? list[0] : "";
 }
 
-function setSelectedR2Domain(domain, provider = activeStorageTab) {
+function setSelectedR2Domain(domain, provider = managedController.getActiveProvider()) {
   const storageProvider = normalizeDeliveryProvider(provider);
   const clean = (domain || "").trim().replace(/\/$/, "");
   localStorage.setItem(storageProvider === "filebase" ? "filebaseSelectedDomain" : "r2SelectedDomain", clean);
@@ -1864,213 +1050,9 @@ function switchUrlDomain(originalUrl, targetDomain) {
   }
 }
 
-function getIpfsCidFromS3Response(output) {
-  const headers = output?.$metadata?.httpHeaders || {};
-  const candidate = headers["x-amz-meta-cid"] ||
-    headers["x-amz-meta-ipfs-hash"] ||
-    output?.Metadata?.cid ||
-    output?.Metadata?.["ipfs-hash"];
-  return isValidIpfsCid(candidate) ? candidate.trim() : null;
-}
+const { getIpfsCidFromS3Response, calculateFilebaseCid, findFilebaseObjectByCid } = createFilebaseContent({ isValidIpfsCid, getStoredIpfsCid, storeIpfsCid, getManagedContents: () => managedController.getContents() || loadLedgerFromLocalStorage("filebase") || [] });
 
-// FilebaseのIPFSバケットと同じUnixFS（CIDv0 / protobuf leaves）でCIDを作る。
-// onlyHash + BlackHoleBlockstore により、ファイル本体やブロックをブラウザ内に保持しない。
-async function calculateFilebaseCid(bytes) {
-  if (!bytes?.byteLength) return null;
-  const blockstore = new BlackHoleBlockstore();
-  let cid = null;
-  for await (const entry of importUnixFs(
-    [{ path: "file", content: bytes }],
-    blockstore,
-    { onlyHash: true, cidVersion: 0, rawLeaves: false, wrapWithDirectory: false }
-  )) {
-    cid = entry.cid?.toString() || null;
-  }
-  return isValidIpfsCid(cid) ? cid : null;
-}
-
-// Filebaseの全オブジェクトをHEADで照合する。ListObjectsはCIDを返さないため、
-// 正確な重複判定にはx-amz-meta-cidを取得する必要がある。
-async function findFilebaseObjectByCid(s3, bucketName, targetCid) {
-  if (!s3 || !bucketName || !targetCid) return null;
-
-  // 1. [INV-CORE-001] [INV-CORE-004] 手元のローカル台帳キャッシュを最優先照会（通信完全ゼロ）
-  try {
-    const localList = storageCachedContents || loadLedgerFromLocalStorage("filebase") || [];
-    const matched = localList.find(item => {
-      // 🛡️ [INV-STORAGE-006] Filebase 実体が既に解放・削除されたレコード（isFromS3 === false）は重複元として参照しない
-      if (item.isFromS3 === false) return false;
-      const c = item.contentCid || item.cid || item.metadata?.cid || item.metadata?.c || getStoredIpfsCid(item.Key || item.name);
-      return c === targetCid;
-    });
-    if (matched) {
-      return { key: matched.s3Key || matched.Key || matched.name, cid: targetCid, size: matched.Size || matched.size || 0 };
-    }
-  } catch (_) {}
-
-  let continuationToken = undefined;
-  do {
-    const page = await s3.send(new ListObjectsV2Command({
-      Bucket: bucketName,
-      MaxKeys: 1000,
-      ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
-    }));
-    const objects = page.Contents || [];
-
-    // 既にこのブラウザで取得済みのCIDはHEADを省略する。
-    for (const object of objects) {
-      if (getStoredIpfsCid(object.Key) === targetCid) {
-        return { key: object.Key, cid: targetCid, size: object.Size || 0 };
-      }
-    }
-
-    const unresolved = objects.filter(object => !getStoredIpfsCid(object.Key));
-    const batchSize = 4;
-    for (let start = 0; start < unresolved.length; start += batchSize) {
-      const batch = unresolved.slice(start, start + batchSize);
-      const heads = await Promise.all(batch.map(async (object) => {
-        try {
-          const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: object.Key }));
-          return { object, cid: getIpfsCidFromS3Response(head) };
-        } catch (error) {
-          console.warn(`Filebase CID lookup failed: ${object.Key}`, error);
-          return { object, cid: null };
-        }
-      }));
-      for (const { object, cid } of heads) {
-        if (!cid) continue;
-        storeIpfsCid(object.Key, cid);
-        if (cid === targetCid) return { key: object.Key, cid, size: object.Size || 0 };
-      }
-    }
-
-    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
-  } while (continuationToken);
-
-  return null;
-}
-
-// ⚡ R2 疑似CID: Web Crypto API による高速 SHA-256 コンテンツハッシュ計算
-async function calculateContentHash(bytes) {
-  if (!crypto || !crypto.subtle || !bytes) return null;
-  try {
-    const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
-  } catch (e) {
-    console.warn("Content hash calculation failed:", e);
-    return null;
-  }
-}
-
-function getR2HashMap() {
-  try {
-    return JSON.parse(localStorage.getItem("r2HashMap") || "{}");
-  } catch (e) {
-    return {};
-  }
-}
-
-function getStoredR2Hash(key) {
-  if (!key) return null;
-  const map = getR2HashMap();
-  return map[key] || null;
-}
-
-function storeR2Hash(key, hash) {
-  if (!key || !hash) return;
-  try {
-    const map = getR2HashMap();
-    map[key] = hash;
-    localStorage.setItem("r2HashMap", JSON.stringify(map));
-  } catch (e) {}
-}
-
-function deleteR2Hash(key) {
-  if (!key) return;
-  try {
-    const map = getR2HashMap();
-    delete map[key];
-    localStorage.setItem("r2HashMap", JSON.stringify(map));
-  } catch (e) {}
-}
-
-async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
-  if (!s3 || !bucketName || !targetHash) return null;
-
-  // 1. [INV-CORE-001] [INV-CORE-004] 手元のローカル台帳キャッシュから最優先照会（通信完全ゼロ）
-  // 1ファイルアップロードごとに fetchKvFiles()（kv.list() 全件走査）を叩く異常消費を根絶。
-  const kvHashMap = new Map();
-  try {
-    const localList = storageCachedContents || loadLedgerFromLocalStorage("r2") || [];
-    for (const item of localList) {
-      // 🛡️ [INV-STORAGE-006] R2 実体が既に解放・削除されたレコード（isFromS3 === false）は重複元として参照しない
-      if (item.isFromS3 === false) continue;
-
-      const h = item.contentCid || item.cid || item.metadata?.contentCid || item.metadata?.c_cid || item.metadata?.cid || item.metadata?.hash || item.metadata?.h_sha;
-      if (h) {
-        const sKey = item.s3Key || item.metadata?.s3Key || item.metadata?.k_s3 || item.Key || item.name;
-        kvHashMap.set(sKey, h);
-        kvHashMap.set(item.Key || item.name, h);
-        if (h === targetHash) {
-          return { key: sKey, hash: targetHash, size: item.Size || item.size || 0 };
-        }
-      }
-    }
-  } catch (e) {}
-
-  // S3 (R2) バケット内に実在するオブジェクトを走査（実在しない削除済みキーの誤検知を完全排除）
-  let continuationToken = undefined;
-  do {
-    const page = await s3.send(new ListObjectsV2Command({
-      Bucket: bucketName,
-      MaxKeys: 1000,
-      ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
-    }));
-    const objects = page.Contents || [];
-
-    // 1. ローカルキャッシュ または KV台帳 から既知のハッシュ/CIDを照合（通信ゼロ）
-    for (const object of objects) {
-      const knownHash = getStoredR2Hash(object.Key) || getStoredIpfsCid(object.Key) || kvHashMap.get(object.Key);
-      if (knownHash) {
-        storeR2Hash(object.Key, knownHash);
-        if (knownHash === targetHash) {
-          return { key: object.Key, hash: targetHash, size: object.Size || 0 };
-        }
-      }
-    }
-
-    // 2. ハッシュ未解決かつサイズが完全一致するものだけに絞り込み、HEAD で x-amz-meta-cid / x-amz-meta-hash を確認
-    const candidateObjects = objects.filter(object => {
-      const knownHash = getStoredR2Hash(object.Key) || getStoredIpfsCid(object.Key) || kvHashMap.get(object.Key);
-      if (knownHash) return false;
-      return targetSize ? (object.Size === targetSize) : true;
-    });
-
-    const batchSize = 4;
-    for (let start = 0; start < candidateObjects.length; start += batchSize) {
-      const batch = candidateObjects.slice(start, start + batchSize);
-      const heads = await Promise.all(batch.map(async (object) => {
-        try {
-          const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: object.Key }));
-          const h = head?.Metadata?.cid || head?.Metadata?.["x-amz-meta-cid"] || head?.$metadata?.httpHeaders?.["x-amz-meta-cid"] || head?.Metadata?.hash || head?.$metadata?.httpHeaders?.["x-amz-meta-hash"] || null;
-          return { object, hash: h };
-        } catch (error) {
-          return { object, hash: null };
-        }
-      }));
-      for (const { object, hash } of heads) {
-        if (!hash) continue;
-        storeR2Hash(object.Key, hash);
-        if (hash === targetHash) return { key: object.Key, hash, size: object.Size || 0 };
-      }
-    }
-
-    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
-  } while (continuationToken);
-
-  return null;
-}
+const { calculateContentHash, getStoredR2Hash, storeR2Hash, deleteR2Hash, findR2ObjectByHash } = createR2Content({ getStoredIpfsCid, getManagedContents: () => managedController.getContents() || loadLedgerFromLocalStorage("r2") || [] });
 
 function normalizeHttpsOrigin(value) {
   try {
@@ -2083,13 +1065,13 @@ function normalizeHttpsOrigin(value) {
   }
 }
 
-function getPublicDeliveryBase(provider = activeStorageTab, canonicalBase = "") {
+function getPublicDeliveryBase(provider = managedController.getActiveProvider(), canonicalBase = "") {
   const storageProvider = normalizeDeliveryProvider(provider);
   const canonical = normalizeHttpsOrigin(canonicalBase || getSelectedR2Domain(storageProvider));
   return canonical || (typeof window !== "undefined" ? window.location.origin.replace(/\/$/, "") : "");
 }
 
-function getPublicDeliveryUrl(name, provider = activeStorageTab, canonicalBase = "") {
+function getPublicDeliveryUrl(name, provider = managedController.getActiveProvider(), canonicalBase = "") {
   if (!name) return "";
   const baseDomain = getPublicDeliveryBase(provider, canonicalBase);
   return baseDomain ? `${baseDomain}/${encodeURIComponent(name)}` : "";
@@ -2303,10 +1285,10 @@ function updateR2Status() {
   }
 
   if (convertUploadR2Button) {
-    convertUploadR2Button.disabled = !r2Ok || (state.files.length === 0);
+    convertUploadR2Button.disabled = !r2Ok || (uploadState.getFiles().length === 0);
   }
   if (convertUploadFilebaseButton) {
-    convertUploadFilebaseButton.disabled = !fbOk || (state.files.length === 0);
+    convertUploadFilebaseButton.disabled = !fbOk || (uploadState.getFiles().length === 0);
   }
 
   return r2Ok || fbOk;
@@ -3462,10 +2444,10 @@ kvWorkerUrl?.addEventListener("input", saveR2SettingsAuto);
 adminApiToken?.addEventListener("input", saveR2SettingsAuto);
 
 // 🌐 ドメイン選択変更リスナー
-const handleDomainSelectionChange = (newDomain, provider = activeStorageTab) => {
+const handleDomainSelectionChange = (newDomain, provider = managedController.getActiveProvider()) => {
   const storageProvider = normalizeDeliveryProvider(provider);
   setSelectedR2Domain(newDomain, storageProvider);
-  if (storageProvider === normalizeDeliveryProvider(activeStorageTab) && r2DomainSelect && r2DomainSelect.value !== newDomain) {
+  if (storageProvider === normalizeDeliveryProvider(managedController.getActiveProvider()) && r2DomainSelect && r2DomainSelect.value !== newDomain) {
     r2DomainSelect.value = newDomain;
   }
   if (storageProvider === "r2" && quickDomainSelect && quickDomainSelect.value !== newDomain) {
@@ -3478,8 +2460,8 @@ const handleDomainSelectionChange = (newDomain, provider = activeStorageTab) => 
   if (storageProvider === "filebase") updateFilebaseCompatibilityUi();
   updateR2Status();
   updateDomainCompatBadgeUi(storageProvider);
-  if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) {
-    if (storageCachedContents && storageCachedContents.length > 0) {
+  if (storageProvider === normalizeDeliveryProvider(managedController.getActiveProvider())) {
+    if (managedController.getContents() && managedController.getContents().length > 0) {
       renderCurrentStoragePage();
     } else {
       fetchAndRenderR2Files();
@@ -3696,7 +2678,7 @@ async function handleAddNewDomain(provider, input, form) {
   updateR2Status();
   updateDomainCompatBadgeUi(storageProvider);
   render();
-  if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) renderCurrentStoragePage();
+  if (storageProvider === normalizeDeliveryProvider(managedController.getActiveProvider())) renderCurrentStoragePage();
   if (form) form.style.display = "none";
 }
 
@@ -3743,7 +2725,7 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
     updateR2Status();
     updateDomainCompatBadgeUi(storageProvider);
     render();
-    if (storageProvider === normalizeDeliveryProvider(activeStorageTab)) renderCurrentStoragePage();
+    if (storageProvider === normalizeDeliveryProvider(managedController.getActiveProvider())) renderCurrentStoragePage();
   });
 }
 
@@ -4148,7 +3130,7 @@ document.querySelector(".pattern-helpers")?.addEventListener("click", (event) =>
 });
 
 function getActiveStorageLimitGB() {
-  if (activeStorageTab === "filebase") {
+  if (managedController.getActiveProvider() === "filebase") {
     const savedGb = localStorage.getItem("filebaseStorageLimitGB");
     if (savedGb) return Math.max(1, parseInt(savedGb, 10));
     const savedMb = Number(localStorage.getItem("filebaseStorageLimit") || "5000");
@@ -4163,7 +3145,7 @@ function getActiveStorageLimitGB() {
 function setActiveStorageLimitGB(val) {
   const gb = Math.max(1, parseInt(val, 10) || 5);
   const mb = gb * 1024;
-  if (activeStorageTab === "filebase") {
+  if (managedController.getActiveProvider() === "filebase") {
     localStorage.setItem("filebaseStorageLimitGB", String(gb));
     localStorage.setItem("filebaseStorageLimit", String(mb)); // FIFO処理用
   } else {
@@ -4187,7 +3169,7 @@ function syncStorageLimitControl() {
     storageLimitInput.value = String(gb);
   }
   if (storageLimitRange) {
-    const isFb = activeStorageTab === "filebase";
+    const isFb = managedController.getActiveProvider() === "filebase";
     storageLimitRange.min = "1";
     storageLimitRange.max = isFb ? "50" : "100";
     storageLimitRange.step = "1";
@@ -4217,13 +3199,13 @@ storageLimitRange?.addEventListener("input", () => {
 });
 
 autoFifoCheckbox?.addEventListener("change", () => {
-  const key = activeStorageTab === "filebase" ? "autoFifo" : "r2AutoFifo";
+  const key = managedController.getActiveProvider() === "filebase" ? "autoFifo" : "r2AutoFifo";
   localStorage.setItem(key, String(autoFifoCheckbox.checked));
 });
 
 function updateStorageUsageUI() {
   if (!storageUsageText || !storageUsageBar) return;
-  const totalSize = state.r2TotalSize || 0;
+  const totalSize = managedController.getTotalSize() || 0;
   const limitGb = getActiveStorageLimitGB();
   const limitBytes = limitGb * 1024 * 1024 * 1024;
   
@@ -4325,884 +3307,13 @@ dropzone?.addEventListener("drop", async (event) => {
 });
 
 clearButton?.addEventListener("click", () => {
-  state.results.forEach((result) => {
+  uploadState.getResults().forEach((result) => {
     if (result && result.url) URL.revokeObjectURL(result.url);
   });
-  state.files = [];
-  state.results = [];
+  uploadState.clear();
   render();
 });
 
-
-// --- ComfyUI ワークフロー / 生成メタデータ検出ユーティリティ ---
-function parseA1111Parameters(raw) {
-  if (!raw || typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  const negIndex = trimmed.indexOf("Negative prompt:");
-  const stepsIndex = trimmed.search(/\bSteps:\s*\d+/);
-
-  let prompt = "";
-  let negativePrompt = "";
-  let params = "";
-
-  if (negIndex !== -1) {
-    prompt = trimmed.substring(0, negIndex).trim();
-    if (stepsIndex !== -1 && stepsIndex > negIndex) {
-      negativePrompt = trimmed.substring(negIndex + "Negative prompt:".length, stepsIndex).trim();
-      params = trimmed.substring(stepsIndex).trim();
-    } else {
-      negativePrompt = trimmed.substring(negIndex + "Negative prompt:".length).trim();
-    }
-  } else if (stepsIndex !== -1) {
-    prompt = trimmed.substring(0, stepsIndex).trim();
-    params = trimmed.substring(stepsIndex).trim();
-  } else {
-    prompt = trimmed;
-  }
-
-  return { prompt, negativePrompt, params, raw: trimmed };
-}
-
-function unescapeJsonString(str) {
-  if (!str) return "";
-  try {
-    const sanitized = str.replace(/[\u0000-\u001f]/g, (c) => {
-      if (c === "\n") return "\\n";
-      if (c === "\r") return "\\r";
-      if (c === "\t") return "\\t";
-      return "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0");
-    });
-    return JSON.parse(`"${sanitized}"`);
-  } catch (e) {
-    return str
-      .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-      .replace(/\\n/g, "\n")
-      .replace(/\\r/g, "\r")
-      .replace(/\\t/g, "\t")
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, "\\");
-  }
-}
-
-const EXCLUDE_WORDS = new Set([
-  "true", "false", "null", "undefined", "none", "fixed", "increment",
-  "decrement", "randomize", "auto", "enable", "disable", "cpu", "gpu", "cuda",
-  "euler", "euler_ancestral", "heun", "dpm_2", "karras", "exponential",
-  "normal", "simple", "ddim", "uni_pc"
-]);
-
-function isExcludedString(s) {
-  if (!s || s.length < 3) return true;
-  const lower = s.toLowerCase().trim();
-  if (EXCLUDE_WORDS.has(lower)) return true;
-  if (/^https?:\/\//i.test(lower)) return true;
-  if (/\.(safetensors|ckpt|pt|bin|pth|onnx|engine|yaml|json|png|jpg|jpeg|webp|mp4|webm|gif|mov)$/i.test(lower)) return true;
-  if (/^[\d\s.,_-]+$/.test(lower)) return true;
-  return false;
-}
-
-function extractPromptsFromRawText(text) {
-  if (!text || typeof text !== "string") return null;
-
-  // AI関連キーワードが一切ない場合は重い走査をスキップ（高速化）
-  const hasAiHint = text.includes('"inputs"') || 
-                    text.includes('"class_type"') || 
-                    text.includes('"prompt"') || 
-                    text.includes('"workflow"') || 
-                    text.includes('"nodes"') ||
-                    text.includes('"widgets_values"') ||
-                    text.includes('Negative prompt:') ||
-                    text.includes('Steps:');
-  if (!hasAiHint) return null;
-
-  const candidates = [];
-
-  const addCandidate = (rawVal) => {
-    const val = unescapeJsonString(rawVal).trim();
-    if (!isExcludedString(val) && !candidates.includes(val)) {
-      candidates.push(val);
-    }
-  };
-
-  // 1. "widgets_values": [...] の配列内を走査 (UI workflow形式)
-  const widgetArrayMatches = text.matchAll(/"widgets_values"\s*:\s*\[([\s\S]*?)\]/gi);
-  for (const m of widgetArrayMatches) {
-    const arrayContent = m[1];
-    const stringMatches = arrayContent.matchAll(/"((?:[^"\\]|\\.)*)"/gi);
-    for (const sm of stringMatches) {
-      addCandidate(sm[1]);
-    }
-  }
-
-  // 2. キー名による抽出 ("text", "prompt", "positive", "caption", "text_positive", etc.)
-  const keyMatches = text.matchAll(/"(?:text|prompt|positive|text_positive|caption|prompt_text)"\s*:\s*"((?:[^"\\]|\\.)*)"/gi);
-  for (const m of keyMatches) {
-    addCandidate(m[1]);
-  }
-
-  if (candidates.length === 0) return null;
-
-  const negKeywords = ["low quality", "worst quality", "blurry", "bad anatomy", "watermark", "deformed", "ugly", "nsfw", "lowres", "bad hands", "error", "missing fingers"];
-  const positives = [];
-  const negatives = [];
-
-  for (const c of candidates) {
-    const lower = c.toLowerCase();
-    const isNeg = negKeywords.some(k => lower.includes(k)) || lower.startsWith("negative") || lower.includes("embedding:");
-    if (isNeg) {
-      negatives.push(c);
-    } else {
-      positives.push(c);
-    }
-  }
-
-  let prompt = "";
-  let negativePrompt = "";
-
-  if (positives.length > 0) {
-    positives.sort((a, b) => b.length - a.length);
-    prompt = positives[0];
-    if (negatives.length > 0) {
-      negativePrompt = negatives[0];
-    } else if (positives.length > 1) {
-      negativePrompt = positives[1];
-    }
-  } else {
-    prompt = candidates[0];
-    if (candidates.length > 1) negativePrompt = candidates[1];
-  }
-
-  return {
-    prompt,
-    negativePrompt,
-    params: `Extracted ${candidates.length} candidate(s)`,
-    raw: text.slice(0, 5000),
-  };
-}
-
-function parseComfyPromptJson(rawJson) {
-  if (!rawJson) return null;
-  let obj = null;
-  try {
-    obj = typeof rawJson === "string" ? JSON.parse(rawJson) : rawJson;
-  } catch (e) {
-    if (typeof rawJson === "string") {
-      return extractPromptsFromRawText(rawJson);
-    }
-    return null;
-  }
-  if (!obj || typeof obj !== "object") return null;
-
-  // { prompt: { ... }, workflow: { ... } } などのラッパー対応
-  const targetObj = (obj.prompt && typeof obj.prompt === "object") ? obj.prompt : obj;
-
-  const textNodes = [];
-  for (const k of Object.keys(targetObj)) {
-    const node = targetObj[k];
-    if (node && node.inputs) {
-      const val = node.inputs.text || node.inputs.prompt || node.inputs.positive || node.inputs.text_positive || node.inputs.caption;
-      if (typeof val === "string" && !isExcludedString(val)) {
-        textNodes.push({
-          type: node.class_type || "CLIPTextEncode",
-          text: val.trim(),
-        });
-      }
-    }
-  }
-
-  const wfObj = (obj.workflow && typeof obj.workflow === "object") ? obj.workflow : obj;
-  if (textNodes.length === 0 && Array.isArray(wfObj.nodes)) {
-    for (const node of wfObj.nodes) {
-      if (node && Array.isArray(node.widgets_values)) {
-        for (const val of node.widgets_values) {
-          if (typeof val === "string" && !isExcludedString(val)) {
-            textNodes.push({
-              type: node.type || "CLIPTextEncode",
-              text: val.trim(),
-            });
-          }
-        }
-      }
-    }
-  }
-
-  if (textNodes.length === 0) {
-    return extractPromptsFromRawText(JSON.stringify(obj));
-  }
-
-  const prompt = textNodes[0]?.text || "";
-  const negativePrompt = textNodes.length > 1 ? textNodes[1]?.text : "";
-  return {
-    prompt,
-    negativePrompt,
-    params: `Nodes: ${textNodes.length}`,
-    raw: typeof rawJson === "string" ? rawJson : JSON.stringify(rawJson, null, 2),
-  };
-}
-
-function parseNovelAiComment(raw) {
-  if (!raw) return null;
-  try {
-    const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (obj && (obj.prompt || obj.uc)) {
-      return {
-        prompt: obj.prompt || "",
-        negativePrompt: obj.uc || "",
-        params: `Steps: ${obj.steps || ""}, Scale: ${obj.scale || ""}, Seed: ${obj.seed || ""}`,
-        raw: typeof raw === "string" ? raw : JSON.stringify(raw),
-      };
-    }
-  } catch (e) {}
-  return null;
-}
-
-// ==========================================
-// 🧬 PNG メタデータ救出・再注入エンジン (ComfyUI / A1111 互換)
-// ==========================================
-const CRC32_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let k = 0; k < 8; k++) {
-      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    }
-    table[i] = c >>> 0;
-  }
-  return table;
-})();
-
-function calculateCrc32(bytes) {
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < bytes.length; i++) {
-    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ bytes[i]) & 0xFF];
-  }
-  return (crc ^ 0xFFFFFFFF) >>> 0;
-}
-
-// 元画像から ComfyUI / A1111 のメタデータ (tEXt / iTXt チャンクおよびテキスト) を救出
-async function extractMetadataChunksFromPng(fileOrBuffer) {
-  try {
-    const buffer = (fileOrBuffer instanceof ArrayBuffer) ? fileOrBuffer : await fileOrBuffer.arrayBuffer();
-    const view = new DataView(buffer);
-    if (view.byteLength < 8 || view.getUint32(0) !== 0x89504e47 || view.getUint32(4) !== 0x0d0a1a0a) {
-      return { chunks: [], texts: {} };
-    }
-
-    const chunks = [];
-    const texts = {};
-    let offset = 8;
-    const length = buffer.byteLength;
-
-    while (offset < length - 8) {
-      const chunkLength = view.getUint32(offset);
-      const chunkType = String.fromCharCode(
-        view.getUint8(offset + 4),
-        view.getUint8(offset + 5),
-        view.getUint8(offset + 6),
-        view.getUint8(offset + 7)
-      );
-
-      if (chunkType === "IEND") break;
-
-      // ComfyUI (prompt, workflow) および A1111 (parameters), NovelAI (Comment) 等のテキストメタデータを救出
-      // ※ 位置情報・撮影機材情報が含まれうる "eXIf" チャンクは意図的に除外（プライバシー更地化）
-      if (chunkType === "tEXt" || chunkType === "iTXt") {
-        const fullChunk = new Uint8Array(buffer, offset, chunkLength + 12);
-        chunks.push(new Uint8Array(fullChunk)); // コピーして保持
-
-        const chunkData = new Uint8Array(buffer, offset + 8, chunkLength);
-        let nullIndex = -1;
-        for (let i = 0; i < chunkData.length; i++) {
-          if (chunkData[i] === 0) { nullIndex = i; break; }
-        }
-        if (nullIndex > 0) {
-          const keyword = new TextDecoder("utf-8").decode(chunkData.subarray(0, nullIndex));
-          try {
-            const valText = new TextDecoder("utf-8").decode(chunkData.subarray(nullIndex + 1));
-            texts[keyword] = valText;
-          } catch (e) {}
-        }
-      }
-
-      offset += chunkLength + 12;
-    }
-    return { chunks, texts };
-  } catch (err) {
-    console.warn("Failed to extract PNG metadata chunks:", err);
-    return { chunks: [], texts: {} };
-  }
-}
-
-// 変換後の PNG バイナリの IEND 直前に救出したメタデータチャンクを再注入
-async function injectMetadataChunksIntoPng(pngBlobOrBuffer, chunks) {
-  if (!chunks || chunks.length === 0) return pngBlobOrBuffer;
-  try {
-    const buffer = (pngBlobOrBuffer instanceof ArrayBuffer) ? pngBlobOrBuffer : await pngBlobOrBuffer.arrayBuffer();
-    const view = new DataView(buffer);
-    if (view.byteLength < 8 || view.getUint32(0) !== 0x89504e47 || view.getUint32(4) !== 0x0d0a1a0a) {
-      return pngBlobOrBuffer;
-    }
-
-    // IEND チャンクの位置を探索
-    let offset = 8;
-    let iendOffset = -1;
-    const length = buffer.byteLength;
-
-    while (offset < length - 8) {
-      const chunkLength = view.getUint32(offset);
-      const chunkType = String.fromCharCode(
-        view.getUint8(offset + 4),
-        view.getUint8(offset + 5),
-        view.getUint8(offset + 6),
-        view.getUint8(offset + 7)
-      );
-      if (chunkType === "IEND") {
-        iendOffset = offset;
-        break;
-      }
-      offset += chunkLength + 12;
-    }
-
-    if (iendOffset === -1) return pngBlobOrBuffer;
-
-    let extraSize = 0;
-    for (const c of chunks) extraSize += c.byteLength;
-
-    const newBuffer = new Uint8Array(buffer.byteLength + extraSize);
-    // IENDの手前までコピー
-    newBuffer.set(new Uint8Array(buffer, 0, iendOffset), 0);
-
-    // 救出したメタデータチャンク群を挿入
-    let cur = iendOffset;
-    for (const c of chunks) {
-      newBuffer.set(c, cur);
-      cur += c.byteLength;
-    }
-
-    // 残りのIENDチャンクをコピー
-    newBuffer.set(new Uint8Array(buffer, iendOffset), cur);
-
-    return new Blob([newBuffer], { type: "image/png" });
-  } catch (err) {
-    console.warn("Failed to inject PNG metadata chunks:", err);
-    return pngBlobOrBuffer;
-  }
-}
-
-// 変換後の WebP (RIFF) バイナリに ComfyUI メタデータ (VP8X + EXIF チャンク) を再注入
-async function injectMetadataIntoWebp(webpBlobOrBuffer, texts, width = 0, height = 0) {
-  if (!texts || (!texts.workflow && !texts.prompt && !texts.parameters)) {
-    return webpBlobOrBuffer;
-  }
-
-  const originalBlob = (webpBlobOrBuffer instanceof Blob) ? webpBlobOrBuffer : new Blob([webpBlobOrBuffer], { type: "image/webp" });
-
-  try {
-    const buffer = (webpBlobOrBuffer instanceof ArrayBuffer) ? webpBlobOrBuffer : await webpBlobOrBuffer.arrayBuffer();
-    const view = new DataView(buffer);
-    if (buffer.byteLength < 12) return originalBlob;
-
-    const riff = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-    const webp = String.fromCharCode(view.getUint8(8), view.getUint8(9), view.getUint8(10), view.getUint8(11));
-    if (riff !== "RIFF" || webp !== "WEBP") return originalBlob;
-
-    // 元WebPから画像チャンク（VP8 または VP8L）の位置とサイズを特定
-    let offset = 12;
-    let imageChunkType = "";
-    let imageChunkOffset = -1;
-    let imageChunkTotalSize = 0;
-    let hasAlpha = false;
-
-    while (offset < buffer.byteLength - 8) {
-      const chunkType = String.fromCharCode(
-        view.getUint8(offset),
-        view.getUint8(offset + 1),
-        view.getUint8(offset + 2),
-        view.getUint8(offset + 3)
-      );
-      const chunkSize = view.getUint32(offset + 4, true);
-      const paddedSize = chunkSize + (chunkSize % 2 === 1 ? 1 : 0);
-
-      if (chunkType === "VP8 " || chunkType === "VP8L") {
-        imageChunkType = chunkType;
-        imageChunkOffset = offset;
-        imageChunkTotalSize = 8 + paddedSize;
-        if (chunkType === "VP8L") hasAlpha = true;
-        break;
-      } else if (chunkType === "VP8X") {
-        // 既にVP8Xがある場合はスキップ
-        return originalBlob;
-      }
-      offset += 8 + paddedSize;
-    }
-
-    if (imageChunkOffset === -1) return originalBlob;
-
-    // ComfyUI が解釈できる形式の Exif UserComment を構築
-    const payload = {};
-    if (texts.prompt) {
-      try { payload.prompt = JSON.parse(texts.prompt); } catch (e) { payload.prompt = texts.prompt; }
-    }
-    if (texts.workflow) {
-      try { payload.workflow = JSON.parse(texts.workflow); } catch (e) { payload.workflow = texts.workflow; }
-    }
-    if (texts.parameters) payload.parameters = texts.parameters;
-
-    const payloadJsonStr = JSON.stringify(payload);
-    const commentBytes = new TextEncoder().encode(payloadJsonStr);
-
-    const userCommentHeader = new Uint8Array([0x55, 0x4E, 0x49, 0x43, 0x4F, 0x44, 0x45, 0x00]); // 'UNICODE\0'
-    const totalCommentDataLen = userCommentHeader.length + commentBytes.length;
-    const exifIfdOffset = 26;
-    const userCommentDataOffset = 44;
-
-    const exifPayloadSize = 6 + 8 + 2 + 12 + 4 + 2 + 12 + 4 + totalCommentDataLen;
-    const exifChunkDataSize = exifPayloadSize + (exifPayloadSize % 2 === 1 ? 1 : 0);
-    const exifData = new Uint8Array(exifChunkDataSize);
-    const eView = new DataView(exifData.buffer);
-
-    exifData.set([0x45, 0x78, 0x69, 0x66, 0x00, 0x00], 0); // 'Exif\0\0'
-    eView.setUint8(6, 0x49); eView.setUint8(7, 0x49); // 'II'
-    eView.setUint16(8, 42, true);
-    eView.setUint32(10, 8, true);
-
-    // IFD0
-    eView.setUint16(14, 1, true);
-    eView.setUint16(16, 0x8769, true);
-    eView.setUint16(18, 4, true);
-    eView.setUint32(20, 1, true);
-    eView.setUint32(24, exifIfdOffset, true);
-    eView.setUint32(28, 0, true);
-
-    // ExifIFD
-    eView.setUint16(32, 1, true);
-    eView.setUint16(34, 0x9286, true);
-    eView.setUint16(36, 7, true);
-    eView.setUint32(38, totalCommentDataLen, true);
-    eView.setUint32(42, userCommentDataOffset, true);
-    eView.setUint32(46, 0, true);
-
-    exifData.set(userCommentHeader, 50);
-    exifData.set(commentBytes, 58);
-
-    // WebP Extended Header (VP8X): 10 バイトデータ
-    // Flags (1B): Exifフラグ (0x08) | (hasAlpha ? 0x10 : 0)
-    // Reserved (3B): 00 00 00
-    // Canvas Width - 1 (24-bit LE, 3B)
-    // Canvas Height - 1 (24-bit LE, 3B)
-    const vp8xChunkSize = 8 + 10; // 18 bytes
-    const vp8xData = new Uint8Array(18);
-    const vpView = new DataView(vp8xData.buffer);
-    vp8xData.set([0x56, 0x50, 0x38, 0x58], 0); // 'VP8X'
-    vpView.setUint32(4, 10, true); // size = 10
-    vp8xData[8] = 0x08 | (hasAlpha ? 0x10 : 0); // Exif flag (+ Alpha if any)
-    vp8xData[9] = 0; vp8xData[10] = 0; vp8xData[11] = 0; // Reserved
-
-    const wMinus1 = Math.max(0, width - 1);
-    const hMinus1 = Math.max(0, height - 1);
-    vp8xData[12] = wMinus1 & 0xFF;
-    vp8xData[13] = (wMinus1 >> 8) & 0xFF;
-    vp8xData[14] = (wMinus1 >> 16) & 0xFF;
-    vp8xData[15] = hMinus1 & 0xFF;
-    vp8xData[16] = (hMinus1 >> 8) & 0xFF;
-    vp8xData[17] = (hMinus1 >> 16) & 0xFF;
-
-    // EXIF チャンクヘッダー
-    const exifChunkHeader = new Uint8Array(8);
-    exifChunkHeader.set([0x45, 0x58, 0x49, 0x46], 0); // 'EXIF'
-    new DataView(exifChunkHeader.buffer).setUint32(4, exifChunkDataSize, true);
-
-    // 全体組み立て: [RIFF] + [VP8X] + [画像データ(VP8/VP8L)] + [EXIF]
-    const imageBytes = new Uint8Array(buffer, imageChunkOffset, imageChunkTotalSize);
-    const totalNewSize = 12 + vp8xChunkSize + imageBytes.byteLength + 8 + exifChunkDataSize;
-    const finalBuffer = new Uint8Array(totalNewSize);
-    const fView = new DataView(finalBuffer.buffer);
-
-    finalBuffer.set([0x52, 0x49, 0x46, 0x46], 0); // 'RIFF'
-    fView.setUint32(4, totalNewSize - 8, true);
-    finalBuffer.set([0x57, 0x45, 0x42, 0x50], 8); // 'WEBP'
-
-    let cur = 12;
-    finalBuffer.set(vp8xData, cur);
-    cur += vp8xChunkSize;
-
-    finalBuffer.set(imageBytes, cur);
-    cur += imageBytes.byteLength;
-
-    finalBuffer.set(exifChunkHeader, cur);
-    cur += 8;
-
-    finalBuffer.set(exifData, cur);
-
-    const injectedBlob = new Blob([finalBuffer], { type: "image/webp" });
-
-    // 🛡️ ロードテスト・セーフガード: ブラウザで正常に描画できるか検証
-    const testUrl = URL.createObjectURL(injectedBlob);
-    try {
-      await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(true);
-        img.onerror = () => reject(new Error("Decoded image broken"));
-        img.src = testUrl;
-      });
-      URL.revokeObjectURL(testUrl);
-      return injectedBlob; // 検証OK！
-    } catch (testErr) {
-      console.warn("Injected WebP verification failed, safely falling back to clean WebP:", testErr);
-      URL.revokeObjectURL(testUrl);
-      return originalBlob; // 壊れていた場合は元の正常なWebPを返す
-    }
-  } catch (err) {
-    console.warn("Failed to inject WebP metadata, fallback:", err);
-    return originalBlob;
-  }
-}
-
-// ==========================================
-// 🎬 MP4 FastStart 最適化エンジン (moov atom 先頭再配置)
-// ==========================================
-async function applyFastStartToMp4(mp4BlobOrBuffer) {
-  try {
-    const buffer = (mp4BlobOrBuffer instanceof ArrayBuffer) ? mp4BlobOrBuffer : await mp4BlobOrBuffer.arrayBuffer();
-    const view = new DataView(buffer);
-    const length = buffer.byteLength;
-
-    let offset = 0;
-    let ftypAtom = null;
-    let moovAtom = null;
-    let moovOffset = -1;
-    let mdatOffset = -1;
-
-    while (offset < length - 8) {
-      let atomSize = view.getUint32(offset);
-      const atomType = String.fromCharCode(
-        view.getUint8(offset + 4),
-        view.getUint8(offset + 5),
-        view.getUint8(offset + 6),
-        view.getUint8(offset + 7)
-      );
-
-      if (atomSize === 1) {
-        // 64-bit extended size
-        atomSize = Number(view.getBigUint64(offset + 8));
-      } else if (atomSize === 0) {
-        atomSize = length - offset;
-      }
-
-      if (atomSize <= 0 || offset + atomSize > length) break;
-
-      if (atomType === "ftyp" && !ftypAtom) {
-        ftypAtom = new Uint8Array(buffer, offset, atomSize);
-      } else if (atomType === "moov") {
-        moovAtom = new Uint8Array(buffer, offset, atomSize);
-        moovOffset = offset;
-      } else if (atomType === "mdat" && mdatOffset === -1) {
-        mdatOffset = offset;
-      }
-
-      offset += atomSize;
-    }
-
-    // moov が存在し、mdat より後ろにある場合のみ先頭（ftypの直後）へ引っ越しさせる
-    if (!moovAtom || mdatOffset === -1 || moovOffset < mdatOffset) {
-      return mp4BlobOrBuffer; // 既に先頭にあるか、未対応
-    }
-
-    const moovSize = moovAtom.byteLength;
-    // moov 内の stco (32-bit offset) と co64 (64-bit offset) を moovSize 分だけ前方シフト修正
-    const patchedMoov = new Uint8Array(moovAtom);
-    const moovView = new DataView(patchedMoov.buffer, patchedMoov.byteOffset, patchedMoov.byteLength);
-
-    for (let i = 0; i < patchedMoov.length - 8; i++) {
-      const tag = String.fromCharCode(
-        patchedMoov[i],
-        patchedMoov[i + 1],
-        patchedMoov[i + 2],
-        patchedMoov[i + 3]
-      );
-
-      if (tag === "stco") {
-        const count = moovView.getUint32(i + 8);
-        let entryOffset = i + 12;
-        for (let c = 0; c < count; c++) {
-          const curVal = moovView.getUint32(entryOffset);
-          moovView.setUint32(entryOffset, curVal + moovSize);
-          entryOffset += 4;
-        }
-      } else if (tag === "co64") {
-        const count = moovView.getUint32(i + 8);
-        let entryOffset = i + 12;
-        for (let c = 0; c < count; c++) {
-          const curVal = moovView.getBigUint64(entryOffset);
-          moovView.setBigUint64(entryOffset, curVal + BigInt(moovSize));
-          entryOffset += 8;
-        }
-      }
-    }
-
-    // 新しい MP4 の組み立て: [ftyp] + [patchedMoov] + [mdat以降のデータ(moov以外)]
-    const newLength = length;
-    const resultBuffer = new Uint8Array(newLength);
-    let writePos = 0;
-
-    if (ftypAtom) {
-      resultBuffer.set(ftypAtom, writePos);
-      writePos += ftypAtom.byteLength;
-    }
-
-    resultBuffer.set(patchedMoov, writePos);
-    writePos += patchedMoov.byteLength;
-
-    // ftyp 以降から moov 以外の部分をコピー
-    const startAfterFtyp = ftypAtom ? ftypAtom.byteLength : 0;
-    const beforeMoov = new Uint8Array(buffer, startAfterFtyp, moovOffset - startAfterFtyp);
-    resultBuffer.set(beforeMoov, writePos);
-    writePos += beforeMoov.byteLength;
-
-    const afterMoovOffset = moovOffset + moovSize;
-    if (afterMoovOffset < length) {
-      const afterMoov = new Uint8Array(buffer, afterMoovOffset, length - afterMoovOffset);
-      resultBuffer.set(afterMoov, writePos);
-    }
-
-    return new Blob([resultBuffer], { type: "video/mp4" });
-  } catch (err) {
-    console.warn("MP4 FastStart optimization skipped due to error:", err);
-    return mp4BlobOrBuffer;
-  }
-}
-
-// 🖼️ 動画の0秒目（先頭フレーム）を軽量WebPサムネイルとして高速抽出
-async function captureVideoFirstFrame(videoBlob) {
-  return new Promise((resolve) => {
-    try {
-      const video = document.createElement("video");
-      const url = URL.createObjectURL(videoBlob);
-      video.muted = true;
-      video.playsInline = true;
-      video.preload = "auto";
-      video.src = url;
-
-      let resolved = false;
-      const cleanup = () => {
-        if (!resolved) {
-          resolved = true;
-          URL.revokeObjectURL(url);
-          video.remove();
-        }
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        resolve(null);
-      }, 5000); // 最大5秒でタイムアウト
-
-      video.onloadeddata = () => {
-        try {
-          video.currentTime = 0;
-        } catch (e) {}
-      };
-
-      video.onseeked = async () => {
-        try {
-          const canvas = document.createElement("canvas");
-          const maxDim = 640;
-          let w = video.videoWidth || 640;
-          let h = video.videoHeight || 360;
-
-          if (w > maxDim || h > maxDim) {
-            if (w > h) {
-              h = Math.round((h * maxDim) / w);
-              w = maxDim;
-            } else {
-              w = Math.round((w * maxDim) / h);
-              h = maxDim;
-            }
-          }
-
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(video, 0, 0, w, h);
-
-          canvas.toBlob((blob) => {
-            clearTimeout(timer);
-            cleanup();
-            resolve(blob);
-          }, "image/webp", 0.82);
-        } catch (err) {
-          console.warn("Frame capture canvas error:", err);
-          clearTimeout(timer);
-          cleanup();
-          resolve(null);
-        }
-      };
-
-      video.onerror = () => {
-        clearTimeout(timer);
-        cleanup();
-        resolve(null);
-      };
-    } catch (e) {
-      console.warn("captureVideoFirstFrame error:", e);
-      resolve(null);
-    }
-  });
-}
-
-function queueVideoThumbnail(videoBlob, filename, objectId) {
-  if (!videoBlob || !objectId || !isVideoThumbnailParentKey(filename) || !hasAdminAccess()) return;
-  (async () => {
-    const thumbnail = await captureVideoFirstFrame(videoBlob);
-    if (!thumbnail) return; // Preview generation never gates the main video.
-    const endpoint = `${getCustomKvWorkerUrl().replace(/\/api\/cividge-kv\/?$/, "")}/api/thumbnail`;
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${getAdminApiToken()}`, "Content-Type": "image/webp", "X-Object-Id": objectId },
-      body: thumbnail,
-    });
-    if (!response.ok) throw new Error((await response.json()).error || `Thumbnail upload failed (${response.status})`);
-  })().catch(error => console.warn("Video preview is unavailable; main video remains published:", error));
-}
-
-async function detectComfyMetadata(file) {
-  if (!file) return { hasWorkflow: false, hasPrompt: false, hasA1111: false, type: "none" };
-
-  const fileName = (file.name || "").toLowerCase();
-  const isPng = fileName.endsWith(".png") || file.type === "image/png";
-  const isMp4 = fileName.endsWith(".mp4") || file.type === "video/mp4";
-  const isWebm = fileName.endsWith(".webm") || file.type === "video/webm";
-
-  let promptDetails = null;
-
-  try {
-    // 1. 先頭領域（10MB以下の動画クリップは全体、それ以外は先頭 5MB）
-    const isSmallVideo = (isMp4 || isWebm) && file.size <= 10 * 1024 * 1024;
-    const headSize = isSmallVideo ? file.size : Math.min(file.size, 5 * 1024 * 1024);
-    const headBuffer = await file.slice(0, headSize).arrayBuffer();
-
-    if (isPng) {
-      const view = new DataView(headBuffer);
-      if (view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a) {
-        let offset = 8;
-        const length = headBuffer.byteLength;
-        let hasWorkflow = false;
-        let hasPrompt = false;
-        let hasA1111 = false;
-        let nodeCount = 0;
-
-        while (offset < length - 8) {
-          const chunkLength = view.getUint32(offset);
-          offset += 4;
-          const chunkType = String.fromCharCode(
-            view.getUint8(offset),
-            view.getUint8(offset + 1),
-            view.getUint8(offset + 2),
-            view.getUint8(offset + 3)
-          );
-          offset += 4;
-
-          if (chunkType === "IEND") break;
-
-          if (chunkType === "tEXt" || chunkType === "iTXt") {
-            const chunkData = new Uint8Array(headBuffer, offset, chunkLength);
-            let nullIndex = -1;
-            for (let i = 0; i < chunkData.length; i++) {
-              if (chunkData[i] === 0) { nullIndex = i; break; }
-            }
-            if (nullIndex > 0) {
-              const keyword = new TextDecoder("utf-8").decode(chunkData.subarray(0, nullIndex));
-              if (keyword === "workflow") {
-                hasWorkflow = true;
-                try {
-                  const text = new TextDecoder("utf-8").decode(chunkData.subarray(nullIndex + 1));
-                  const wfJson = JSON.parse(text);
-                  if (Array.isArray(wfJson.nodes)) nodeCount = wfJson.nodes.length;
-                  if (!promptDetails) promptDetails = parseComfyPromptJson(wfJson);
-                } catch (e) {}
-              } else if (keyword === "prompt") {
-                hasPrompt = true;
-                try {
-                  const text = new TextDecoder("utf-8").decode(chunkData.subarray(nullIndex + 1));
-                  const parsed = parseComfyPromptJson(text);
-                  if (parsed && parsed.prompt) promptDetails = parsed;
-                } catch (e) {}
-              } else if (keyword === "parameters") {
-                hasA1111 = true;
-                try {
-                  const text = new TextDecoder("utf-8").decode(chunkData.subarray(nullIndex + 1));
-                  promptDetails = parseA1111Parameters(text);
-                } catch (e) {}
-              } else if (keyword === "Comment") {
-                try {
-                  const text = new TextDecoder("utf-8").decode(chunkData.subarray(nullIndex + 1));
-                  if (!promptDetails) promptDetails = parseNovelAiComment(text);
-                } catch (e) {}
-              }
-            }
-          }
-
-          offset += chunkLength + 4;
-        }
-
-        if (hasWorkflow) return { hasWorkflow: true, hasPrompt, hasA1111, nodeCount, type: "comfy_workflow", promptDetails };
-        if (hasPrompt) return { hasWorkflow: false, hasPrompt: true, hasA1111, type: "comfy_prompt", promptDetails };
-        if (hasA1111) return { hasWorkflow: false, hasPrompt: false, hasA1111: true, type: "a1111", promptDetails };
-      }
-    }
-
-    // 2. テキスト判定
-    let textSample = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(headBuffer));
-
-    // 3. 動画（MP4 / WebM）で 10MB 超の場合、末尾（moov atom）も読み込む
-    if ((isMp4 || isWebm) && file.size > headSize) {
-      const tailSize = Math.min(file.size, 5 * 1024 * 1024);
-      const tailBuffer = await file.slice(file.size - tailSize).arrayBuffer();
-      const tailText = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(tailBuffer));
-      textSample = textSample + "\n" + tailText;
-    }
-
-    // 判定ロジック（ComfyUI-VideoHelperSuite / VHS 形式対応 & 汎用プロンプト検出）
-    const hasWf = (textSample.includes('"nodes"') && textSample.includes('"links"')) ||
-                  (textSample.includes('"workflow"') && textSample.includes('"nodes"'));
-    let hasPrompt = (textSample.includes('"inputs"') && (textSample.includes('"class_type"') || textSample.includes('"text"'))) ||
-                    textSample.includes('"client_id"') || textSample.includes('"extra_pnginfo"');
-    const hasA1111 = textSample.includes("Negative prompt:") || textSample.includes("Steps: ");
-
-    if (!promptDetails) {
-      if (hasA1111) {
-        const m = textSample.match(/([\s\S]+?)(Negative prompt:[\s\S]+?)(Steps:\s*\d+[\s\S]*)/);
-        if (m) {
-          promptDetails = parseA1111Parameters(m[0]);
-        } else {
-          const negIdx = textSample.indexOf("Negative prompt:");
-          if (negIdx !== -1) {
-            const start = Math.max(0, negIdx - 800);
-            promptDetails = parseA1111Parameters(textSample.substring(start, negIdx + 800));
-          }
-        }
-      }
-
-      if (!promptDetails) {
-        promptDetails = extractPromptsFromRawText(textSample);
-      }
-    }
-
-    if (promptDetails && promptDetails.prompt) {
-      hasPrompt = true;
-    }
-
-    if (hasWf) return { hasWorkflow: true, hasPrompt: true, hasA1111: false, type: "comfy_workflow", promptDetails };
-    if (hasPrompt) return { hasWorkflow: false, hasPrompt: true, hasA1111: false, type: "comfy_prompt", promptDetails };
-    if (hasA1111) return { hasWorkflow: false, hasPrompt: false, hasA1111: true, type: "a1111", promptDetails };
-    if (promptDetails && promptDetails.prompt) return { hasWorkflow: false, hasPrompt: true, hasA1111: false, type: "ai_metadata", promptDetails };
-
-  } catch (err) {
-    console.warn("Metadata detection error:", err);
-  }
-
-  return { hasWorkflow: false, hasPrompt: Boolean(promptDetails?.prompt), hasA1111: false, type: promptDetails ? "comfy_prompt" : "none", promptDetails };
-}
 
 function createComfyBadgeHtml(file, result) {
   const meta = file.metaStatus;
@@ -5309,7 +3420,7 @@ function addFiles(files) {
     alert(`⚠️ ${dict.uploadLimitCount.replace("{count}", String(oversizedCount))}`);
   }
 
-  state.files.push(...allowed);
+  uploadState.addFiles(allowed);
   invalidateConversionCache();
   render();
 
@@ -5335,7 +3446,7 @@ function addFiles(files) {
 function setUiLock(locked) {
   const r2Ok = isR2Configured();
   const fbOk = isFilebaseConfigured();
-  const hasFiles = state.files.length > 0;
+  const hasFiles = uploadState.getFiles().length > 0;
   const isConvertOn = isConversionEnabled();
   const isRenameOn = isFilenameChanged();
   const isZipOn = enableZipCheck?.checked ?? false;
@@ -5358,7 +3469,7 @@ function updateRenamePreview() {
   const previewText = document.querySelector("#renamePreviewText");
   if (!previewText) return;
 
-  const firstFile = state.files[0];
+  const firstFile = uploadState.getFiles()[0];
   const firstExt = firstFile ? (firstFile.name.split('.').pop() || "") : "";
   const isFirstImage = firstFile
     ? (firstFile.type.startsWith("image/") || ["jpg", "jpeg", "png", "webp", "gif", "avif", "bmp"].includes(firstExt.toLowerCase()))
@@ -5381,7 +3492,7 @@ function updateRenamePreview() {
 
   const rawPattern = renamePattern?.value;
   const pattern = canonicalFilenamePolicy(rawPattern);
-  
+
   let previewName = pattern.replaceAll("{original}", dummyName);
 
   previewName = previewName.replace(/\{random(?::(\d+))?\}/g, (match, digits) => {
@@ -5402,8 +3513,8 @@ function updateRenamePreview() {
 function render() {
   const r2Ok = isR2Configured();
   const fbOk = isFilebaseConfigured();
-  const hasFiles = state.files.length > 0;
-  if (fileCount) fileCount.textContent = `${state.files.length}件`;
+  const hasFiles = uploadState.getFiles().length > 0;
+  if (fileCount) fileCount.textContent = `${uploadState.getFiles().length}件`;
 
   const isConvertOn = isConversionEnabled();
   const isRenameOn = isFilenameChanged();
@@ -5430,9 +3541,9 @@ function render() {
     const lang = getAppLanguage();
     const dict = i18nDict[lang] || i18nDict.ja;
 
-    state.files.forEach((file, index) => {
+    uploadState.getFiles().forEach((file, index) => {
       try {
-        const result = state.results[index];
+        const result = uploadState.getResults()[index];
         const item = document.createElement("article");
         item.className = "file-item unified-file-card";
         item.dataset.index = index;
@@ -5503,7 +3614,7 @@ function render() {
       }
     });
 
-    const totalPrompts = state.files.filter(f => f.metaStatus?.promptDetails?.prompt).length;
+    const totalPrompts = uploadState.getFiles().filter(f => f.metaStatus?.promptDetails?.prompt).length;
     if (copyAllPromptsBtn) {
       if (totalPrompts > 0) {
         copyAllPromptsBtn.style.display = "inline-flex";
@@ -5536,7 +3647,7 @@ function createCardActionHtml(file, result, index) {
     return `<span class="status-text saving" style="font-size: 11px;">${pName} UP中...</span>`;
   }
 
-  const currentProviderName = (activeStorageTab === "filebase" && fbOk) ? "Filebase (IPFS)" : (r2Ok ? "Cloudflare R2" : (fbOk ? "Filebase (IPFS)" : "ストレージ"));
+  const currentProviderName = (managedController.getActiveProvider() === "filebase" && fbOk) ? "Filebase (IPFS)" : (r2Ok ? "Cloudflare R2" : (fbOk ? "Filebase (IPFS)" : "ストレージ"));
   const upBtnTitle = upOk
     ? `このファイルだけ変換して${currentProviderName}へアップロード`
     : "ストレージ未設定のためアップロード不可";
@@ -5595,7 +3706,7 @@ function createCardActionHtml(file, result, index) {
 }
 
 copyAllPromptsBtn?.addEventListener("click", async () => {
-  const promptList = state.files
+  const promptList = uploadState.getFiles()
     .filter(f => f?.metaStatus?.promptDetails?.prompt)
     .map(f => {
       const p = f.metaStatus.promptDetails;
@@ -5622,7 +3733,7 @@ fileList?.addEventListener("click", async (event) => {
   const promptBtn = target.closest(".copy-prompt-btn");
   if (promptBtn) {
     const idx = Number(promptBtn.dataset.index ?? card.dataset.index);
-    const f = state.files[idx];
+    const f = uploadState.getFiles()[idx];
     const p = f?.metaStatus?.promptDetails;
     if (p && p.prompt) {
       let copyText = p.prompt;
@@ -5634,14 +3745,13 @@ fileList?.addEventListener("click", async (event) => {
 
   // 1. 削除ボタン
   if (target.classList.contains("delete-button")) {
-    if (!isNaN(index) && index >= 0 && index < state.files.length) {
-      const removedResult = state.results[index];
+    if (!isNaN(index) && index >= 0 && index < uploadState.getFiles().length) {
+      const removedResult = uploadState.getResults()[index];
       if (removedResult) {
         if (removedResult.url) URL.revokeObjectURL(removedResult.url);
         if (removedResult.previewUrl) URL.revokeObjectURL(removedResult.previewUrl);
       }
-      state.files.splice(index, 1);
-      state.results.splice(index, 1);
+      uploadState.removeAt(index);
       render();
     }
     return;
@@ -5649,9 +3759,9 @@ fileList?.addEventListener("click", async (event) => {
 
   // 2. 単体ダウンロード
   if (target.classList.contains("download-single-btn")) {
-    if (isNaN(index) || index < 0 || index >= state.files.length) return;
-    const file = state.files[index];
-    let result = state.results[index];
+    if (isNaN(index) || index < 0 || index >= uploadState.getFiles().length) return;
+    const file = uploadState.getFiles()[index];
+    let result = uploadState.getResults()[index];
 
     target.disabled = true;
     target.textContent = "...";
@@ -5660,7 +3770,7 @@ fileList?.addEventListener("click", async (event) => {
         if (result && result.url) URL.revokeObjectURL(result.url);
         if (result && result.previewUrl) URL.revokeObjectURL(result.previewUrl);
         result = await convertImage(file, index);
-        state.results[index] = result;
+        uploadState.setResult(index, result);
       }
       downloadUrl(result.url, result.name);
     } catch (e) {
@@ -5676,9 +3786,9 @@ fileList?.addEventListener("click", async (event) => {
 
   // 3. 単体アップロード (☁️ UP: BYOC準拠・選択中ストレージへ自動アップロード)
   if (target.classList.contains("upload-single-btn")) {
-    if (isNaN(index) || index < 0 || index >= state.files.length) return;
-    const file = state.files[index];
-    let result = state.results[index];
+    if (isNaN(index) || index < 0 || index >= uploadState.getFiles().length) return;
+    const file = uploadState.getFiles()[index];
+    let result = uploadState.getResults()[index];
 
     target.disabled = true;
     target.textContent = "UP中...";
@@ -5687,11 +3797,11 @@ fileList?.addEventListener("click", async (event) => {
         if (result && result.url) URL.revokeObjectURL(result.url);
         if (result && result.previewUrl) URL.revokeObjectURL(result.previewUrl);
         result = await convertImage(file, index);
-        state.results[index] = result;
+        uploadState.setResult(index, result);
       }
       const r2Ok = isR2Configured();
       const fbOk = isFilebaseConfigured();
-      const targetProvider = (activeStorageTab === "filebase" && fbOk) ? "filebase" : (r2Ok ? "r2" : (fbOk ? "filebase" : "r2"));
+      const targetProvider = (managedController.getActiveProvider() === "filebase" && fbOk) ? "filebase" : (r2Ok ? "r2" : (fbOk ? "filebase" : "r2"));
       const success = await uploadImage(result, targetProvider);
       if (success) {
         renderCurrentStoragePage();
@@ -5707,9 +3817,9 @@ fileList?.addEventListener("click", async (event) => {
 
   // 3.1 単体アップロード (⚡ R2)
   if (target.classList.contains("upload-r2-btn")) {
-    if (isNaN(index) || index < 0 || index >= state.files.length) return;
-    const file = state.files[index];
-    let result = state.results[index];
+    if (isNaN(index) || index < 0 || index >= uploadState.getFiles().length) return;
+    const file = uploadState.getFiles()[index];
+    let result = uploadState.getResults()[index];
 
     target.disabled = true;
     target.textContent = "UP中...";
@@ -5718,7 +3828,7 @@ fileList?.addEventListener("click", async (event) => {
         if (result && result.url) URL.revokeObjectURL(result.url);
         if (result && result.previewUrl) URL.revokeObjectURL(result.previewUrl);
         result = await convertImage(file, index);
-        state.results[index] = result;
+        uploadState.setResult(index, result);
       }
       const success = await uploadImage(result, "r2");
       if (success) {
@@ -5735,9 +3845,9 @@ fileList?.addEventListener("click", async (event) => {
 
   // 3.1 単体アップロード (🪐 Filebase)
   if (target.classList.contains("upload-filebase-btn")) {
-    if (isNaN(index) || index < 0 || index >= state.files.length) return;
-    const file = state.files[index];
-    let result = state.results[index];
+    if (isNaN(index) || index < 0 || index >= uploadState.getFiles().length) return;
+    const file = uploadState.getFiles()[index];
+    let result = uploadState.getResults()[index];
 
     target.disabled = true;
     target.textContent = "UP中...";
@@ -5746,7 +3856,7 @@ fileList?.addEventListener("click", async (event) => {
         if (result && result.url) URL.revokeObjectURL(result.url);
         if (result && result.previewUrl) URL.revokeObjectURL(result.previewUrl);
         result = await convertImage(file, index);
-        state.results[index] = result;
+        uploadState.setResult(index, result);
       }
       const success = await uploadImage(result, "filebase");
       if (success) {
@@ -5763,9 +3873,9 @@ fileList?.addEventListener("click", async (event) => {
 
   // 3.5 Civitai 転送
   if (target.classList.contains("civitai-post-btn")) {
-    if (isNaN(index) || index < 0 || index >= state.files.length) return;
-    const file = state.files[index];
-    let result = state.results[index];
+    if (isNaN(index) || index < 0 || index >= uploadState.getFiles().length) return;
+    const file = uploadState.getFiles()[index];
+    let result = uploadState.getResults()[index];
 
     // すでにアップロード済みの場合は直接開く
     if (result && result.isUploaded && result.proxyUrl) {
@@ -5801,7 +3911,7 @@ fileList?.addEventListener("click", async (event) => {
         if (result && result.url) URL.revokeObjectURL(result.url);
         if (result && result.previewUrl) URL.revokeObjectURL(result.previewUrl);
         result = await convertImage(file, index);
-        state.results[index] = result;
+        uploadState.setResult(index, result);
       }
       const targetProvider = isR2Configured() ? "r2" : "filebase";
       const success = await uploadImage(result, targetProvider, null, {
@@ -5829,7 +3939,7 @@ fileList?.addEventListener("click", async (event) => {
   const copyBtn = target.closest(".copy-button");
   if (copyBtn) {
     const inputEl = card.querySelector(".url-output");
-    const result = state.results[index];
+    const result = uploadState.getResults()[index];
     // 共有URLは常に選択中の配信ドメインとファイル名で構築する。CIDを含む
     // 内部リレーURLや、アップロード時に残った古いドメインはコピーしない。
     let urlToCopy = getSelectedDeliveryUrl(result) || inputEl?.value?.trim() || result?.proxyUrl || "";
@@ -5851,7 +3961,7 @@ fileList?.addEventListener("change", (e) => {
     const index = Number(card?.dataset?.index);
     const newDomain = e.target.value;
     const inputEl = card?.querySelector(".url-output");
-    const result = state.results[index];
+    const result = uploadState.getResults()[index];
 
     if (inputEl && newDomain) {
       const updatedUrl = switchUrlDomain(inputEl.value, newDomain);
@@ -5937,7 +4047,7 @@ r2FileList?.addEventListener("change", (e) => {
         { policyChange: true }
       ).then(() => {
         const provider = article?.dataset?.provider;
-        const current = storageCachedContents.find(item => item.storageProvider === provider && (item.rawKey || item.Key) === key);
+        const current = managedController.getContents().find(item => item.storageProvider === provider && (item.rawKey || item.Key) === key);
         if (current) {
           addOrUpdateLocalLedgerItem(provider, {
             ...current,
@@ -5964,7 +4074,7 @@ fileList?.addEventListener("change", (e) => {
     const card = e.target.closest(".unified-file-card");
     const index = Number(card?.dataset?.index);
     const ttlSeconds = Number(e.target.value || 0);
-    const result = state.results[index];
+    const result = uploadState.getResults()[index];
 
     if (result) {
       result.ttl = ttlSeconds;
@@ -5998,41 +4108,36 @@ fileList?.addEventListener("change", (e) => {
 
 // --- 設定シグネチャ & スマートバイパス ---
 
-let lastConvertedSignature = null;
-
 function getCurrentConfigSignature() {
   const format = getConversionMode();
   const quality = qualityRange ? qualityRange.value : "85";
   const pattern = canonicalFilenamePolicy(renamePattern?.value);
-  const fileSig = state.files.map(f => `${f.name}:${f.size}:${f.lastModified}`).join("|");
+  const fileSig = uploadState.getFiles().map(f => `${f.name}:${f.size}:${f.lastModified}`).join("|");
 
   return `${format}_${format === "passthrough" ? "" : quality}_${pattern}_${fileSig}`;
 }
 
 function isConversionCacheValid() {
-  if (!state.files.length) return false;
-  if (!state.results || state.results.length !== state.files.length) return false;
-  if (state.results.some(r => !r || !r.blob)) return false;
-  return lastConvertedSignature === getCurrentConfigSignature();
+  return uploadState.isConversionCacheValid(getCurrentConfigSignature());
 }
 
 function invalidateConversionCache(clearResults = true) {
-  lastConvertedSignature = null;
-  if (clearResults && state.results.length > 0) {
-    state.results.forEach(result => {
+  uploadState.invalidateConversion();
+  if (clearResults && uploadState.getResults().length > 0) {
+    uploadState.getResults().forEach(result => {
       if (result) {
         if (result.url) URL.revokeObjectURL(result.url);
         if (result.previewUrl) URL.revokeObjectURL(result.previewUrl);
       }
     });
-    state.results = [];
+    uploadState.clearResults();
     render();
   }
 }
 
 // --- 画像変換処理 ---
 async function runConversion(force = false) {
-  if (!state.files.length) return false;
+  if (!uploadState.getFiles().length) return false;
 
   // 設定が変わっておらず、すでに変換済みBlobが揃っている場合は完全バイパス！
   if (!force && isConversionCacheValid()) {
@@ -6045,29 +4150,29 @@ async function runConversion(force = false) {
     statusText.className = "status-text saving";
   }
 
-  state.results.forEach((result) => {
+  uploadState.getResults().forEach((result) => {
     if (result) {
       if (result.url) URL.revokeObjectURL(result.url);
       if (result.previewUrl) URL.revokeObjectURL(result.previewUrl);
     }
   });
-  state.results = [];
+  uploadState.clearResults();
   render();
   setUiLock(true);
 
   try {
-    state.results = new Array(state.files.length).fill(null);
+    uploadState.beginConversion();
 
-    const conversionPromises = state.files.map((file, index) =>
+    const conversionPromises = uploadState.getFiles().map((file, index) =>
       convertImage(file, index).then(result => {
-        state.results[index] = result;
-        const finishedCount = state.results.filter(r => r !== null).length;
-        if (progressBar) progressBar.value = Math.round((finishedCount / state.files.length) * 100);
+        uploadState.setResult(index, result);
+        const finishedCount = uploadState.getResults().filter(r => r !== null).length;
+        if (progressBar) progressBar.value = Math.round((finishedCount / uploadState.getFiles().length) * 100);
         render();
       })
     );
     await Promise.all(conversionPromises);
-    lastConvertedSignature = getCurrentConfigSignature();
+    uploadState.completeConversion(getCurrentConfigSignature());
     if (statusText) {
       statusText.textContent = "変換完了";
       statusText.className = "status-text";
@@ -6075,7 +4180,7 @@ async function runConversion(force = false) {
     return true;
   } catch (error) {
     console.error("Conversion error:", error);
-    lastConvertedSignature = null;
+    uploadState.invalidateConversion();
     if (statusText) {
       statusText.textContent = "変換失敗";
       statusText.className = "status-text error";
@@ -6087,992 +4192,62 @@ async function runConversion(force = false) {
   }
 }
 
-async function convertImage(file, index = 0) {
-  const dotIndex = file.name.lastIndexOf(".");
-  const fileExt = dotIndex > 0 ? file.name.slice(dotIndex + 1).toLowerCase() : "";
-  const isImageMime = file.type && file.type.startsWith("image/");
-  const isImageExt = ["jpg", "jpeg", "png", "webp", "gif", "avif", "bmp", "jxl"].includes(fileExt);
-  const isImage = isImageMime || isImageExt;
-
-  const isConvertOn = isConversionEnabled();
-
-  if (!isImage || !isConvertOn) {
-    const url = URL.createObjectURL(file);
-    const outputName = createOutputName(file.name, null, index);
-    return {
-      id: crypto.randomUUID(),
-      name: outputName,
-      relativePath: file.relativePath || file.name,
-      url,
-      previewUrl: isImage ? url : "",
-      blob: file,
-      size: file.size,
-      originalSize: file.size,
-      isNonImage: !isImage,
-    };
-  }
-
-  const options = {
-    mimeType: conversionModeToMime(getConversionMode()),
-    quality: qualityRange ? Number(qualityRange.value) / 100 : 0.85,
-    name: createOutputName(file.name, conversionModeToMime(getConversionMode()), index),
-  };
-
-  let finalBlob = null;
-  let previewSrc = "";
-
-  try {
-    const image = await loadImage(file);
-    const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
-
-    const context = canvas.getContext("2d", { alpha: true });
-    context.drawImage(image, 0, 0);
-
-    if (options.mimeType === "image/jxl") {
-      await ensureJxl();
-      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-      const qualityVal = qualityRange ? Number(qualityRange.value) : 85;
-      const jxlBuffer = await encodeJxl(imageData, { quality: qualityVal });
-      finalBlob = new Blob([jxlBuffer], { type: "image/jxl" });
-      try {
-        previewSrc = canvas.toDataURL("image/webp", 0.7);
-      } catch (e) {}
-    } else {
-      // Canvas変換（生写真のGPS位置情報・Exifは自動更地化）
-      finalBlob = await canvasToBlob(canvas, options.mimeType, options.quality);
-    }
-    requireConvertedBlob(finalBlob, options.mimeType);
-  } catch (err) {
-    console.error("Image conversion error:", err);
-    throw new Error(`画像変換エラー (${options.name}): ${err.message}`, { cause: err });
-  }
-
-  const finalUrl = URL.createObjectURL(finalBlob);
-
-  return {
-    id: crypto.randomUUID(),
-    name: options.name,
-    relativePath: file.relativePath || file.name,
-    url: finalUrl,
-    previewUrl: previewSrc || finalUrl,
-    blob: finalBlob,
-    size: finalBlob.size,
-    originalSize: file.size,
-    isNonImage: false,
-    hasRescuedWf: Boolean(file.metaStatus?.hasWorkflow || file.metaStatus?.hasPrompt),
-  };
-}
-
-// 🪐 Filebase FIFO（先入れ先出し）自動容量解放
-async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) {
-  const isAutoFifo = localStorage.getItem("autoFifo") !== "false";
-  if (!isAutoFifo || !s3 || !bucketName) return;
-
-  // 上限サイズ (MB単位、Filebase上限は専用のfilebaseStorageLimitを参照、デフォルト 5000MB = 5GB)
-  const limitMb = Number(localStorage.getItem("filebaseStorageLimit") || "5000");
-  const limitBytes = limitMb * 1024 * 1024;
-
-  try {
-    const contents = [];
-    let continuationToken;
-    do {
-      const response = await s3.send(new ListObjectsV2Command({
-        Bucket: bucketName,
-        MaxKeys: 1000,
-        ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
-      }));
-      contents.push(...(response.Contents || []));
-      if (response.IsTruncated && !response.NextContinuationToken) {
-        throw new Error("Filebase一覧の続きが取得できません");
-      }
-      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-    } while (continuationToken);
-    if (contents.length === 0) return;
-
-    let currentTotalBytes = contents.reduce((acc, cur) => acc + (cur.Size || 0), 0);
-
-    // 🛡️ バッファ安全設計: 新規ファイルを足しても上限の 85% 未満なら解放不要（750MB以上のバッファを常時担保）
-    // （※ 容量に余裕がある平常時は Kubo 疎通チェックを行わず即座に完了する）
-    if (currentTotalBytes + requiredBytes <= limitBytes * 0.85) {
-      return;
-    }
-
-    // 🏠 Kubo 自動ピン留め設定の確認（外出先・Kuboオフライン時はファイル消失防止のため安全に中断）
-    const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
-    const isKuboPrioritizePinned = localStorage.getItem("kuboPrioritizePinned") !== "false";
-    let isKuboAvailable = false;
-    let kuboPinnedSet = null;
-
-    if (isKuboAutoPin) {
-      const kuboCheck = await checkKuboOnline(1500);
-      isKuboAvailable = kuboCheck.online;
-      if (!isKuboAvailable) {
-        console.warn("⚠️ 自宅 Kubo がオフラインのため、Filebase FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
-        if (requiredBytes > 0) {
-          const isEn = getAppLanguage() === "en";
-          const errMsg = isEn
-            ? "Filebase storage limit (85%) reached. Upload paused because local Kubo node is unreachable (prevents existing file loss). Please connect to Tailscale or start Kubo."
-            : "Filebaseの容量上限（85%）に達しています。自宅Kuboノードへの接続が確認できないため、過去ファイルの消失を防ぐためにアップロードを中断しました。Tailscale接続またはKubo起動をご確認ください。";
-          throw new Error(errMsg);
-        }
-        return;
-      }
-      console.log("🏠 自宅 Kubo ノード検出: アンピン対象ファイルをローカルKuboへ救出Pin開始");
-      if (isKuboPrioritizePinned) {
-        try {
-          kuboPinnedSet = await getKuboPinnedCids(1500);
-          if (kuboPinnedSet && kuboPinnedSet.size > 0) {
-            console.log(`🏠 Kubo 保管済みCIDリスト取得成功 (${kuboPinnedSet.size} 件)。保管済みファイルを優先してFilebase容量解放します。`);
-          }
-        } catch (e) {
-          console.warn("Kubo Pin済みリスト取得失敗（通常ソートにフォールバック）:", e);
-        }
-      }
-    }
-
-    console.log(`🪐 Filebase FIFO 発動: 現在容量 ${formatBytes(currentTotalBytes)} + 新規 ${formatBytes(requiredBytes)} > 上限 ${formatBytes(limitBytes)} (85%)`);
-
-    // 保護対象（pinned_ で始まるもの）を除外し、ソート
-    // isKuboPrioritizePinned が有効かつ kuboPinnedSet がある場合は、Kubo保管済みを最優先にし、それぞれ古い順（LastModified 昇順）にする
-    const eligibleFiles = contents.filter(item => {
-      if (item.Key?.startsWith("pinned_")) return false; // 📌永続化は保護
-      return true;
-    }).sort((a, b) => {
-      if (isKuboPrioritizePinned && kuboPinnedSet) {
-        const cidA = getStoredIpfsCid(a.Key);
-        const cidB = getStoredIpfsCid(b.Key);
-        const isPinnedA = cidA ? (kuboPinnedSet.has(cidA) ? 1 : 0) : 0;
-        const isPinnedB = cidB ? (kuboPinnedSet.has(cidB) ? 1 : 0) : 0;
-        if (isPinnedA !== isPinnedB) {
-          return isPinnedB - isPinnedA; // Kubo保管済み(1)を先頭にする
-        }
-      }
-      return new Date(a.LastModified || 0) - new Date(b.LastModified || 0);
-    });
-
-    const candidates = [];
-    let freedBytes = 0;
-    let simulatedTotal = currentTotalBytes;
-
-    for (const file of eligibleFiles) {
-      candidates.push(file.Key);
-      freedBytes += (file.Size || 0);
-      simulatedTotal -= (file.Size || 0);
-
-
-      // 十分な空き容量（上限の70%以下までゆったり解放し、次回の連続アップロード用バッファを確保）
-      if (simulatedTotal + requiredBytes <= limitBytes * 0.70) {
-        break;
-      }
-    }
-
-    if (candidates.length === 0) return;
-
-    // 🛡️ 安全実行順序:
-    // 1. Kubo自動Pin有効時: Filebaseから削除する「前」に、まずKuboへPin留めを成功させる！
-    // 2. Pin成功確認後（またはKubo無効時、すでにKubo保管済み時）にのみ、Filebase S3 DeleteObject を実行する！
-    const filesToUnpin = [];
-    const kvUpdates = [];
-
-    for (const targetKey of candidates) {
-      let cid = null;
-      let meta = {};
-      let kuboStatus = "not_pinned";
-
-      // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（ループ内 fetchKvRecord 通信連打を完全排除）
-      const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === targetKey);
-      if (cachedItem) {
-        cid = cachedItem.cid || cachedItem.contentCid || cachedItem.metadata?.cid || null;
-        meta = cachedItem.metadata || cachedItem || {};
-        kuboStatus = meta.kuboStatus || cachedItem.kuboStatus || "not_pinned";
-      }
-
-      if (!cid) {
-        cid = getStoredIpfsCid(targetKey);
-      }
-
-      const isAlreadyKuboPinned = cid && kuboPinnedSet && kuboPinnedSet.has(cid);
-      const objectRef = cid ? await getObjectRefForUi("filebase", meta?.s3Key || targetKey, cid) : "";
-
-      // Kuboへ事前にPin留め
-      if (isKuboAvailable && isKuboAutoPin && cid && kuboStatus !== "pinned" && !isAlreadyKuboPinned) {
-        activeKuboPins.add(cid);
-        try {
-          await ensureAuthoritativeKuboPin(objectRef, cid);
-          kuboStatus = "pinned";
-          console.log(`🏠 Kubo 事前救出Pin成功: ${targetKey} (${cid})`);
-        } catch (pErr) {
-          console.warn(`🏠 Kubo Pin通信エラー:`, pErr);
-          if (requiredBytes > 0) {
-            throw new Error(`自宅KuboへのPin通信エラーのためアンピンを中断しました: ${targetKey} (${pErr.message})`);
-          }
-          continue;
-        } finally {
-          activeKuboPins.delete(cid);
-        }
-      } else if (isAlreadyKuboPinned) {
-        try {
-          await ensureAuthoritativeKuboPin(objectRef, cid, { requestPin: false });
-          kuboStatus = "pinned";
-          console.log(`🏠 Kubo 保管済み確認（Pinスキップ）: ${targetKey} (${cid})`);
-        } catch (error) {
-          console.warn(`Kubo authority confirmation failed for ${targetKey}:`, error);
-          continue;
-        }
-      }
-
-      filesToUnpin.push(targetKey);
-      if (cid) {
-        kvUpdates.push({ key: targetKey, cid, meta, kuboStatus });
-      }
-    }
-
-    if (filesToUnpin.length > 0) {
-      console.log(`🪐 Filebase FIFO 自動アンピン実行: ${filesToUnpin.join(", ")} (${formatBytes(freedBytes)} 解放)`);
-      for (const update of kvUpdates) {
-        try {
-          const objectRef = await getObjectRefForUi("filebase", update.meta?.s3Key || update.key, update.cid);
-          await requestAuthorizedRelease(objectRef, "fifo", "filebase");
-        } catch (kvErr) {
-          console.warn(`Failed to update unpinned status in KV for ${update.key}:`, kvErr);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("Filebase FIFO ensureStorageCapacity error:", err);
-    if (requiredBytes > 0) {
-      throw err;
-    }
-  }
-}
-
-// ⚡ R2 FIFO: R2 側の上限到達時に古い実体を自動回収。
-// 自宅 Kubo への自動 Pin（kuboAutoPinR2）が有効な場合、消去前に Kubo へ実体を保存し、
-// 公開 URL を IPFS / 自宅 Kubo 経由で維持したまま R2 バケット容量を安全に解放する。
-async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
-  if (localStorage.getItem("r2AutoFifo") === "false" || !s3 || !bucketName) return;
-
-  const limitMb = Number(localStorage.getItem("r2StorageLimit") || localStorage.getItem("storageLimit") || "5000");
-  const limitBytes = limitMb * 1024 * 1024;
-  try {
-    const contents = [];
-    let continuationToken;
-    do {
-      const page = await s3.send(new ListObjectsV2Command({
-        Bucket: bucketName,
-        MaxKeys: 1000,
-        ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
-      }));
-      contents.push(...(page.Contents || []));
-      continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
-    } while (continuationToken);
-
-    let totalBytes = contents.reduce((sum, item) => sum + (item.Size || 0), 0);
-    if (totalBytes + requiredBytes <= limitBytes * 0.85) return;
-
-    // 🏠 Kubo 自動 Pin が有効な場合の接続確認＆フェイルセーフ
-    const isKuboAutoPinR2 = localStorage.getItem("kuboAutoPinR2") !== "false";
-    if (isKuboAutoPinR2) {
-      const kuboStatus = await checkKuboOnline(1500);
-      if (!kuboStatus.online) {
-        console.warn("⚠️ 自宅 Kubo がオフラインのため、R2 FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
-        return;
-      }
-    }
-
-    const candidates = contents
-      .filter(item => !item.Key?.startsWith("pinned_") && !isWorkerDerivedR2Key(item.Key))
-      .sort((a, b) => new Date(a.LastModified || 0) - new Date(b.LastModified || 0));
-    const itemsToDelete = [];
-    for (const item of candidates) {
-      itemsToDelete.push(item);
-      totalBytes -= item.Size || 0;
-      if (totalBytes + requiredBytes <= limitBytes * 0.70) break;
-    }
-    if (itemsToDelete.length === 0) return;
-
-    // 🚀 [INV-CORE-005] 手元台帳キャッシュから参照（kv.list 全件走査ゼロ化）
-    const kvFiles = (storageCachedContents && storageCachedContents.length > 0)
-      ? storageCachedContents
-      : (loadLedgerFromLocalStorage("r2") || []);
-    const preservedInKuboKeys = new Set();
-
-    // 🏠 Kubo への自動実体保存（Pin留め）
-    if (isKuboAutoPinR2) {
-      for (const item of itemsToDelete) {
-        try {
-          const res = await s3.send(new GetObjectCommand({ Bucket: bucketName, Key: item.Key }));
-          const bytes = await res.Body.transformToByteArray();
-          const blob = new Blob([bytes]);
-          const expectedCid = await calculateFilebaseCid(bytes);
-          const objectRef = await getObjectRefForUi("r2", item.Key, expectedCid);
-          await kuboPlacementApplication.acquire({
-            objectRef,
-            cid: expectedCid,
-            performAcquire: () => addFileToKubo(blob, item.Key),
-          });
-          storeIpfsCid(item.Key, expectedCid);
-          storeR2Hash(item.Key, expectedCid);
-          preservedInKuboKeys.add(item.Key);
-        } catch (pinErr) {
-          console.warn(`Kubo auto-pin for R2 FIFO failed on ${item.Key}:`, pinErr);
-        }
-      }
-    }
-
-    let releasedCount = 0;
-    for (const item of itemsToDelete) {
-      if (!preservedInKuboKeys.has(item.Key)) continue;
-      const linkedKv = kvFiles.find(kv => (kv.metadata?.s3Key || kv.metadata?.k_s3 || kv.s3Key || kv.Key) === item.Key);
-      if (!linkedKv) continue;
-      await requestAuthorizedRelease(await getObjectRefForUi("r2", item.Key, null), "fifo", "r2");
-      deleteR2Hash(item.Key);
-      releasedCount += 1;
-    }
-    console.log(`⚡ R2 FIFO authority release: ${releasedCount}件 (Kubo保全確認: ${preservedInKuboKeys.size}件)`);
-  } catch (err) {
-    console.warn("R2 FIFO ensureStorageCapacity error:", err);
-  }
-}
-
-async function inspectManagedPlacement(objectRef, kind) {
-  const response = await lifecycleRequest({ action: "inspect", objectRef });
-  return response?.lifecycle?.placements?.[kind] || null;
-}
-
-async function headManagedStorageObject(s3, bucket, key) {
-  try {
-    return await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
-  } catch (error) {
-    if (error?.$metadata?.httpStatusCode === 404 || ["NotFound", "NoSuchKey"].includes(error?.name)) return null;
-    throw error;
-  }
-}
-
-// Link-key reservation is authoritative. A pending attempt records the exact
-// physical locator before PUT, so a later authorized browser can inspect and
-// adopt an interrupted upload instead of guessing from localStorage.
-async function prepareManagedUpload(result, provider, s3, bucket, contentCid, objectId) {
-  if (!contentCid || !/^sha256:[0-9a-f]{64}$/.test(objectId || "")) throw new Error("最終バイト列のidentityを計算できませんでした");
-  const kind = provider === "filebase" ? "filebase" : "r2";
-  const canonicalStorageKey = `objects/${contentCid}`;
-  const objectRef = objectId;
-  // An ObjectId may already own a different physical locator. Its
-  // durable Placement, not the new upload's filename, selects the key to
-  // inspect/reacquire. Never PUT to another key for the same ObjectRef.
-  const ownedPlacement = await inspectManagedPlacement(objectRef, kind);
-  if (ownedPlacement && ownedPlacement.locator?.bucket !== bucket)
-    throw new Error("既存Placementのbucketが現在の設定と一致しません");
-  const ownedKey = ownedPlacement?.locator?.key;
-  if (kind === "filebase" && ownedPlacement?.locator?.cid !== undefined &&
-      ownedPlacement.locator.cid !== contentCid) throw new Error("Filebase Placement CIDが現在の最終bytesと一致しません");
-  const storageKey = typeof ownedKey === "string" && ownedKey ? ownedKey : canonicalStorageKey;
-  const baseDomain = (getSelectedR2Domain(provider) || window.location.origin).replace(/\/$/, "");
-  const linkKey = buildKvKey(baseDomain, result.name);
-  const placement = {
-    kind, executor: kind === "r2" ? "worker" : "browser",
-    locator: ownedPlacement?.locator || { bucket, key: storageKey, ...(kind === "filebase" ? { cid: contentCid } : {}) },
-  };
-  let attemptId = crypto.randomUUID();
-  let physicalAlreadyPresent = false;
-  let reservation;
-  try {
-    reservation = await linkBindingRequest({ action: "reserve", linkKey, objectRef, attemptId, placement });
-  } catch (error) {
-    if (error.code !== "RESERVATION_CONFLICT" ||
-        error.attempt?.placement?.locator?.key !== storageKey ||
-        error.attempt?.placement?.locator?.bucket !== bucket) throw error;
-    if (Date.now() < Number(error.attempt.expiresAt || 0)) {
-      throw new Error("このLinkのuploadはまだ進行中です。中断した場合は数分後に同じファイルを再試行してください。");
-    }
-    // A previous browser may have disappeared after PUT. Only adopt an exact
-    // content-addressed key with matching provider metadata; never adopt an
-    // arbitrary physical file based on filename alone.
-    const pending = error.attempt;
-    reservation = await linkBindingRequest({ action: "takeover", linkKey, objectRef,
-      previousAttemptId: pending.id, attemptId });
-    const head = await headManagedStorageObject(s3, bucket, storageKey);
-    if (head) {
-      const observedCid = getIpfsCidFromS3Response(head);
-      const observedHash = head.Metadata?.hash || head.Metadata?.cid;
-      if ((kind === "filebase" ? observedCid !== contentCid : observedHash !== contentCid) ||
-          head.Metadata?.["object-id"] !== objectId) {
-        throw new Error("未完了uploadの物理内容を確認できません。対象Linkの保留状態を確認してください。");
-      }
-      physicalAlreadyPresent = true;
-    }
-  }
-
-  let current = await inspectManagedPlacement(objectRef, kind);
-  const linkAlreadyBound = reservation.result === "bound";
-  if (current && ["RELEASE_PENDING", "RETRYABLE", "RELEASED"].includes(current.state)) {
-    // An explicit retry may settle an uncertain release only after inspecting
-    // the exact durable Placement locator. No PUT happens before this check.
-    let observation;
-    let observedCid;
-    if (kind === "filebase") {
-      const head = await headManagedStorageObject(s3, bucket, storageKey);
-      observedCid = head ? getIpfsCidFromS3Response(head) : null;
-      if (head && (observedCid !== contentCid || head.Metadata?.["object-id"] !== objectId))
-        throw new Error("既存Filebase Objectのidentityを確認できません");
-      observation = head ? "present" : "absent";
-    }
-    await lifecycleRequest({ action: "reconcilePlacementForAcquire", objectRef, placement,
-      ...(kind === "filebase" ? { observation, ...(observedCid ? { observedCid } : {}) } : {}) });
-    current = await inspectManagedPlacement(objectRef, kind);
-  }
-  if (current?.state === "PRESENT") {
-    return { linkKey, baseDomain, objectRef, storageKey: current.locator.key, contentCid,
-      attemptId, attemptGeneration: reservation.binding.attempt?.generation,
-      noPut: true, noOp: linkAlreadyBound, linkAlreadyBound, placement: current };
-  }
-  if (reservation.result === "bound") {
-    reservation = await linkBindingRequest({ action: "reserve", linkKey, objectRef, attemptId, placement, acquirePlacement: true });
-  }
-  await lifecycleRequest({ action: "requestPlacementAcquire", objectRef, placement });
-  current = await inspectManagedPlacement(objectRef, kind);
-  if (current?.state === "PRESENT") {
-    return { linkKey, baseDomain, objectRef, storageKey: current.locator.key, contentCid,
-      attemptId, attemptGeneration: reservation.binding.attempt?.generation,
-      noPut: true, noOp: false, linkAlreadyBound, placement: current };
-  }
-  const claimed = await lifecycleRequest({ action: "claimPlacement", objectRef, placement: kind, operation: "acquire" });
-  return { linkKey, baseDomain, objectRef, storageKey, contentCid, attemptId,
-    attemptGeneration: reservation.binding.attempt?.generation,
-    noPut: physicalAlreadyPresent, noOp: false, adopted: physicalAlreadyPresent,
-    claim: claimed.claim, placement, linkAlreadyBound };
-}
-
-// --- S3 アップロード処理 (R2 / Filebase 独立対応) ---
-async function uploadImage(result, targetProvider = "r2", customPassword = null, uploadOptions = {}) {
-  if (!result || !result.blob) return false;
-
-  const isFilebase = targetProvider === "filebase";
-  const s3 = getS3Client(targetProvider);
-  const bucketName = getBucketName(targetProvider);
-
-  if (!s3 || !bucketName) {
-    alert(`⚠️ ${isFilebase ? "Filebase" : "R2"} 接続設定を完了してください`);
-    return false;
-  }
-
-  result.isUploading = true;
-  result.uploadingProvider = targetProvider;
-  render();
-
-  let managedPlan = null;
-
-  try {
-    const pwdInput = document.querySelector("#tempPasswordInput");
-    const password = (typeof customPassword !== "undefined" && customPassword !== null)
-      ? customPassword
-      : (pwdInput ? pwdInput.value.trim() : "");
-
-    const ttlSelect = document.querySelector("#tempTtlSelect");
-    const requestedTtl = ttlSelect ? Number(ttlSelect.value || 0) : 0;
-    const ttlSeconds = Number.isFinite(Number(uploadOptions.ttlSeconds))
-      ? Math.max(0, Number(uploadOptions.ttlSeconds))
-      : requestedTtl;
-    const expiresAt = ttlSeconds > 0 ? (Date.now() + ttlSeconds * 1000) : null;
-    const civitaiTemporary = Boolean(uploadOptions.civitaiTemporary);
-    const cachePolicy = document.querySelector("#uploadCachePolicySelect")?.value === "PUBLISHED"
-      ? "PUBLISHED" : "BOARD";
-
-    const arrayBuffer = await result.blob.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-
-    // Source and final bytes use the same global decimal 80 MB limit.
-    // See: [INV-FRONT-003].
-    if (exceedsUploadLimit(bytes.length)) {
-      const sizeMb = (bytes.length / 1_000_000).toFixed(1);
-      const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
-      await showCustomAlert(
-        dict.uploadLimitError.replace("{size}", sizeMb),
-        "⚠️ 容量オーバー"
-      );
-      result.isUploading = false;
-      result.uploadingProvider = null;
-      render();
-      return false;
-    }
-
-    let uploadBlob = result.blob;
-    let uploadBytes = bytes;
-
-    const ext = result.name ? result.name.split('.').pop().toLowerCase() : "";
-
-    // 🎬 MP4 FastStart 最適化:
-    // moov atom を先頭に引っ越しさせ、リンクを開いた瞬間の即座シーク再生を可能にする
-    if (ext === "mp4" || (result.blob.type && result.blob.type === "video/mp4")) {
-      try {
-        const optimizedBlob = await applyFastStartToMp4(uploadBlob);
-        if (optimizedBlob && optimizedBlob !== uploadBlob) {
-          uploadBlob = optimizedBlob;
-          uploadBytes = new Uint8Array(await uploadBlob.arrayBuffer());
-        }
-      } catch (fastStartErr) {
-        console.warn("FastStart optimization error:", fastStartErr);
-      }
-    }
-
-    if (exceedsUploadLimit(uploadBytes.byteLength)) {
-      const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
-      throw new Error(dict.uploadLimitError.replace("{size}", (uploadBytes.byteLength / 1_000_000).toFixed(1)));
-    }
-
-    let contentType = uploadBlob.type || "";
-    if (!contentType || contentType === "application/octet-stream") {
-      contentType = getContentTypeFromFilename(result.name);
-    }
-    const imageDimensions = await getImageDimensions(uploadBlob, contentType);
-    const isAttachment = ["zip", "7z", "rar", "tar", "gz"].includes(ext);
-    const contentDisposition = isAttachment
-      ? `attachment; filename="${encodeURIComponent(result.name)}"`
-      : "inline";
-
-    // 🧬 Filebase / R2 重複検査: 変換後のバイト列からCID/ハッシュを算出し、同じ中身の
-    // 既存実体があればPutObjectを実行しない。新しい公開名だけをKV台帳に追加する（スマートエイリアス）。
-    let calculatedCid = null;
-    let calculatedHash = null;
-    const objectId = await objectIdFromFinalBytes(uploadBytes);
-    result.objectId = objectId;
-
-    if (hasAdminAccess()) {
-      calculatedCid = await calculateFilebaseCid(uploadBytes);
-      managedPlan = await prepareManagedUpload(result, targetProvider, s3, bucketName, calculatedCid, objectId);
-      if (managedPlan.noPut) {
-        if (managedPlan.claim) {
-          await linkBindingRequest({ action: "markPhysical", linkKey: managedPlan.linkKey, attemptId: managedPlan.attemptId,
-            generation: managedPlan.attemptGeneration, cid: calculatedCid });
-          await lifecycleRequest({ action: "reportPlacement", objectRef: managedPlan.objectRef,
-            placement: targetProvider, claimId: managedPlan.claim.claimId,
-            generation: managedPlan.claim.generation, operation: "acquire", outcome: "present" });
-        }
-        if (!managedPlan.noOp) {
-          await registerKvCid(managedPlan.linkKey, calculatedCid, uploadBytes.length,
-            contentType, managedPlan.storageKey, password, null, ttlSeconds, expiresAt, false, null,
-            managedPlan.baseDomain, true, imageDimensions?.width, imageDimensions?.height,
-            civitaiTemporary, isFilebase ? null : calculatedCid, targetProvider,
-            { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy, objectId, bucket: bucketName });
-        }
-        result.isUploaded = true;
-        result.uploadedProvider = targetProvider;
-        result.storageKey = managedPlan.storageKey;
-        result.ipfsCid = calculatedCid;
-        result.mime = contentType;
-        result.kvKey = managedPlan.linkKey;
-        result.proxyUrl = `${managedPlan.baseDomain}/${encodeURIComponent(result.name)}`;
-        setFileStoredDomain(managedPlan.linkKey, managedPlan.baseDomain);
-        if (!managedPlan.linkAlreadyBound) addOrUpdateLocalLedgerItem(targetProvider, {
-          storageProvider: targetProvider, entryKind: "link", Key: result.name, name: result.name,
-          rawKey: managedPlan.linkKey, s3Key: managedPlan.storageKey, Size: uploadBytes.length,
-          LastModified: new Date().toISOString(), isFromS3: true, cid: calculatedCid,
-           contentCid: calculatedCid, objectId, metadata: { backend: targetProvider, bucket: bucketName, s3Key: managedPlan.storageKey, cid: calculatedCid, objectId },
-        });
-        paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
-        renderUrlPalette();
-        queueVideoThumbnail(uploadBlob, result.name, objectId);
-        return true;
-      }
-    }
-
-    if (!managedPlan && isFilebase) {
-      calculatedCid = await calculateFilebaseCid(uploadBytes);
-      if (calculatedCid) {
-        const duplicate = await findFilebaseObjectByCid(s3, bucketName, calculatedCid);
-        if (duplicate) {
-          if (!hasAdminAccess()) {
-            throw new Error("同一CIDのファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
-          }
-
-          const baseDomain = (getSelectedR2Domain("filebase") || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
-          result.isUploaded = true;
-          result.uploadedProvider = "filebase";
-          result.storageKey = duplicate.key;
-          result.duplicateOf = duplicate.key;
-          result.ipfsCid = duplicate.cid;
-          result.mime = contentType;
-          result.password = password;
-          result.hasPassword = Boolean(password);
-          result.ttl = ttlSeconds;
-          result.expiresAt = expiresAt;
-          result.civitaiTemporary = civitaiTemporary;
-
-          // [INV-CORE-006] 新名 -> 既存のS3実体キー、という別名マッピングを作る。旧URLは維持される。
-          const kvKey = buildKvKey(baseDomain, result.name);
-          await registerKvCid(
-            kvKey,
-            duplicate.cid,
-            uploadBytes.length,
-            contentType,
-            duplicate.key,
-            password,
-            null,
-            ttlSeconds,
-            expiresAt,
-            false,
-            null,
-            baseDomain,
-            true,
-            imageDimensions?.width,
-            imageDimensions?.height,
-            civitaiTemporary,
-            null,
-            "filebase",
-             { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
-          );
-          if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
-          storeIpfsCid(kvKey, duplicate.cid);
-          storeIpfsCid(result.name, duplicate.cid);
-          storeIpfsCid(duplicate.key, duplicate.cid);
-          result.proxyUrl = getSelectedDeliveryUrl(result);
-          result.kvKey = kvKey;
-          setFileStoredDomain(kvKey, baseDomain);
-          paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
-          renderUrlPalette();
-          queueVideoThumbnail(uploadBlob, result.name, objectId);
-
-          return true;
-        }
-      }
-    } else if (!managedPlan) {
-      // ⚡ R2 IPFS UnixFS CID 重複検査:
-      // Filebase と同一の UnixFS CID を計算し、同一 CID の既存実体があれば PutObject をスキップしてスマートエイリアス化
-      calculatedCid = await calculateFilebaseCid(uploadBytes);
-      if (calculatedCid) {
-        const duplicate = await findR2ObjectByHash(s3, bucketName, calculatedCid, uploadBytes.length);
-        if (duplicate) {
-          if (!hasAdminAccess()) {
-            throw new Error("同一内容のファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
-          }
-
-          const baseDomain = (getSelectedR2Domain("r2") || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
-          result.isUploaded = true;
-          result.uploadedProvider = "r2";
-          result.storageKey = duplicate.key;
-          result.duplicateOf = duplicate.key;
-          result.ipfsCid = calculatedCid;
-          result.mime = contentType;
-          result.password = password;
-          result.hasPassword = Boolean(password);
-          result.ttl = ttlSeconds;
-          result.expiresAt = expiresAt;
-          result.civitaiTemporary = civitaiTemporary;
-
-          // [INV-CORE-006] 新名 -> 既存の R2 実体キー、という別名マッピングを登録（R2 容量を消費しない）
-          const kvKey = buildKvKey(baseDomain, result.name);
-          await registerKvCid(
-            kvKey,
-            calculatedCid,
-            uploadBytes.length,
-            contentType,
-            duplicate.key,
-            password,
-            null,
-            ttlSeconds,
-            expiresAt,
-            false,
-            null,
-            baseDomain,
-            true,
-            imageDimensions?.width,
-            imageDimensions?.height,
-            civitaiTemporary,
-            calculatedCid,
-            "r2",
-             { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
-          );
-          if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
-          storeR2Hash(kvKey, calculatedCid);
-          storeR2Hash(result.name, calculatedCid);
-          storeR2Hash(duplicate.key, calculatedCid);
-          storeIpfsCid(kvKey, calculatedCid);
-          storeIpfsCid(result.name, calculatedCid);
-          storeIpfsCid(duplicate.key, calculatedCid);
-          result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-          result.kvKey = kvKey;
-          setFileStoredDomain(kvKey, baseDomain);
-          paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
-          renderUrlPalette();
-          queueVideoThumbnail(uploadBlob, result.name, objectId);
-
-          console.log(`⚡ R2 重複排除（UnixFS CID照合: ${calculatedCid}）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
-          return true;
-        }
-      }
-    }
-
-    // 🪐 Filebase (IPFS): 容量上限に近づいている場合、最も古い実体を自動アンピン (FIFO)
-    if (isFilebase) {
-      await ensureStorageCapacityFilebase(s3, bucketName, uploadBytes.length);
-    } else {
-      await ensureStorageCapacityR2(s3, bucketName, uploadBytes.length);
-    }
-
-    const s3Metadata = {
-      size: String(uploadBytes.length),
-    };
-    if (expiresAt) {
-      s3Metadata["expires-at"] = String(expiresAt);
-      s3Metadata["ttl"] = String(ttlSeconds);
-    }
-    if (calculatedCid) {
-      s3Metadata["cid"] = calculatedCid;
-      s3Metadata["hash"] = calculatedCid;
-    }
-    s3Metadata["object-id"] = objectId;
-
-    const command = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: managedPlan?.storageKey || result.name,
-      Body: uploadBytes,
-      ContentType: contentType,
-      ContentDisposition: contentDisposition,
-      Metadata: s3Metadata,
-    });
-
-    const putOutput = await s3.send(command);
-
-    let ipfsCid = null;
-    if (isFilebase) {
-      const checkAndValidateCid = (raw) => {
-        if (!raw || typeof raw !== "string") return null;
-        const candidate = raw.trim();
-        return isValidIpfsCid(candidate) ? candidate : null;
-      };
-
-      // PutObject レスポンスヘッダーから CID を探索
-      const headers = putOutput?.$metadata?.httpHeaders || {};
-      ipfsCid = checkAndValidateCid(headers["x-amz-meta-cid"] || headers["x-amz-meta-ipfs-hash"]);
-
-      // レスポンスヘッダーに無ければ HeadObject を最大8回リトライして確実にCIDを取得
-      for (let attempt = 0; attempt < 8 && !ipfsCid; attempt++) {
-        try {
-          await new Promise(r => setTimeout(r, 600 + attempt * 500));
-          const headOutput = await s3.send(new HeadObjectCommand({
-            Bucket: bucketName,
-            Key: managedPlan?.storageKey || result.name,
-          }));
-          const hHeaders = headOutput?.$metadata?.httpHeaders || {};
-          const candidate = hHeaders["x-amz-meta-cid"] ||
-                            hHeaders["x-amz-meta-ipfs-hash"] ||
-                            headOutput?.Metadata?.cid ||
-                            headOutput?.Metadata?.["ipfs-hash"];
-          ipfsCid = checkAndValidateCid(candidate);
-        } catch (hErr) {
-          console.warn(`HeadObject CID lookup attempt ${attempt + 1} failed:`, hErr);
-        }
-      }
-    }
-
-    if (managedPlan) {
-      if (isFilebase && ipfsCid !== calculatedCid) {
-        await safeDeleteS3Objects(s3, bucketName, [managedPlan.storageKey]);
-        await lifecycleRequest({ action: "reportPlacement", objectRef: managedPlan.objectRef,
-          placement: targetProvider, claimId: managedPlan.claim.claimId,
-          generation: managedPlan.claim.generation, operation: "acquire", outcome: "retryable",
-          error: "Filebase CID did not match the preflight content CID" });
-        await linkBindingRequest({ action: "abort", linkKey: managedPlan.linkKey,
-          attemptId: managedPlan.attemptId, generation: managedPlan.attemptGeneration, physicalAbsent: true });
-        throw new Error("Filebase CIDが事前計算と一致しないため、保存を取り消しました");
-      }
-      await linkBindingRequest({ action: "markPhysical", linkKey: managedPlan.linkKey,
-        attemptId: managedPlan.attemptId, generation: managedPlan.attemptGeneration,
-        cid: isFilebase ? ipfsCid : calculatedCid });
-      await lifecycleRequest({ action: "reportPlacement", objectRef: managedPlan.objectRef,
-        placement: targetProvider, claimId: managedPlan.claim.claimId,
-        generation: managedPlan.claim.generation, operation: "acquire", outcome: "present" });
-    }
-
-    result.uploadedProvider = targetProvider;
-    result.storageKey = managedPlan?.storageKey || result.name;
-    result.password = password;
-    result.hasPassword = Boolean(password);
-    result.ttl = ttlSeconds;
-    result.expiresAt = expiresAt;
-    result.civitaiTemporary = civitaiTemporary;
-
-    const baseDomain = (getSelectedR2Domain(targetProvider) || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
-
-    if (isFilebase) {
-      if (ipfsCid && isValidIpfsCid(ipfsCid)) {
-        result.ipfsCid = ipfsCid;
-        storeIpfsCid(result.name, ipfsCid);
-      }
-      if (calculatedCid && ipfsCid && calculatedCid !== ipfsCid) {
-        console.warn("Filebase returned a CID different from the local UnixFS calculation; duplicate detection will be retried with Filebase's CID on future uploads.", { calculatedCid, ipfsCid });
-      }
-      // CID の有無に関わらず、KV にメタデータ（パスワード含む）を登録（※一般ユーザー時は自動スキップ）
-      // [INV-CORE-006] 🌐 選択されている配信ドメインのみを allowedHost として渡し、host:filename 均一キーで登録
-      const fbKvKey = buildKvKey(baseDomain, result.name);
-      await registerKvCid(
-        fbKvKey,
-        ipfsCid || "",
-        uploadBytes.length,
-        contentType,
-        result.storageKey,
-        password,
-        uploadBlob || uploadBytes,
-        ttlSeconds,
-        expiresAt,
-        false,
-        null,
-        baseDomain,
-        true,
-        imageDimensions?.width,
-        imageDimensions?.height,
-        civitaiTemporary,
-        null,
-        "filebase",
-         managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy, objectId, bucket: bucketName } : { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
-      );
-      result.kvKey = fbKvKey;
-      
-      if (hasAdminAccess()) {
-        const deliveryBase = getKvDeliveryBaseDomain();
-        result.proxyUrl = `${deliveryBase}/${encodeURIComponent(result.name)}`;
-        console.log(`🪐 cividge-kv-worker URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
-      } else {
-        // 一般ユーザーモードでも共有URLは配信ドメイン + ファイル名に統一する。
-        result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-        console.log(`🪐 Filebase URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
-      }
-      result.proxyUrl = getSelectedDeliveryUrl(result) || result.proxyUrl;
-
-      // 🛡️ Filebase 帯域保護（Egress 温存）:
-      // アップロード直後の全量ウォームアップフェッチは Filebase のダウンロード帯域を
-      // 無条件に100%消費するため行わない。実際の初回アクセス時にオンデマンドでエッジキャッシュさせる。
-      setFileStoredDomain(fbKvKey, baseDomain);
-    } else {
-      let initialKuboStatus = null;
-      if (calculatedCid) {
-        try {
-          if (await checkKuboPinned(calculatedCid, 500)) {
-            initialKuboStatus = "pinned";
-          }
-        } catch (e) {}
-      }
-      // [INV-CORE-006] host:filename 均一キーで登録
-      const r2KvKey = buildKvKey(baseDomain, result.name);
-      await registerKvCid(
-        r2KvKey,
-        calculatedCid || "",
-        uploadBytes.length,
-        contentType,
-        result.storageKey,
-        password,
-        uploadBlob || uploadBytes,
-        ttlSeconds,
-        expiresAt,
-        false,
-        initialKuboStatus,
-        baseDomain,
-        true,
-        imageDimensions?.width,
-        imageDimensions?.height,
-        civitaiTemporary,
-        calculatedCid,
-        "r2",
-        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy, objectId, bucket: bucketName } : { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
-      );
-      result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-      result.kvKey = r2KvKey;
-      setFileStoredDomain(r2KvKey, baseDomain);
-      if (calculatedCid) {
-        result.ipfsCid = calculatedCid;
-        storeR2Hash(r2KvKey, calculatedCid);
-        storeR2Hash(result.name, calculatedCid);
-        storeIpfsCid(r2KvKey, calculatedCid);
-        storeIpfsCid(result.name, calculatedCid);
-      }
-    }
-
-    result.isUploaded = true;
-    if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
-
-    // Preview failure cannot alter the already-published video Link/Object.
-    queueVideoThumbnail(uploadBlob, result.name, objectId);
-
-    // 🧬 アップロードされたファイルのワークフロー有無をローカルストレージに記録
-    // （※画像変換ONの画像はCanvasでExif/WFが削除されるため、非変換時または動画のみ保持）
-    try {
-  const isConvertOn = isConversionEnabled();
-      const fileExt = (result.name || "").split('.').pop().toLowerCase();
-      const isVideo = ["mp4", "webm", "mov"].includes(fileExt);
-      const retainsWorkflow = (!isConvertOn || isVideo) && (result.metaStatus?.hasWorkflow || result.metaStatus?.hasPrompt);
-
-      const wfStore = JSON.parse(localStorage.getItem("comfyWfMap") || "{}");
-      if (retainsWorkflow) {
-        wfStore[result.name] = true;
-        localStorage.setItem("comfyWfMap", JSON.stringify(wfStore));
-      } else if (wfStore[result.name]) {
-        delete wfStore[result.name];
-        localStorage.setItem("comfyWfMap", JSON.stringify(wfStore));
-      }
-    } catch (wfSaveErr) {}
-
-    paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
+const { ensureStorageCapacityFilebase, ensureStorageCapacityR2 } = createStorageCapacityExecution({
+  getSetting: key => localStorage.getItem(key),
+  checkKuboOnline, getAppLanguage, getKuboPinnedCids, formatBytes, getStoredIpfsCid,
+  getManagedContents: () => managedController.getContents(), getObjectRefForUi,
+  activeKuboPins, ensureAuthoritativeKuboPin, requestAuthorizedRelease,
+  loadLedgerFromLocalStorage, calculateFilebaseCid, kuboPlacementApplication,
+  addFileToKubo, storeIpfsCid, storeR2Hash, deleteR2Hash,
+});
+
+const prepareManagedUpload = createManagedPreflight({ lifecycleRequest, linkBindingRequest,
+  getSelectedR2Domain, getCurrentOrigin: () => window.location.origin,
+  buildKvKey, getIpfsCidFromS3Response });
+const queueVideoThumbnail = createVideoThumbnailRegistration({ hasAdminAccess, getCustomKvWorkerUrl, getAdminApiToken });
+const executeUpload = createUploadOrchestrator({
+  getS3Client, getBucketName, hasAdminAccess, calculateFilebaseCid,
+  prepareManagedUpload, linkBindingRequest, lifecycleRequest, registerKvCid,
+  findFilebaseObjectByCid, findR2ObjectByHash, ensureStorageCapacityFilebase,
+  ensureStorageCapacityR2, safeDeleteS3Objects, getSelectedR2Domain, buildKvKey,
+  getSelectedDeliveryUrl, getKvDeliveryBaseDomain, checkKuboPinned, isValidIpfsCid,
+  setFileStoredDomain, addOrUpdateLocalLedgerItem, markCivitaiTemporaryTransfer,
+  storeIpfsCid, storeR2Hash, extractCleanHost, isConversionEnabled,
+  onFileState: () => render(),
+  onError: message => alert(message),
+  onUploadLimit: size => {
+    const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
+    return showCustomAlert(dict.uploadLimitError.replace("{size}", size), "⚠️ 容量オーバー");
+  },
+  onPublicUrl: (key, url) => {
+    paletteFiles.unshift({ key, url });
     renderUrlPalette();
+  },
+  recordWorkflow: recordUploadedWorkflow,
+  queueVideoThumbnail,
+});
 
-    // 🚀 [INV-CORE-005] [INV-CORE-006] Local-First 台帳オプティミスティック追加（host:filename キーで即時反映）
-    const finalCid = isFilebase ? (ipfsCid || result.ipfsCid || null) : (result.contentCid || calculatedCid || null);
-    const uploadKvKey = result.kvKey || buildKvKey(baseDomain, result.name);
-    if (!managedPlan?.linkAlreadyBound) addOrUpdateLocalLedgerItem(targetProvider, {
-      storageProvider: targetProvider,
-      Key: result.name,
-      name: result.name,
-      rawKey: uploadKvKey,
-      entryKind: hasAdminAccess() ? "link" : "local",
-      s3Key: result.storageKey,
-      Size: uploadBytes.length,
-      size: uploadBytes.length,
-      LastModified: new Date().toISOString(),
-      updated: new Date().toISOString(),
-      isFromS3: true,
-      cid: finalCid,
-      contentCid: finalCid,
-      objectId,
-      password: password || null,
-      passwordHash: password ? "hash" : null,
-      expiresAt: expiresAt || null,
-      ttl: ttlSeconds || 0,
-      civitaiTemporary: Boolean(civitaiTemporary),
-      metadata: {
-        backend: targetProvider,
-        size: uploadBytes.length,
-        cid: finalCid || "",
-        objectId,
-        bucket: bucketName,
-        s3Key: result.storageKey,
-        expiresAt: expiresAt || null,
-        ttl: ttlSeconds || 0,
-        allowedHost: baseDomain,
-        d: extractCleanHost(baseDomain),
-        civitaiTemporary: Boolean(civitaiTemporary),
-      }
-    });
-
-    return true;
-  } catch (error) {
-    result.error = error.message;
-    console.error("Upload failed:", error);
-    alert(`アップロード失敗 (${targetProvider}): ${error.message}`);
-    return false;
-  } finally {
-    result.isUploading = false;
-    render();
-  }
+// DOM inputs are captured at the presentation boundary; upload execution
+// and provider sequencing belong to the upload feature.
+async function uploadImage(result, targetProvider = "r2", customPassword = null, uploadOptions = {}) {
+  const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
+  return executeUpload(result, targetProvider, customPassword, {
+    ...uploadOptions,
+    password: document.querySelector("#tempPasswordInput")?.value.trim() || "",
+    requestedTtl: Number(document.querySelector("#tempTtlSelect")?.value || 0),
+    cachePolicy: document.querySelector("#uploadCachePolicySelect")?.value === "PUBLISHED" ? "PUBLISHED" : "BOARD",
+    origin: window.location.origin,
+    formatLimitError: size => dict.uploadLimitError.replace("{size}", size),
+  });
 }
 
 // --- 一括アップロード共通処理 ---
 async function handleBatchUpload(targetProvider) {
-  if (!state.files.length) return;
+  if (!uploadState.getFiles().length) return;
   const success = await runConversion();
   if (!success) return;
 
-  const targets = state.results.filter(r => r && !r.isUploaded && !r.isUploading);
+  const targets = uploadState.getResults().filter(r => r && !r.isUploaded && !r.isUploading);
   if (targets.length === 0) return;
 
   setUiLock(true);
@@ -7119,7 +4294,7 @@ convertDownloadButton?.addEventListener("click", async () => {
   if (!success) return;
 
   const isZipOn = enableZipCheck?.checked ?? false;
-  const validResults = state.results.filter(r => r && r.blob);
+  const validResults = uploadState.getResults().filter(r => r && r.blob);
 
   if (isZipOn && validResults.length > 0) {
     if (statusText) statusText.textContent = "ZIP作成中...";
@@ -7149,7 +4324,7 @@ convertDownloadButton?.addEventListener("click", async () => {
     }
   } else {
     if (statusText) statusText.textContent = "ダウンロード中...";
-    for (const result of state.results) {
+    for (const result of uploadState.getResults()) {
       if (result && result.url) {
         downloadUrl(result.url, result.name);
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -7191,7 +4366,7 @@ function getStorageListLabels() {
 
 function updateStorageTabsUi() {
   if (storageTabR2 && storageTabFilebase) {
-    if (managedStorageView === "filebase") {
+    if (managedController.getView() === "filebase") {
       storageTabFilebase.style.border = "1px solid #38bdf8";
       storageTabFilebase.style.background = "rgba(56, 189, 248, 0.15)";
       storageTabFilebase.style.color = "#38bdf8";
@@ -7202,7 +4377,7 @@ function updateStorageTabsUi() {
       storageTabR2.style.color = "var(--muted)";
       storageTabR2.style.fontWeight = "600";
 
-    } else if (managedStorageView === "r2") {
+    } else if (managedController.getView() === "r2") {
       storageTabR2.style.border = "1px solid #f97316";
       storageTabR2.style.background = "rgba(249, 115, 22, 0.15)";
       storageTabR2.style.color = "#fb923c";
@@ -7223,24 +4398,24 @@ function updateStorageTabsUi() {
     }
   }
   if (storageTabAll) {
-    storageTabAll.style.border = managedStorageView === "all" ? "1px solid #a5b4fc" : "1px solid var(--border)";
-    storageTabAll.style.background = managedStorageView === "all" ? "rgba(165,180,252,0.15)" : "rgba(255,255,255,0.04)";
-    storageTabAll.style.color = managedStorageView === "all" ? "#c7d2fe" : "var(--muted)";
+    storageTabAll.style.border = managedController.getView() === "all" ? "1px solid #a5b4fc" : "1px solid var(--border)";
+    storageTabAll.style.background = managedController.getView() === "all" ? "rgba(165,180,252,0.15)" : "rgba(255,255,255,0.04)";
+    storageTabAll.style.color = managedController.getView() === "all" ? "#c7d2fe" : "var(--muted)";
   }
   // Capacity and FIFO controls act on one provider, never on the All view.
   const usage = document.querySelector("#storageUsage");
-  if (usage) usage.style.display = managedStorageView === "all" ? "none" : "flex";
-  if (autoFifoLabel) autoFifoLabel.style.display = managedStorageView === "all" ? "none" : "inline-flex";
+  if (usage) usage.style.display = managedController.getView() === "all" ? "none" : "flex";
+  if (autoFifoLabel) autoFifoLabel.style.display = managedController.getView() === "all" ? "none" : "inline-flex";
   const r2WarningBadge = document.querySelector("#r2BillingWarningBadge");
   if (r2WarningBadge) {
-    r2WarningBadge.style.display = managedStorageView !== "r2" ? "none" : "inline-flex";
+    r2WarningBadge.style.display = managedController.getView() !== "r2" ? "none" : "inline-flex";
   }
   syncAutoFifoControl();
 }
 
 function syncAutoFifoControl() {
   if (!autoFifoCheckbox || !autoFifoLabel) return;
-  const isFilebase = activeStorageTab === "filebase";
+  const isFilebase = managedController.getActiveProvider() === "filebase";
   // Filebase/R2 共に互換と安全マージンのため既定ON（明示的に OFF にされた場合のみ false）。
   const enabled = isFilebase
     ? localStorage.getItem("autoFifo") !== "false"
@@ -7263,36 +4438,31 @@ function updateStoragePaginationUI(totalItems) {
   if (!r2PaginationControls || !r2PageInfo || !r2PrevPageBtn || !r2NextPageBtn) return;
   const labels = getStorageListLabels();
 
-  if (storagePerPage <= 0) {
+  if (managedController.getPerPage() <= 0) {
     // 「すべて」表示
-    storageCurrentPage = 1;
+    managedController.clampPage(totalItems);
     r2PageInfo.textContent = getAppLanguage() === "en" ? `${labels.all} ${totalItems} ${labels.items}` : `${labels.all} ${totalItems} ${labels.items}`;
     r2PrevPageBtn.disabled = true;
     r2NextPageBtn.disabled = true;
     return;
   }
 
-  const totalPages = Math.max(1, Math.ceil(totalItems / storagePerPage));
-  if (storageCurrentPage > totalPages) {
-    storageCurrentPage = totalPages;
-  }
-  if (storageCurrentPage < 1) {
-    storageCurrentPage = 1;
-  }
+  const totalPages = Math.max(1, Math.ceil(totalItems / managedController.getPerPage()));
+  managedController.clampPage(totalItems);
 
-  r2PageInfo.textContent = `${storageCurrentPage} / ${totalPages} (${totalItems}${getAppLanguage() === "en" ? ` ${labels.items}` : labels.items})`;
-  r2PrevPageBtn.disabled = storageCurrentPage <= 1;
-  r2NextPageBtn.disabled = storageCurrentPage >= totalPages;
+  r2PageInfo.textContent = `${managedController.getPage()} / ${totalPages} (${totalItems}${getAppLanguage() === "en" ? ` ${labels.items}` : labels.items})`;
+  r2PrevPageBtn.disabled = managedController.getPage() <= 1;
+  r2NextPageBtn.disabled = managedController.getPage() >= totalPages;
 
   if (r2PerPageSelect) {
-    r2PerPageSelect.value = String(storagePerPage);
+    r2PerPageSelect.value = String(managedController.getPerPage());
   }
 }
 
 // ◀ 前へ
 r2PrevPageBtn?.addEventListener("click", () => {
-  if (storageCurrentPage > 1) {
-    storageCurrentPage--;
+  if (managedController.getPage() > 1) {
+    managedController.previousPage();
     renderCurrentStoragePage();
   }
 });
@@ -7300,36 +4470,33 @@ r2PrevPageBtn?.addEventListener("click", () => {
 // ▶ 次へ
 r2NextPageBtn?.addEventListener("click", () => {
   const visibleCount = getVisibleManagedContents().length;
-  const totalPages = Math.max(1, Math.ceil(visibleCount / (storagePerPage || 1)));
-  if (storageCurrentPage < totalPages) {
-    storageCurrentPage++;
+  const totalPages = Math.max(1, Math.ceil(visibleCount / (managedController.getPerPage() || 1)));
+  if (managedController.getPage() < totalPages) {
+    managedController.nextPage(visibleCount);
     renderCurrentStoragePage();
   }
 });
 
 // 表示件数変更
 r2PerPageSelect?.addEventListener("change", (e) => {
-  storagePerPage = parseInt(e.target.value, 10);
-  localStorage.setItem("storagePerPage", String(storagePerPage));
-  storageCurrentPage = 1;
+  managedController.setPerPage(parseInt(e.target.value, 10));
+  localStorage.setItem("storagePerPage", String(managedController.getPerPage()));
   renderCurrentStoragePage();
 });
 
 function getVisibleManagedContents() {
-  return filterManagedContents(storageCachedContents, managedStorageView);
+  return managedController.visible();
 }
 
 function selectManagedStorageView(view) {
-  managedStorageView = view;
+  managedController.selectView(view);
   if (view !== "all") {
-    activeStorageTab = view;
     localStorage.setItem("activeStorageTab", view);
     syncStorageLimitControl();
     renderR2DomainSelect(view);
   }
-  storageCurrentPage = 1;
   updateStorageTabsUi();
-  recalculateStorageUsage(activeStorageTab);
+  recalculateStorageUsage(managedController.getActiveProvider());
   renderCurrentStoragePage();
   updateSelectedR2ActionButtonsState();
 }
@@ -7344,7 +4511,7 @@ storageTabFilebase?.addEventListener("click", () => {
 });
 
 reloadR2FilesButton?.addEventListener("click", () => {
-  storageCurrentPage = 1;
+  managedController.resetPage();
   fetchAndRenderR2Files({ forceRefresh: true, cleanupExpiredCivitaiTransfers: true });
 });
 
@@ -7352,7 +4519,7 @@ reloadR2FilesButton?.addEventListener("click", () => {
 function renderStorageOnboardingCard() {
   if (!r2FileList) return;
 
-  const isFb = activeStorageTab === "filebase";
+  const isFb = managedController.getActiveProvider() === "filebase";
   const isEnglish = getAppLanguage() === "en";
   // R2 CORS の案内文（日本語版）で展開するため、翻訳オブジェクトを
   // 構築する前に確定させる。
@@ -7719,7 +4886,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
     try {
       await client.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1 }));
       saveStorageDraft();
-      storageCurrentPage = 1;
+      managedController.resetPage();
       await fetchAndRenderR2Files();
       if (r2FileList) {
         const notice = document.createElement("div");
@@ -7738,52 +4905,79 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
 
 async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivitaiTransfers = false } = {}) {
   if (!r2FileList) return;
-  const fetchGeneration = ++storageFetchGeneration;
+  const fetchGeneration = managedController.beginObservation({ refresh: forceRefresh });
   updateStorageTabsUi();
   if (!isR2Configured() && !isFilebaseConfigured() && !hasAdminAccess()) {
-    storageCachedContents = [];
+    managedController.clear();
     updateStoragePaginationUI(0);
     renderStorageOnboardingCard();
     return;
   }
-  if (storageCachedContents.length === 0) {
-    storageCachedContents = ["r2", "filebase"].flatMap(loadDisplayCache);
-  }
+  managedController.seedLocalDisplay();
   // Startup and tab changes display only the local projection. The Refresh
   // button is the explicit observation boundary for KV and provider lists.
   if (!forceRefresh) {
     renderCurrentStoragePage();
+    // The old card renderer resolved missing Filebase CIDs on first display.
+    // Keep that first-display behavior as one managed observation, never as
+    // render-triggered I/O (or a request on every tab/page switch).
+    const s3 = getS3Client("filebase");
+    const bucket = getBucketName("filebase");
+    const missingRows = managedController.getContents()
+      .filter(row => row.storageProvider === "filebase" && row.isFromS3 &&
+        !isValidIpfsCid(row.cid || row.metadata?.cid || getStoredIpfsCid(row.s3Key || row.Key)))
+      .map(row => ({ ...row }));
+    if (s3 && bucket && missingRows.length && managedController.beginLocalCidHydration()) {
+      void observeMissingFilebaseCids(missingRows, {
+        cachedCid: getStoredIpfsCid,
+        validCid: isValidIpfsCid,
+        isCurrent: () => managedController.isCurrentObservation(fetchGeneration),
+        headCid: async key => getIpfsCidFromS3Response(await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }))),
+        onResolved: (key, cid, rows) => {
+          storeIpfsCid(key, cid);
+          for (const row of rows) {
+            storeIpfsCid(row.rawKey || row.Key, cid);
+            storeIpfsCid(row.Key, cid);
+          }
+        },
+      }).then(accepted => {
+        const committed = accepted && managedController.applyCidObservation(missingRows, fetchGeneration);
+        managedController.finishLocalCidHydration(committed);
+        if (committed) renderCurrentStoragePage();
+      }).catch(error => {
+        managedController.finishLocalCidHydration(false);
+        console.warn("Filebase CID observation failed:", error);
+      });
+    }
     return;
   }
   try {
     // One delivery projection for both placement views. Provider observations
     // are joined to this same generation; a tab switch never starts a fetch.
     const kvFiles = await fetchKvFiles();
-    if (fetchGeneration !== storageFetchGeneration) return;
+    if (!managedController.isCurrentObservation(fetchGeneration)) return;
     const groups = await Promise.all(["r2", "filebase"].map(provider =>
       fetchManagedProviderContents(provider, kvFiles, fetchGeneration, cleanupExpiredCivitaiTransfers)
     ));
-    if (fetchGeneration !== storageFetchGeneration) {
+    if (!managedController.isCurrentObservation(fetchGeneration)) {
       // An explicit refresh may retire an expired temporary transfer. Its
       // mutation invalidates this read; acquire one new common generation.
       if (cleanupExpiredCivitaiTransfers) await fetchAndRenderR2Files({ forceRefresh: true });
       return;
     }
-    storageCachedContents = groups.flat().sort((a, b) => new Date(b.LastModified || 0) - new Date(a.LastModified || 0));
-    for (const provider of ["r2", "filebase"]) {
-      saveLedgerToLocalStorage(provider, storageCachedContents.filter(item => item.storageProvider === provider));
-    }
-    paletteFiles = storageCachedContents.map(item => {
+    if (!managedController.adoptObservation(groups, fetchGeneration)) return;
+    paletteFiles = managedController.getContents().map(item => {
       const key = item.rawKey || item.Key || "";
       const domain = getFileStoredDomain(key, item.Key || "", item.metadata?.allowedHost || item.metadata?.d || "").replace(/\/$/, "");
       return { key: item.Key, url: `${domain}/${encodeURIComponent(item.Key)}` };
     });
     renderUrlPalette();
-    recalculateStorageUsage(activeStorageTab);
+    recalculateStorageUsage(managedController.getActiveProvider());
     renderCurrentStoragePage();
-    auditDriftingFiles(storageCachedContents);
+    auditDriftingFiles(managedController.getContents());
   } catch (error) {
-    if (fetchGeneration !== storageFetchGeneration) return;
+    if (!managedController.isCurrentObservation(fetchGeneration)) return;
+    managedController.finishObservation(fetchGeneration);
     console.error("Storage fetch error:", error);
     renderCurrentStoragePage();
     r2FileList.insertAdjacentHTML("afterbegin", `<span class="item-meta error" role="status" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)} — 前回の一覧を表示しています</span>`);
@@ -7791,7 +4985,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
 }
 
 async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles, fetchGeneration, cleanupExpiredCivitaiTransfers) {
-  if (fetchGeneration !== storageFetchGeneration) return [];
+  if (!managedController.isCurrentObservation(fetchGeneration)) return [];
 
   const isFilebase = requestedProvider === "filebase";
   const s3 = getS3Client(requestedProvider);
@@ -7805,7 +4999,7 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
   if ((!isStorageConfigured || !s3 || !bucketName) && !hasKvAccess) return [];
 
   const isViewerMode = (!isStorageConfigured || !s3 || !bucketName) && hasKvAccess;
-  if (!storageCachedContents.length) r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
+  if (!managedController.getContents().length) r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
 
   try {
     let s3RawList = [];
@@ -7829,7 +5023,7 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
       } while (continuationToken);
     }
 
-    if (fetchGeneration !== storageFetchGeneration) return [];
+    if (!managedController.isCurrentObservation(fetchGeneration)) return [];
     let contents = [];
     const baseDomain = (getSelectedR2Domain(requestedProvider) || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
 
@@ -8171,7 +5365,7 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
 
     // （※ 自宅 Kubo 遅延マイグレーションは一覧描画後に実行します）
 
-    if (fetchGeneration !== storageFetchGeneration) return [];
+    if (!managedController.isCurrentObservation(fetchGeneration)) return [];
     if (contents.length === 0) return [];
 
     // 🏠 Kubo の連携設定とオンライン状態を事前チェック（未設定時・オフライン時のUI制御用）
@@ -8227,11 +5421,28 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
       }
     }
 
+    if (isFilebase && s3 && bucketName) {
+      const current = () => managedController.isCurrentObservation(fetchGeneration);
+      await observeMissingFilebaseCids(contents, {
+        cachedCid: getStoredIpfsCid,
+        validCid: isValidIpfsCid,
+        isCurrent: current,
+        headCid: async key => getIpfsCidFromS3Response(await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }))),
+        onResolved: (key, cid, rows) => {
+          storeIpfsCid(key, cid);
+          for (const row of rows) {
+            storeIpfsCid(row.rawKey || row.Key, cid);
+            storeIpfsCid(row.Key, cid);
+          }
+        },
+      });
+    }
+
     // 全件キャッシュとページネーションUI更新
-    if (fetchGeneration !== storageFetchGeneration) return [];
+    if (!managedController.isCurrentObservation(fetchGeneration)) return [];
     return contents;
   } catch (error) {
-    if (fetchGeneration !== storageFetchGeneration) return [];
+    if (!managedController.isCurrentObservation(fetchGeneration)) return [];
     throw error;
   }
 }
@@ -8324,11 +5535,7 @@ function renderCurrentStoragePage() {
   }
 
   // 表示件数に合わせてスライス
-  let pageItems = visibleContents;
-  if (storagePerPage > 0) {
-    const startIdx = (storageCurrentPage - 1) * storagePerPage;
-    pageItems = visibleContents.slice(startIdx, startIdx + storagePerPage);
-  }
+  const pageItems = managedController.visiblePage();
 
   const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
 
@@ -8407,9 +5614,7 @@ function renderCurrentStoragePage() {
         </div>
       `;
     } else if (isImage) {
-      const s3TargetKey = item.s3Key || item.Key || "";
-      const s3Provider = isFilebase ? "filebase" : "r2";
-      thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}" loading="lazy" onerror="this.onerror=null; if(window.loadFallbackImageFromS3){window.loadFallbackImageFromS3(this, '${escapeHtml(itemKey)}', '${escapeHtml(s3TargetKey)}', '${s3Provider}');}else{this.parentElement.innerHTML='<div class=\\'thumb format-badge\\'>${escapeHtml(ext.toUpperCase() || 'IMG')}</div>';}">`;
+      thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}" loading="lazy">`;
     } else if (isVideo) {
       thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}?preview=1" loading="lazy" onerror="this.onerror=null;this.outerHTML='<div class=\'thumb format-badge\'>VIDEO</div>'">`;
     } else {
@@ -8611,108 +5816,6 @@ function renderCurrentStoragePage() {
       }
     }
 
-    // 🪐 画像・サムネイルが 404 / 読み込み失敗した際、S3 から直接 Blob を取得して確実に即座表示するフォールバック
-    if (isImage) {
-      const thumbImg = article.querySelector("img.thumb");
-      if (thumbImg) {
-        thumbImg.addEventListener("error", async function onThumbError() {
-          this.removeEventListener("error", onThumbError);
-          try {
-            const provider = isFilebase ? "filebase" : "r2";
-            const s3 = getS3Client(provider);
-            const bucket = getBucketName(provider);
-            const s3Key = item.s3Key || item.Key;
-            if (s3 && bucket && s3Key) {
-              const res = await s3.send(new GetObjectCommand({
-                Bucket: bucket,
-                Key: s3Key,
-              }));
-              if (res && res.Body) {
-                const blob = res.Body instanceof Blob ? res.Body : new Blob([await res.Body.transformToByteArray()]);
-                const objUrl = URL.createObjectURL(blob);
-                this.src = objUrl;
-                return;
-              }
-            }
-          } catch (e) {
-            // S3 直接取得も失敗した場合はバッジ表示
-          }
-          if (this.parentElement) {
-            this.parentElement.innerHTML = `<div class="thumb format-badge">${escapeHtml(ext.toUpperCase() || 'IMG')}</div>`;
-          }
-        }, { once: true });
-      }
-    }
-
-
-    // 🪐 Filebase かつ CID が未取得のアイテムについて、バックグラウンドで S3 から CID を自動解決して即時反映
-    if (isFilebase && !itemCid && item.isFromS3) {
-      (async () => {
-        try {
-          const s3 = getS3Client("filebase");
-          const bucket = getBucketName("filebase");
-          const s3TargetKey = item.s3Key || item.Key;
-          if (s3 && bucket && s3TargetKey) {
-            const headOutput = await s3.send(new HeadObjectCommand({
-              Bucket: bucket,
-              Key: s3TargetKey,
-            }));
-            const hHeaders = headOutput?.$metadata?.httpHeaders || {};
-            const rawCid = hHeaders["x-amz-meta-cid"] ||
-                           hHeaders["x-amz-meta-ipfs-hash"] ||
-                           headOutput?.Metadata?.cid ||
-                           headOutput?.Metadata?.["ipfs-hash"];
-            const resolvedCid = isValidIpfsCid(rawCid) ? rawCid.trim() : null;
-            if (resolvedCid) {
-              storeIpfsCid(itemKey, resolvedCid);
-              storeIpfsCid(itemDisplayName, resolvedCid);
-              storeIpfsCid(s3TargetKey, resolvedCid);
-              item.cid = resolvedCid;
-              article.dataset.cid = resolvedCid;
-
-              // CID解決後も公開URLはカード固有の固定配信ドメインを確実に維持する。
-              const targetDomain = fileDomain || (rawAllowedHost ? (rawAllowedHost.startsWith("http") ? rawAllowedHost : `https://${rawAllowedHost}`) : baseDomain);
-              const newPublicUrl = getPublicDeliveryUrl(item.Key, "filebase", targetDomain);
-
-              const thumbImg = article.querySelector("img.thumb");
-              if (thumbImg) thumbImg.src = newPublicUrl;
-              const thumbLink = article.querySelector("a.thumb-link");
-              if (thumbLink) thumbLink.href = newPublicUrl;
-
-              // コピー用 URL を最新化
-              const domainBtn = article.querySelector(".copy-card-url-btn");
-              if (domainBtn) {
-                domainBtn.dataset.url = newPublicUrl;
-                domainBtn.title = `クリックして配信URLをコピー: ${newPublicUrl}`;
-              }
-
-              // CID バッジを動的挿入（新レイアウト item-cid-group / item-details-row2 に対応）
-              if (!article.querySelector(".copy-cid-btn")) {
-                const shortCid = resolvedCid.length > 12 ? `${resolvedCid.slice(0, 6)}...${resolvedCid.slice(-4)}` : resolvedCid;
-                const badgeWrap = document.createElement("div");
-                badgeWrap.className = "item-cid-group";
-                badgeWrap.style.cssText = "display: inline-flex; align-items: center; gap: 3px;";
-                badgeWrap.innerHTML = `
-                  <button type="button" class="copy-cid-btn" data-cid="${escapeHtml(resolvedCid)}" style="cursor: pointer; font-size: 10px; font-family: monospace; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); line-height: 1.4;" title="IPFS CID: ${escapeHtml(resolvedCid)} (クリックでコピー)">📦 ${escapeHtml(shortCid)} 📋</button>
-                  <a href="https://cid.contact/cid/${encodeURIComponent(resolvedCid)}" target="_blank" rel="noopener noreferrer" style="font-size: 10px; padding: 1px 5px; border-radius: 4px; background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none; display: inline-flex; align-items: center; gap: 2px; line-height: 1.4;" title="CID.contact でノード確認">🌐 ノード確認 ↗</a>
-                `;
-                const row2 = article.querySelector(".item-details-row2");
-                if (row2) {
-                  row2.appendChild(badgeWrap);
-                } else {
-                  const nameRow = article.querySelector(".item-name-group") || article.querySelector(".item-name-row");
-                  if (nameRow) nameRow.appendChild(badgeWrap);
-                }
-              }
-              // [INV-CORE-001] [INV-CORE-003] カード描画時に勝手に registerKvCid() を連打して
-              // 書き込み枠を浪費する処理を排除。ローカル台帳/キャッシュの更新のみで安全に完結させる。
-            }
-          }
-        } catch (resolveErr) {
-          // ignore background lookup error
-        }
-      })();
-    }
   });
 
   updateSelectedR2ActionButtonsState();
@@ -8839,7 +5942,7 @@ async function auditDriftingFiles(contents) {
 // ストレージファイル操作イベント委譲
 r2FileList?.addEventListener("click", async (e) => {
   const target = e.target;
-  const rowProvider = target.closest(".result-item")?.dataset?.provider || activeStorageTab;
+  const rowProvider = target.closest(".result-item")?.dataset?.provider || managedController.getActiveProvider();
   const isFilebase = rowProvider === "filebase";
   const s3 = getS3Client(rowProvider);
   const bucketName = getBucketName(rowProvider);
@@ -8935,8 +6038,8 @@ r2FileList?.addEventListener("click", async (e) => {
       let mime = "";
 
       // 🚀 [INV-CORE-005] 手元台帳キャッシュからメタデータ取得と同名衝突チェック（kv.list 全件走査 2重連打を完全根絶）
-      const localLedgerList = (storageCachedContents && storageCachedContents.length > 0)
-        ? storageCachedContents
+      const localLedgerList = (managedController.getContents() && managedController.getContents().length > 0)
+        ? managedController.getContents()
         : (loadLedgerFromLocalStorage(rowProvider) || []);
 
       const currentKv = localLedgerList.find(f => f.storageProvider === rowProvider && (f.rawKey || f.Key) === oldKey);
@@ -9025,7 +6128,7 @@ r2FileList?.addEventListener("click", async (e) => {
         // 元Linkはpeerとしてそのまま残す。delete/update/renameは行わない。
 
         // 🚀 [INV-CORE-005] Local-First: 手元台帳に新名前レコードを追加して即時描画
-        const existingItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === oldKey);
+        const existingItem = (managedController.getContents() || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === oldKey);
         if (existingItem) {
           addOrUpdateLocalLedgerItem(rowProvider, {
             ...existingItem,
@@ -9137,7 +6240,7 @@ r2FileList?.addEventListener("click", async (e) => {
         }
 
         // 🚀 [INV-CORE-005] 手元台帳から既存アイテムのメタデータを取得（kv.list 呼び出しゼロ化）
-        const currentItem = (storageCachedContents || []).find(f => f.storageProvider === rowProvider && ((f.rawKey || f.Key) === oldKey || f.Key === displayName));
+        const currentItem = (managedController.getContents() || []).find(f => f.storageProvider === rowProvider && ((f.rawKey || f.Key) === oldKey || f.Key === displayName));
         if (currentItem) {
           unpinned = Boolean(currentItem.unpinned || currentItem.metadata?.unpinned);
           kuboStatus = currentItem.metadata?.kuboStatus || null;
@@ -9266,7 +6369,7 @@ r2FileList?.addEventListener("click", async (e) => {
     target.textContent = "解除中...";
 
     try {
-      const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
+      const cachedItem = (managedController.getContents() || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const meta = cachedItem?.metadata || cachedItem || {};
       const isR2 = meta.backend === "r2" || meta.b === "r2" || cachedItem?.backend === "r2" || rowProvider === "r2";
       const objectRef = await getObjectRefForUi(isR2 ? "r2" : "filebase", meta.s3Key || key, cid);
@@ -9361,7 +6464,7 @@ r2FileList?.addEventListener("click", async (e) => {
         }
 
         // Projection metadata is synchronized from the lifecycle authority.
-        const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
+        const cachedItem = (managedController.getContents() || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
 
         // 🚀 [INV-CORE-005] Local-First: 手元台帳を即座に更新して再描画（サーバー全件フェッチゼロ化）
         if (cachedItem) {
@@ -9409,7 +6512,7 @@ r2FileList?.addEventListener("click", async (e) => {
     }
 
     try {
-      const cachedBeforePin = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
+      const cachedBeforePin = (managedController.getContents() || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const sourceMeta = cachedBeforePin?.metadata || cachedBeforePin || {};
       const acquisitionObjectRef = await getObjectRefForUi("filebase", sourceMeta.s3Key || key, cid);
       activeKuboPins.add(cid);
@@ -9425,7 +6528,7 @@ r2FileList?.addEventListener("click", async (e) => {
         },
       });
       activeKuboPins.delete(cid);
-      const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
+      const cachedItem = (managedController.getContents() || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       if (cachedItem) {
         addOrUpdateLocalLedgerItem(rowProvider, {
           ...cachedItem,
@@ -9468,7 +6571,7 @@ r2FileList?.addEventListener("click", async (e) => {
 
     try {
       // 🚀 [INV-CORE-005] 手元台帳から既存のメタデータを取得（kv.getWithMetadata 通信ゼロ化）
-      const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
+      const cachedItem = (managedController.getContents() || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const meta = cachedItem?.metadata || cachedItem || {};
       let currentKuboStatus = meta.kuboStatus || "not_pinned";
       const objectRef = await getObjectRefForUi("filebase", meta.s3Key || s3Key || key, cid);
@@ -9493,7 +6596,7 @@ r2FileList?.addEventListener("click", async (e) => {
       }
 
       // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳の該当アイテムを更新し即座に再描画
-      const item = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
+      const item = (managedController.getContents() || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       if (item) {
         addOrUpdateLocalLedgerItem(rowProvider, {
           ...item,
@@ -9530,7 +6633,7 @@ r2FileList?.addEventListener("click", async (e) => {
       deleteR2Hash(key);
 
       // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳の該当アイテムを更新し即座に再描画
-      const item = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
+      const item = (managedController.getContents() || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       if (item) {
         addOrUpdateLocalLedgerItem(rowProvider, {
           ...item,
@@ -9556,7 +6659,7 @@ r2FileList?.addEventListener("click", async (e) => {
     // was the final Link and whether physical cleanup may start.
     if (!key) return;
     try {
-      const item = (storageCachedContents || []).find(entry => entry.storageProvider === rowProvider && (entry.rawKey || entry.Key) === key);
+      const item = (managedController.getContents() || []).find(entry => entry.storageProvider === rowProvider && (entry.rawKey || entry.Key) === key);
       if (!item) throw new Error("Managed entry is no longer in the current list");
       const isLocalEntry = item.entryKind === "local";
       const ok = await showCustomConfirm(
@@ -9611,7 +6714,7 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
   try {
     for (const checkbox of checkboxes) {
       const provider = checkbox.closest(".result-item")?.dataset?.provider;
-      const item = (storageCachedContents || []).find(entry => entry.storageProvider === provider && (entry.rawKey || entry.Key) === checkbox.dataset.key);
+      const item = (managedController.getContents() || []).find(entry => entry.storageProvider === provider && (entry.rawKey || entry.Key) === checkbox.dataset.key);
       if (!item) throw new Error(`Managed entry is no longer in the current list: ${checkbox.dataset.key}`);
       if (item.entryKind === "local") {
         setLocalEntryRetired(provider, item, true);
@@ -10087,108 +7190,6 @@ function formatBytes(bytes) {
     unit = units.shift();
   }
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
-}
-
-function loadImage(file) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = (e) => {
-      URL.revokeObjectURL(url);
-      reject(e);
-    };
-    img.src = url;
-  });
-}
-
-function canvasToBlob(canvas, mimeType, quality) {
-  return new Promise((resolve) => {
-    canvas.toBlob((blob) => resolve(blob), mimeType, quality);
-  });
-}
-
-function generateRandomString(length) {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let result = "";
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
-
-// ファイル名を最大100文字に制限し、超過時は安全に切り詰めて短縮ハッシュを付与
-function truncateFilename(filename, maxLength = 100) {
-  if (!filename || typeof filename !== "string") return filename || "";
-  const fullChars = Array.from(filename);
-  if (fullChars.length <= maxLength) return filename;
-
-  const dotIndex = filename.lastIndexOf(".");
-  let ext = "";
-  let baseStr = filename;
-  if (dotIndex > 0 && dotIndex < filename.length - 1) {
-    ext = filename.slice(dotIndex);
-    baseStr = filename.slice(0, dotIndex);
-  }
-
-  let hash = "";
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    const rand = new Uint8Array(4);
-    crypto.getRandomValues(rand);
-    hash = Array.from(rand, b => b.toString(36).padStart(2, "0")).join("").slice(0, 6);
-  } else {
-    hash = Math.random().toString(36).slice(2, 8);
-  }
-
-  const suffix = `_${hash}${ext}`;
-  const suffixChars = Array.from(suffix);
-  const allowedBaseCharsCount = Math.max(1, maxLength - suffixChars.length);
-  const baseChars = Array.from(baseStr);
-  const truncatedBase = baseChars.slice(0, allowedBaseCharsCount).join("").replace(/[._\s-]+$/, "");
-
-  return `${truncatedBase}${suffix}`;
-}
-
-function createOutputName(originalName, mimeType, index = 0) {
-  const dotIndex = originalName.lastIndexOf(".");
-  const baseName = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
-  const originalExt = dotIndex > 0 ? originalName.slice(dotIndex + 1) : "";
-
-  const isConvertOn = isConversionEnabled();
-  const filenamePolicy = canonicalFilenamePolicy(renamePattern?.value);
-  let safeBase = filenamePolicy.replaceAll("{original}", baseName);
-
-  safeBase = safeBase.replace(/\{random(?::(\d+))?\}/g, (match, digits) => {
-    const len = digits ? parseInt(digits, 10) : 6;
-    return generateRandomString(len);
-  });
-
-  safeBase = safeBase.replace(/\{num(?::(\d+))?\}/g, (match, digits) => {
-    const numValue = index + 1;
-    if (digits) {
-      const targetLength = parseInt(digits, 10);
-      return String(numValue).padStart(targetLength, "0");
-    }
-    return String(numValue);
-  });
-
-  if (filenamePolicy !== "{original}") {
-    safeBase = safeBase.replace(/[\\/:*?"<>|]/g, "-");
-  }
-
-  // URL・ストレージセーフ化: 空白・連続スペースをアンダースコアにサニタイズ（SNSでのリンク分断を防止）
-  safeBase = safeBase.trim().replace(/\s+/g, "_");
-
-  const isImageMime = mimeType && (mimeType in extensions);
-  const ext = (isConvertOn && isImageMime)
-    ? extensions[mimeType]
-    : (originalExt || "bin");
-
-  // 🛡️ どんなプリセット・連番を重ねても、最終出力は厳格に100文字以内にサニタイズ
-  return truncateFilename(`${safeBase}.${ext}`, 100);
 }
 
 function createZip(entries) {
