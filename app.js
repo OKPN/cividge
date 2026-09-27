@@ -8,8 +8,7 @@ import {
   extensions,
   getContentTypeFromFilename,
   getImageDimensions,
-  getVideoThumbnailKey,
-  isGeneratedVideoThumbnailKey,
+  isWorkerDerivedR2Key,
   isVideoThumbnailParentKey,
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
@@ -18,6 +17,7 @@ import { normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gatew
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
 import { matchesSelectedRelayProbe } from "./relay-compat.js";
+import { objectIdFromFinalBytes } from "./object-id.js";
 import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, filterManagedContents, requireConvertedBlob, fetchManagedFiles } from "./view-policy.js";
 
 let jxlInitialized = false;
@@ -1121,7 +1121,7 @@ function buildKvKey(domainOrUrl, filename) {
   return host ? `${host}:${filename}` : filename;
 }
 
-async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, thumbnailKey = null, width = null, height = null, civitaiTemporary = undefined, contentCid = null, backend = null, mutationOptions = {}) {
+async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", password = "", blobOrBytes = null, ttl = 0, expiresAt = null, unpinned = false, kuboStatus = null, allowedHost = null, overwriteAllowedHost = false, width = null, height = null, civitaiTemporary = undefined, contentCid = null, backend = null, mutationOptions = {}) {
   if (!key) return;
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
@@ -1138,12 +1138,13 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
     if (mutationOptions.policyChange) payload.policyChange = true;
     if (mutationOptions.cachePolicy) payload.cachePolicy = mutationOptions.cachePolicy;
     if (mutationOptions.uploadAttemptId) payload.uploadAttemptId = mutationOptions.uploadAttemptId;
+    if (mutationOptions.objectId) payload.objectId = mutationOptions.objectId;
+    if (mutationOptions.bucket) payload.bucket = mutationOptions.bucket;
     if (contentCid) payload.contentCid = contentCid;
     if (backend) payload.backend = backend;
     // Civitai 転送専用の短期置き場だけを、次回の明示更新で回収できるようにする。
     // undefined は既存レコードの印を維持するため、通常のメタデータ更新では送らない。
     if (civitaiTemporary !== undefined) payload.civitaiTemporary = Boolean(civitaiTemporary);
-    if (thumbnailKey) payload.thumbnailKey = thumbnailKey;
     const numericWidth = Math.floor(Number(width));
     const numericHeight = Math.floor(Number(height));
     if (numericWidth > 0 && numericHeight > 0) {
@@ -1212,10 +1213,25 @@ function getLifecycleApiEndpoint() {
   return worker ? `${worker}/api/lifecycle` : "";
 }
 
-function getObjectRefForUi(provider, s3Key, cid) {
+async function objectIdForManagedLink(linkKey) {
+  if (!linkKey?.includes(":")) throw new Error("Canonical Link key is required to resolve ObjectId");
+  const response = await linkBindingRequest({ action: "inspect", linkKey });
+  const objectId = response?.binding?.status === "BOUND" ? response.binding.objectRef : null;
+  if (!/^sha256:[0-9a-f]{64}$/.test(objectId || "")) throw new Error("Managed ObjectId is unavailable");
+  return objectId;
+}
+
+// Provider/CID only select a visible Link candidate. They never construct an
+// ObjectId; the LinkBinding authority resolves the exact managed Object.
+async function getObjectRefForUi(provider, s3Key, cid) {
   const normalized = normalizeDeliveryProvider(provider);
-  if (normalized === "r2") return s3Key ? `r2:${s3Key}` : "";
-  return isValidIpfsCid(cid) ? `ipfs:${cid.toLowerCase()}` : "";
+  const candidates = [...(storageCachedContents || []), ...(loadLedgerFromLocalStorage(normalized) || [])];
+  const item = candidates.find(entry => entry.entryKind === "link" &&
+    entry.storageProvider === normalized &&
+    (entry.rawKey === s3Key || entry.s3Key === s3Key || entry.metadata?.s3Key === s3Key ||
+      (cid && (entry.cid === cid || entry.contentCid === cid))));
+  const linkKey = s3Key?.includes(":") ? s3Key : item?.rawKey;
+  return objectIdForManagedLink(linkKey);
 }
 
 async function lifecycleRequest(payload) {
@@ -1263,7 +1279,8 @@ async function executeAuthorizedBrowserReleaseTasks(objectRef, tasks = []) {
         const s3 = getS3Client("filebase");
         const bucket = getBucketName("filebase");
         if (!s3 || !bucket) throw new Error("Filebase is not configured in this browser");
-        await safeDeleteS3Objects(s3, bucket, [claim.locator.key, claim.locator.thumbnailKey].filter(Boolean));
+        if (claim.locator.bucket !== bucket) throw new Error("Filebase Placement bucket does not match this browser's configured bucket");
+        await safeDeleteS3Objects(s3, bucket, [claim.locator.key]);
       } else if (task.kind === "kubo") {
         const result = await unpinFromKubo(claim.locator.cid);
         if (!result?.success) throw new Error(result?.error || "Kubo unpin failed");
@@ -1990,7 +2007,7 @@ async function findR2ObjectByHash(s3, bucketName, targetHash, targetSize) {
       // 🛡️ [INV-STORAGE-006] R2 実体が既に解放・削除されたレコード（isFromS3 === false）は重複元として参照しない
       if (item.isFromS3 === false) continue;
 
-      const h = item.contentCid || item.cid || item.metadata?.contentCid || item.metadata?.c_cid || (item.metadata?.cid && item.metadata?.cid !== "r2" ? item.metadata.cid : null) || item.metadata?.hash || item.metadata?.h_sha;
+      const h = item.contentCid || item.cid || item.metadata?.contentCid || item.metadata?.c_cid || item.metadata?.cid || item.metadata?.hash || item.metadata?.h_sha;
       if (h) {
         const sKey = item.s3Key || item.metadata?.s3Key || item.metadata?.k_s3 || item.Key || item.name;
         kvHashMap.set(sKey, h);
@@ -3638,7 +3655,7 @@ async function handleAddNewDomain(provider, input, form) {
       const key = (f.rawKey || f.Key || f.name || "").toLowerCase();
       if (!key.startsWith(`${cleanHost}:`)) return false;
       const b = f.metadata?.backend || f.metadata?.b || f.backend;
-      return b === otherProvider || (otherProvider === "r2" ? f.cid === "r2" : f.cid !== "r2");
+      return b === otherProvider;
     });
     if (foreignFiles.length > 0) {
       await showCustomAlert(
@@ -3766,7 +3783,7 @@ function bindDomainMirrorCheckbox(provider, mirrorCheck) {
           const key = (f.rawKey || f.Key || f.name || "").toLowerCase();
           if (!key.startsWith(`${cleanHost}:`)) return false;
           const b = f.metadata?.backend || f.metadata?.b || f.backend;
-          return b === otherProvider || (otherProvider === "r2" ? f.cid === "r2" : f.cid !== "r2");
+          return b === otherProvider;
         });
         if (foreignFiles.length > 0) {
           await showCustomAlert(
@@ -5033,6 +5050,21 @@ async function captureVideoFirstFrame(videoBlob) {
   });
 }
 
+function queueVideoThumbnail(videoBlob, filename, objectId) {
+  if (!videoBlob || !objectId || !isVideoThumbnailParentKey(filename) || !hasAdminAccess()) return;
+  (async () => {
+    const thumbnail = await captureVideoFirstFrame(videoBlob);
+    if (!thumbnail) return; // Preview generation never gates the main video.
+    const endpoint = `${getCustomKvWorkerUrl().replace(/\/api\/cividge-kv\/?$/, "")}/api/thumbnail`;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${getAdminApiToken()}`, "Content-Type": "image/webp", "X-Object-Id": objectId },
+      body: thumbnail,
+    });
+    if (!response.ok) throw new Error((await response.json()).error || `Thumbnail upload failed (${response.status})`);
+  })().catch(error => console.warn("Video preview is unavailable; main video remains published:", error));
+}
+
 async function detectComfyMetadata(file) {
   if (!file) return { hasWorkflow: false, hasPrompt: false, hasA1111: false, type: "none" };
 
@@ -5901,7 +5933,7 @@ r2FileList?.addEventListener("change", (e) => {
         false,
         null,
         currentDomain,
-        false, null, null, null, undefined, null, null,
+        false, null, null, undefined, null, null,
         { policyChange: true }
       ).then(() => {
         const provider = article?.dataset?.provider;
@@ -5952,7 +5984,7 @@ fileList?.addEventListener("change", (e) => {
           false,
           null,
           null,
-          false, null, null, null, undefined, null, null,
+          false, null, null, undefined, null, null,
           { policyChange: true }
         ).then(() => {
           e.target.style.transition = "all 0.2s ease";
@@ -6206,7 +6238,6 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
     // isKuboPrioritizePinned が有効かつ kuboPinnedSet がある場合は、Kubo保管済みを最優先にし、それぞれ古い順（LastModified 昇順）にする
     const eligibleFiles = contents.filter(item => {
       if (item.Key?.startsWith("pinned_")) return false; // 📌永続化は保護
-      if (isGeneratedVideoThumbnailKey(item.Key)) return false; // 親動画と一体でのみ回収する
       return true;
     }).sort((a, b) => {
       if (isKuboPrioritizePinned && kuboPinnedSet) {
@@ -6230,14 +6261,6 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
       freedBytes += (file.Size || 0);
       simulatedTotal -= (file.Size || 0);
 
-      // OGP 用サムネイルは親動画と同じ実体ライフサイクル。単独で FIFO 回収しない。
-      const thumbnailKey = getVideoThumbnailKey(file.Key);
-      const thumbnail = thumbnailKey ? contents.find(item => item.Key === thumbnailKey) : null;
-      if (thumbnail) {
-        candidates.push(thumbnail.Key);
-        freedBytes += (thumbnail.Size || 0);
-        simulatedTotal -= (thumbnail.Size || 0);
-      }
 
       // 十分な空き容量（上限の70%以下までゆったり解放し、次回の連続アップロード用バッファを確保）
       if (simulatedTotal + requiredBytes <= limitBytes * 0.70) {
@@ -6270,12 +6293,11 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
         cid = getStoredIpfsCid(targetKey);
       }
 
-      const isThumb = isGeneratedVideoThumbnailKey(targetKey);
       const isAlreadyKuboPinned = cid && kuboPinnedSet && kuboPinnedSet.has(cid);
-      const objectRef = cid ? getObjectRefForUi("filebase", meta?.s3Key || targetKey, cid) : "";
+      const objectRef = cid ? await getObjectRefForUi("filebase", meta?.s3Key || targetKey, cid) : "";
 
-      // Kuboへ事前にPin留め（サムネイル以外かつ未Pinの場合）
-      if (isKuboAvailable && isKuboAutoPin && cid && !isThumb && kuboStatus !== "pinned" && !isAlreadyKuboPinned) {
+      // Kuboへ事前にPin留め
+      if (isKuboAvailable && isKuboAutoPin && cid && kuboStatus !== "pinned" && !isAlreadyKuboPinned) {
         activeKuboPins.add(cid);
         try {
           await ensureAuthoritativeKuboPin(objectRef, cid);
@@ -6311,7 +6333,7 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
       console.log(`🪐 Filebase FIFO 自動アンピン実行: ${filesToUnpin.join(", ")} (${formatBytes(freedBytes)} 解放)`);
       for (const update of kvUpdates) {
         try {
-          const objectRef = getObjectRefForUi("filebase", update.meta?.s3Key || update.key, update.cid);
+          const objectRef = await getObjectRefForUi("filebase", update.meta?.s3Key || update.key, update.cid);
           await requestAuthorizedRelease(objectRef, "fifo", "filebase");
         } catch (kvErr) {
           console.warn(`Failed to update unpinned status in KV for ${update.key}:`, kvErr);
@@ -6361,7 +6383,7 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
     }
 
     const candidates = contents
-      .filter(item => !item.Key?.startsWith("pinned_"))
+      .filter(item => !item.Key?.startsWith("pinned_") && !isWorkerDerivedR2Key(item.Key))
       .sort((a, b) => new Date(a.LastModified || 0) - new Date(b.LastModified || 0));
     const itemsToDelete = [];
     for (const item of candidates) {
@@ -6385,7 +6407,7 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
           const bytes = await res.Body.transformToByteArray();
           const blob = new Blob([bytes]);
           const expectedCid = await calculateFilebaseCid(bytes);
-          const objectRef = getObjectRefForUi("r2", item.Key, expectedCid);
+          const objectRef = await getObjectRefForUi("r2", item.Key, expectedCid);
           await kuboPlacementApplication.acquire({
             objectRef,
             cid: expectedCid,
@@ -6405,7 +6427,7 @@ async function ensureStorageCapacityR2(s3, bucketName, requiredBytes = 0) {
       if (!preservedInKuboKeys.has(item.Key)) continue;
       const linkedKv = kvFiles.find(kv => (kv.metadata?.s3Key || kv.metadata?.k_s3 || kv.s3Key || kv.Key) === item.Key);
       if (!linkedKv) continue;
-      await requestAuthorizedRelease(getObjectRefForUi("r2", item.Key, null), "fifo", "r2");
+      await requestAuthorizedRelease(await getObjectRefForUi("r2", item.Key, null), "fifo", "r2");
       deleteR2Hash(item.Key);
       releasedCount += 1;
     }
@@ -6432,22 +6454,26 @@ async function headManagedStorageObject(s3, bucket, key) {
 // Link-key reservation is authoritative. A pending attempt records the exact
 // physical locator before PUT, so a later authorized browser can inspect and
 // adopt an interrupted upload instead of guessing from localStorage.
-async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
-  if (!contentCid) throw new Error("最終バイト列のcontent CIDを計算できませんでした");
+async function prepareManagedUpload(result, provider, s3, bucket, contentCid, objectId) {
+  if (!contentCid || !/^sha256:[0-9a-f]{64}$/.test(objectId || "")) throw new Error("最終バイト列のidentityを計算できませんでした");
   const kind = provider === "filebase" ? "filebase" : "r2";
   const canonicalStorageKey = `objects/${contentCid}`;
-  const objectRef = kind === "filebase" ? `ipfs:${contentCid.toLowerCase()}` : `r2:${canonicalStorageKey}`;
-  // A Filebase ObjectRef may already own a different physical locator. Its
+  const objectRef = objectId;
+  // An ObjectId may already own a different physical locator. Its
   // durable Placement, not the new upload's filename, selects the key to
   // inspect/reacquire. Never PUT to another key for the same ObjectRef.
-  const ownedPlacement = kind === "filebase" ? await inspectManagedPlacement(objectRef, kind) : null;
-  const ownedKey = ownedPlacement?.locator?.cid === contentCid ? ownedPlacement.locator.key : null;
+  const ownedPlacement = await inspectManagedPlacement(objectRef, kind);
+  if (ownedPlacement && ownedPlacement.locator?.bucket !== bucket)
+    throw new Error("既存Placementのbucketが現在の設定と一致しません");
+  const ownedKey = ownedPlacement?.locator?.key;
+  if (kind === "filebase" && ownedPlacement?.locator?.cid !== undefined &&
+      ownedPlacement.locator.cid !== contentCid) throw new Error("Filebase Placement CIDが現在の最終bytesと一致しません");
   const storageKey = typeof ownedKey === "string" && ownedKey ? ownedKey : canonicalStorageKey;
   const baseDomain = (getSelectedR2Domain(provider) || window.location.origin).replace(/\/$/, "");
   const linkKey = buildKvKey(baseDomain, result.name);
   const placement = {
     kind, executor: kind === "r2" ? "worker" : "browser",
-    locator: { key: storageKey, ...(kind === "filebase" ? { cid: contentCid } : {}) },
+    locator: ownedPlacement?.locator || { bucket, key: storageKey, ...(kind === "filebase" ? { cid: contentCid } : {}) },
   };
   let attemptId = crypto.randomUUID();
   let physicalAlreadyPresent = false;
@@ -6455,7 +6481,9 @@ async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
   try {
     reservation = await linkBindingRequest({ action: "reserve", linkKey, objectRef, attemptId, placement });
   } catch (error) {
-    if (error.code !== "RESERVATION_CONFLICT" || error.attempt?.placement?.locator?.key !== storageKey) throw error;
+    if (error.code !== "RESERVATION_CONFLICT" ||
+        error.attempt?.placement?.locator?.key !== storageKey ||
+        error.attempt?.placement?.locator?.bucket !== bucket) throw error;
     if (Date.now() < Number(error.attempt.expiresAt || 0)) {
       throw new Error("このLinkのuploadはまだ進行中です。中断した場合は数分後に同じファイルを再試行してください。");
     }
@@ -6469,7 +6497,8 @@ async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
     if (head) {
       const observedCid = getIpfsCidFromS3Response(head);
       const observedHash = head.Metadata?.hash || head.Metadata?.cid;
-      if (kind === "filebase" ? observedCid !== contentCid : observedHash !== contentCid) {
+      if ((kind === "filebase" ? observedCid !== contentCid : observedHash !== contentCid) ||
+          head.Metadata?.["object-id"] !== objectId) {
         throw new Error("未完了uploadの物理内容を確認できません。対象Linkの保留状態を確認してください。");
       }
       physicalAlreadyPresent = true;
@@ -6477,6 +6506,7 @@ async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
   }
 
   let current = await inspectManagedPlacement(objectRef, kind);
+  const linkAlreadyBound = reservation.result === "bound";
   if (current && ["RELEASE_PENDING", "RETRYABLE", "RELEASED"].includes(current.state)) {
     // An explicit retry may settle an uncertain release only after inspecting
     // the exact durable Placement locator. No PUT happens before this check.
@@ -6485,7 +6515,8 @@ async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
     if (kind === "filebase") {
       const head = await headManagedStorageObject(s3, bucket, storageKey);
       observedCid = head ? getIpfsCidFromS3Response(head) : null;
-      if (head && observedCid !== contentCid) throw new Error("既存Filebase ObjectのCIDを確認できません");
+      if (head && (observedCid !== contentCid || head.Metadata?.["object-id"] !== objectId))
+        throw new Error("既存Filebase Objectのidentityを確認できません");
       observation = head ? "present" : "absent";
     }
     await lifecycleRequest({ action: "reconcilePlacementForAcquire", objectRef, placement,
@@ -6495,7 +6526,7 @@ async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
   if (current?.state === "PRESENT") {
     return { linkKey, baseDomain, objectRef, storageKey: current.locator.key, contentCid,
       attemptId, attemptGeneration: reservation.binding.attempt?.generation,
-      noPut: true, noOp: reservation.result === "bound", placement: current };
+      noPut: true, noOp: linkAlreadyBound, linkAlreadyBound, placement: current };
   }
   if (reservation.result === "bound") {
     reservation = await linkBindingRequest({ action: "reserve", linkKey, objectRef, attemptId, placement, acquirePlacement: true });
@@ -6505,13 +6536,13 @@ async function prepareManagedUpload(result, provider, s3, bucket, contentCid) {
   if (current?.state === "PRESENT") {
     return { linkKey, baseDomain, objectRef, storageKey: current.locator.key, contentCid,
       attemptId, attemptGeneration: reservation.binding.attempt?.generation,
-      noPut: true, noOp: false, placement: current };
+      noPut: true, noOp: false, linkAlreadyBound, placement: current };
   }
   const claimed = await lifecycleRequest({ action: "claimPlacement", objectRef, placement: kind, operation: "acquire" });
   return { linkKey, baseDomain, objectRef, storageKey, contentCid, attemptId,
     attemptGeneration: reservation.binding.attempt?.generation,
     noPut: physicalAlreadyPresent, noOp: false, adopted: physicalAlreadyPresent,
-    claim: claimed.claim, placement };
+    claim: claimed.claim, placement, linkAlreadyBound };
 }
 
 // --- S3 アップロード処理 (R2 / Filebase 独立対応) ---
@@ -6605,10 +6636,12 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     // 既存実体があればPutObjectを実行しない。新しい公開名だけをKV台帳に追加する（スマートエイリアス）。
     let calculatedCid = null;
     let calculatedHash = null;
+    const objectId = await objectIdFromFinalBytes(uploadBytes);
+    result.objectId = objectId;
 
     if (hasAdminAccess()) {
       calculatedCid = await calculateFilebaseCid(uploadBytes);
-      managedPlan = await prepareManagedUpload(result, targetProvider, s3, bucketName, calculatedCid);
+      managedPlan = await prepareManagedUpload(result, targetProvider, s3, bucketName, calculatedCid, objectId);
       if (managedPlan.noPut) {
         if (managedPlan.claim) {
           await linkBindingRequest({ action: "markPhysical", linkKey: managedPlan.linkKey, attemptId: managedPlan.attemptId,
@@ -6618,11 +6651,11 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             generation: managedPlan.claim.generation, operation: "acquire", outcome: "present" });
         }
         if (!managedPlan.noOp) {
-          await registerKvCid(managedPlan.linkKey, isFilebase ? calculatedCid : "r2", uploadBytes.length,
+          await registerKvCid(managedPlan.linkKey, calculatedCid, uploadBytes.length,
             contentType, managedPlan.storageKey, password, null, ttlSeconds, expiresAt, false, null,
-            managedPlan.baseDomain, true, null, imageDimensions?.width, imageDimensions?.height,
+            managedPlan.baseDomain, true, imageDimensions?.width, imageDimensions?.height,
             civitaiTemporary, isFilebase ? null : calculatedCid, targetProvider,
-            { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy });
+            { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy, objectId, bucket: bucketName });
         }
         result.isUploaded = true;
         result.uploadedProvider = targetProvider;
@@ -6632,14 +6665,15 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         result.kvKey = managedPlan.linkKey;
         result.proxyUrl = `${managedPlan.baseDomain}/${encodeURIComponent(result.name)}`;
         setFileStoredDomain(managedPlan.linkKey, managedPlan.baseDomain);
-        addOrUpdateLocalLedgerItem(targetProvider, {
+        if (!managedPlan.linkAlreadyBound) addOrUpdateLocalLedgerItem(targetProvider, {
           storageProvider: targetProvider, entryKind: "link", Key: result.name, name: result.name,
           rawKey: managedPlan.linkKey, s3Key: managedPlan.storageKey, Size: uploadBytes.length,
           LastModified: new Date().toISOString(), isFromS3: true, cid: calculatedCid,
-          contentCid: calculatedCid, metadata: { backend: targetProvider, s3Key: managedPlan.storageKey, cid: calculatedCid },
+           contentCid: calculatedCid, objectId, metadata: { backend: targetProvider, bucket: bucketName, s3Key: managedPlan.storageKey, cid: calculatedCid, objectId },
         });
         paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
         renderUrlPalette();
+        queueVideoThumbnail(uploadBlob, result.name, objectId);
         return true;
       }
     }
@@ -6682,13 +6716,12 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             null,
             baseDomain,
             true,
-            getVideoThumbnailKey(duplicate.key),
             imageDimensions?.width,
             imageDimensions?.height,
             civitaiTemporary,
             null,
             "filebase",
-            { confirmPlacementPresent: true, cachePolicy }
+             { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
           storeIpfsCid(kvKey, duplicate.cid);
@@ -6699,6 +6732,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           setFileStoredDomain(kvKey, baseDomain);
           paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
           renderUrlPalette();
+          queueVideoThumbnail(uploadBlob, result.name, objectId);
 
           return true;
         }
@@ -6731,7 +6765,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           const kvKey = buildKvKey(baseDomain, result.name);
           await registerKvCid(
             kvKey,
-            "r2",
+            calculatedCid,
             uploadBytes.length,
             contentType,
             duplicate.key,
@@ -6743,13 +6777,12 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             null,
             baseDomain,
             true,
-            getVideoThumbnailKey(duplicate.key),
             imageDimensions?.width,
             imageDimensions?.height,
             civitaiTemporary,
             calculatedCid,
             "r2",
-            { confirmPlacementPresent: true, cachePolicy }
+             { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
           storeR2Hash(kvKey, calculatedCid);
@@ -6763,6 +6796,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
           setFileStoredDomain(kvKey, baseDomain);
           paletteFiles.unshift({ key: result.name, url: result.proxyUrl });
           renderUrlPalette();
+          queueVideoThumbnail(uploadBlob, result.name, objectId);
 
           console.log(`⚡ R2 重複排除（UnixFS CID照合: ${calculatedCid}）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
           return true;
@@ -6788,6 +6822,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       s3Metadata["cid"] = calculatedCid;
       s3Metadata["hash"] = calculatedCid;
     }
+    s3Metadata["object-id"] = objectId;
 
     const command = new PutObjectCommand({
       Bucket: bucketName,
@@ -6886,13 +6921,12 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         null,
         baseDomain,
         true,
-        null,
         imageDimensions?.width,
         imageDimensions?.height,
         civitaiTemporary,
         null,
         "filebase",
-        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy } : { confirmPlacementPresent: true, cachePolicy }
+         managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy, objectId, bucket: bucketName } : { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
       );
       result.kvKey = fbKvKey;
       
@@ -6924,7 +6958,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       const r2KvKey = buildKvKey(baseDomain, result.name);
       await registerKvCid(
         r2KvKey,
-        "r2",
+        calculatedCid || "",
         uploadBytes.length,
         contentType,
         result.storageKey,
@@ -6936,13 +6970,12 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         initialKuboStatus,
         baseDomain,
         true,
-        null,
         imageDimensions?.width,
         imageDimensions?.height,
         civitaiTemporary,
         calculatedCid,
         "r2",
-        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy } : { confirmPlacementPresent: true, cachePolicy }
+        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy, objectId, bucket: bucketName } : { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
       );
       result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       result.kvKey = r2KvKey;
@@ -6959,44 +6992,8 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     result.isUploaded = true;
     if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
 
-    // 🎬 動画の場合は先頭フレームサムネイル（.thumb.webp）を裏で自動生成・保存
-    // Misskey / Twitter / Discord 等の OGP カード用ポスター画像として活用
-    const isVideoFile = isVideoThumbnailParentKey(result.name);
-    if (isVideoFile && uploadBlob) {
-      (async () => {
-        try {
-          const thumbBlob = await captureVideoFirstFrame(uploadBlob);
-          if (thumbBlob) {
-            const thumbKey = getVideoThumbnailKey(result.name);
-            const thumbBytes = new Uint8Array(await thumbBlob.arrayBuffer());
-            const thumbnailDimensions = await getImageDimensions(thumbBlob, "image/webp");
-            const thumbCommand = new PutObjectCommand({
-              Bucket: bucketName,
-              Key: thumbKey,
-              Body: thumbBytes,
-              ContentType: "image/webp",
-              ContentDisposition: "inline",
-              Metadata: expiresAt ? {
-                size: String(thumbBytes.length),
-                "expires-at": String(expiresAt),
-                ttl: String(ttlSeconds),
-              } : { size: String(thumbBytes.length) },
-            });
-            const thumbPut = await s3.send(thumbCommand);
-            const tHeaders = thumbPut?.$metadata?.httpHeaders || {};
-            const thumbCid = isFilebase ? (tHeaders["x-amz-meta-cid"] || tHeaders["x-amz-meta-ipfs-hash"] || "") : "";
-            // [INV-CORE-006] サムネイル自身も親動画と同じ期限で台帳登録し、OGP 配信時に解決できるようにする。
-            await registerKvCid(buildKvKey(baseDomain, thumbKey), thumbCid, thumbBytes.length, "image/webp", thumbKey, "", thumbBlob, ttlSeconds, expiresAt, false, null, baseDomain, true, null, thumbnailDimensions?.width, thumbnailDimensions?.height);
-            // [INV-CORE-006] 別名 URL でも元動画のサムネイルを参照できるよう、親レコードへ派生キーを保存する。
-            const parentKvKey = isFilebase ? (fbKvKey || buildKvKey(baseDomain, result.name)) : (r2KvKey || buildKvKey(baseDomain, result.name));
-            await registerKvCid(parentKvKey, isFilebase ? (ipfsCid || "") : "r2", uploadBytes.length, contentType, result.name, "", null, ttlSeconds, expiresAt, false, null, baseDomain, true, thumbKey, imageDimensions?.width, imageDimensions?.height);
-            console.log(`🎬 動画サムネイル自動アップロード完了: ${thumbKey} (${thumbBytes.length} bytes)`);
-          }
-        } catch (thumbErr) {
-          console.warn("Auto video thumbnail upload failed:", thumbErr);
-        }
-      })();
-    }
+    // Preview failure cannot alter the already-published video Link/Object.
+    queueVideoThumbnail(uploadBlob, result.name, objectId);
 
     // 🧬 アップロードされたファイルのワークフロー有無をローカルストレージに記録
     // （※画像変換ONの画像はCanvasでExif/WFが削除されるため、非変換時または動画のみ保持）
@@ -7022,7 +7019,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     // 🚀 [INV-CORE-005] [INV-CORE-006] Local-First 台帳オプティミスティック追加（host:filename キーで即時反映）
     const finalCid = isFilebase ? (ipfsCid || result.ipfsCid || null) : (result.contentCid || calculatedCid || null);
     const uploadKvKey = result.kvKey || buildKvKey(baseDomain, result.name);
-    addOrUpdateLocalLedgerItem(targetProvider, {
+    if (!managedPlan?.linkAlreadyBound) addOrUpdateLocalLedgerItem(targetProvider, {
       storageProvider: targetProvider,
       Key: result.name,
       name: result.name,
@@ -7036,6 +7033,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       isFromS3: true,
       cid: finalCid,
       contentCid: finalCid,
+      objectId,
       password: password || null,
       passwordHash: password ? "hash" : null,
       expiresAt: expiresAt || null,
@@ -7044,7 +7042,9 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       metadata: {
         backend: targetProvider,
         size: uploadBytes.length,
-        cid: isFilebase ? (finalCid || "") : "r2",
+        cid: finalCid || "",
+        objectId,
+        bucket: bucketName,
         s3Key: result.storageKey,
         expiresAt: expiresAt || null,
         ttl: ttlSeconds || 0,
@@ -7895,11 +7895,9 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
         const recordedS3Key = kvItem.metadata?.s3Key;
 
         // 🪐 Filebase タブ: R2 ストレージ専用レコードは除外する [INV-FRONT-005]
-        const isExplicitFilebase = kvItem.metadata?.backend === "filebase" || kvItem.metadata?.b === "filebase";
-        const isExplicitR2 = kvCid === "r2" ||
-          kvItem.metadata?.backend === "r2" ||
-          kvItem.metadata?.b === "r2" ||
-          kvItem.value === "r2";
+        const projectedBackend = kvItem.metadata?.backend || kvItem.metadata?.b;
+        const isExplicitFilebase = projectedBackend === "filebase" || projectedBackend === "filebase_rpc";
+        const isExplicitR2 = kvItem.metadata?.backend === "r2" || kvItem.metadata?.b === "r2";
         
         if (isExplicitR2) {
           continue;
@@ -8034,8 +8032,8 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
           continue; // 🚨 [INV-FRONT-005] Filebase レコードは絶対に R2 一覧に混入させない！
         }
 
-        const isExplicitR2 = kvItem.metadata?.backend === "r2" || kvItem.metadata?.b === "r2" || kvCid === "r2";
-        const hasIpfsCid = kvCid && kvCid !== "r2" && (kvCid.startsWith("Qm") || kvCid.startsWith("baf") || kvCid.length > 20);
+        const isExplicitR2 = kvItem.metadata?.backend === "r2" || kvItem.metadata?.b === "r2";
+        const hasIpfsCid = Boolean(kvCid && isValidIpfsCid(kvCid));
         if (hasIpfsCid && !isExplicitR2) continue; // Filebase 専用レコードのみ除外
 
         const recordedS3Key = kvItem.metadata?.s3Key || kvItem.metadata?.k_s3;
@@ -8094,6 +8092,7 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
       const retiredLocalEntries = getRetiredLocalEntries(requestedProvider);
       for (const s3Item of s3RawList) {
         if (s3Item.Key.startsWith("objects/")) continue;
+        if (isWorkerDerivedR2Key(s3Item.Key)) continue;
         if (!consumedS3Keys.has(s3Item.Key) && !processedPhysicalKeys.has(s3Item.Key) && !retiredLocalEntries.has(s3Item.Key)) {
           const rawS3Cid = getStoredIpfsCid(s3Item.Key);
           const s3Cid = isValidIpfsCid(rawS3Cid) ? rawS3Cid : null;
@@ -8167,9 +8166,6 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
     // 一覧画面を開いただけで勝手にアンピン＆KV書き込み連打が走る副作用の密輸を根絶。
     // FIFO による容量解放はアップロード時（uploadFiles）の容量不足判定時のみ実行する。
 
-    // 動画の OGP 用ポスターは派生データであり、通常ファイルとして操作させない。
-    // 使用量計算と FIFO の対象には残すが、一覧・URL パレットからは隠す。
-    contents = contents.filter(item => !isGeneratedVideoThumbnailKey(item.s3Key || item.Key));
     const driftRetention = getDriftFailCounts();
     contents = contents.filter(item => !isDriftRetired(driftRetention[item.rawKey || item.Key]));
 
@@ -8415,8 +8411,7 @@ function renderCurrentStoragePage() {
       const s3Provider = isFilebase ? "filebase" : "r2";
       thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}" loading="lazy" onerror="this.onerror=null; if(window.loadFallbackImageFromS3){window.loadFallbackImageFromS3(this, '${escapeHtml(itemKey)}', '${escapeHtml(s3TargetKey)}', '${s3Provider}');}else{this.parentElement.innerHTML='<div class=\\'thumb format-badge\\'>${escapeHtml(ext.toUpperCase() || 'IMG')}</div>';}">`;
     } else if (isVideo) {
-      // See: [INV-FRONT-001] (動画サムネイル描画のため preload="metadata" を必須とする。404事故防止はWorker側のINV-DELIVERY-001で担保)
-      thumbHtml = `<video class="thumb" src="${escapeHtml(publicUrl)}#t=0.5" preload="metadata" muted playsinline style="object-fit: cover; pointer-events: none;"></video>`;
+      thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}?preview=1" loading="lazy" onerror="this.onerror=null;this.outerHTML='<div class=\'thumb format-badge\'>VIDEO</div>'">`;
     } else {
       thumbHtml = `<div class="thumb format-badge">${escapeHtml(ext.toUpperCase() || "FILE")}</div>`;
     }
@@ -8428,11 +8423,15 @@ function renderCurrentStoragePage() {
 
     if (isFilebase) {
       const isFromS3 = Boolean(item.isFromS3);
+      const isRpcPlacement = (item.metadata?.backend || item.metadata?.b) === "filebase_rpc";
+      const isRpcPresent = isRpcPlacement && !Boolean(item.metadata?.unpinned);
       const isKuboPinned = item.metadata?.kuboStatus === "pinned";
       const kuboPlacementState = item.metadata?.kuboPlacementState || item.kuboPlacementState ||
         (isKuboPinned ? KUBO_PLACEMENT_STATE.PRESENT : KUBO_PLACEMENT_STATE.ABSENT);
 
-      const fbBadgeHtml = isFromS3
+      const fbBadgeHtml = isRpcPlacement
+        ? `<span style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: ${isRpcPresent ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.12)"}; color: ${isRpcPresent ? "#22c55e" : "#94a3b8"}; border: 1px solid ${isRpcPresent ? "rgba(34,197,94,0.4)" : "rgba(148,163,184,0.3)"}; font-weight: 600;">Filebase RPC: ${isRpcPresent ? (lang === "en" ? "stored" : "保持中") : (lang === "en" ? "released" : "未保持")}</span>`
+        : isFromS3
         ? `<button type="button" class="unpin-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" style="cursor: pointer; font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.4); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${labels.filebaseStored}</button>`
         : `<span style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px dashed rgba(148,163,184,0.3); font-weight: 500; cursor: help;" title="${escapeHtml(labels.filebaseRemovedTooltip || "")}">${labels.filebaseRemoved}</span>`;
 
@@ -8454,7 +8453,7 @@ function renderCurrentStoragePage() {
 
       let driftingBadgeHtml = "";
       const hasKuboRecord = isKuboPinned || item.metadata?.kuboStatus === "pinned" || item.kuboStatus === "pinned";
-      if (!isFromS3 && !hasKuboRecord) {
+      if (!isFromS3 && !isRpcPresent && !hasKuboRecord) {
         const driftCounts = getDriftFailCounts();
         const currentDriftCount = driftCounts[itemKey]?.count || 0;
         const driftText = currentDriftCount > 0
@@ -8551,7 +8550,7 @@ function renderCurrentStoragePage() {
       `;
     }
 
-    const renameBtnHtml = `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || "r2")}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15s; line-height: 1;">✏️</button>`;
+    const renameBtnHtml = `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || "")}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15; line-height: 1;">✏️</button>`;
 
     let cidBadgeHtml = "";
     if (itemCid) {
@@ -8932,9 +8931,6 @@ r2FileList?.addEventListener("click", async (e) => {
       const isFilebase = rowProvider === "filebase";
       const currentSize = parseInt(btn.dataset.size || article?.dataset?.size || "0", 10);
       let cid = btn.dataset.cid || article?.dataset?.cid || getStoredIpfsCid(oldKey) || getStoredIpfsCid(originalS3Key);
-      if (!isFilebase && (!cid || cid === "")) {
-        cid = "r2";
-      }
       let size = currentSize;
       let mime = "";
 
@@ -8954,9 +8950,6 @@ r2FileList?.addEventListener("click", async (e) => {
         alert("⚠️ このファイルの CID が見つからないためリネームできません。");
         row.innerHTML = originalHtml;
         return;
-      }
-      if (!isFilebase && !cid) {
-        cid = "r2";
       }
 
       // Link identityはcanonical `host:filename` のみ。ペン操作でhostは変えない。
@@ -8997,14 +8990,15 @@ r2FileList?.addEventListener("click", async (e) => {
           ttl = Math.round((domExpiresAt - Date.now()) / 1000);
         }
 
-        const targetCid = isFilebase ? cid : "r2";
+        const targetCid = isValidIpfsCid(cid) ? cid : (currentKv?.contentCid || currentKv?.metadata?.contentCid || "");
+        const objectId = await objectIdForManagedLink(oldKey);
         const created = await registerKvCid(
           targetNewKey, targetCid, size, mime, originalS3Key, password, null, ttl, expiresAt,
-          unpinned, kuboStatus, allowedHost, false, getVideoThumbnailKey(originalS3Key),
+           unpinned, kuboStatus, allowedHost, false,
           null, null, undefined,
           currentKv?.contentCid || currentKv?.metadata?.contentCid || null,
-          isFilebase ? "filebase" : "r2",
-          { createOnly: true }
+          isFilebase ? (currentKv?.metadata?.backend === "filebase_rpc" ? "filebase_rpc" : "filebase") : "r2",
+           { createOnly: true, objectId, bucket: currentKv?.metadata?.bucket }
         );
         if (created !== true) {
           throw new Error("KV台帳Workerと管理トークンが未設定のため、peer Linkを作成できません。");
@@ -9042,6 +9036,8 @@ r2FileList?.addEventListener("click", async (e) => {
             name: newKey,
             rawKey: targetNewKey,
             displayName: newKey,
+            objectId,
+            metadata: { ...(existingItem.metadata || {}), objectId, oid: objectId },
           });
         } else {
           renderCurrentStoragePage();
@@ -9153,8 +9149,11 @@ r2FileList?.addEventListener("click", async (e) => {
         }
 
         const resolvedCid = cid || getStoredIpfsCid(oldKey) || getStoredIpfsCid(displayName) || getStoredIpfsCid(s3Key) || "";
-        const targetCid = isFilebase ? (resolvedCid || cid) : "r2";
-        const targetBackend = isFilebase ? "filebase" : "r2";
+        const targetCid = isValidIpfsCid(resolvedCid) ? resolvedCid : "";
+        const targetBackend = isFilebase
+          ? ((currentItem?.metadata?.backend || currentItem?.metadata?.b) === "filebase_rpc" ? "filebase_rpc" : "filebase")
+          : "r2";
+        const objectId = await objectIdForManagedLink(oldKey);
 
         await registerKvCid(
           newDomainKey,
@@ -9170,13 +9169,12 @@ r2FileList?.addEventListener("click", async (e) => {
           kuboStatus,
           cleanHost,
           true, // overwriteAllowedHost: この新ドメインのみ許可
-          getVideoThumbnailKey(s3Key),
           null,
           null,
           undefined,
           resolvedCid || null, // contentCid
           targetBackend, // backend: [INV-FRONT-005] 帰属ストレージの完全固定
-          { createOnly: true }
+           { createOnly: true, objectId, bucket: currentItem?.metadata?.bucket }
         );
 
         if (resolvedCid) {
@@ -9202,6 +9200,7 @@ r2FileList?.addEventListener("click", async (e) => {
           isFromS3: currentItem?.isFromS3 ?? true,
           cid: targetBackend === "r2" ? (resolvedCid || null) : targetCid,
           contentCid: resolvedCid || null,
+          objectId,
           password: password || null,
           passwordHash: password ? "hash" : null,
           expiresAt: expiresAt || null,
@@ -9212,6 +9211,8 @@ r2FileList?.addEventListener("click", async (e) => {
             allowedHost: targetDomainUrl,
             s3Key: s3Key || displayName,
             cid: targetCid,
+            objectId,
+            oid: objectId,
             unpinned,
             kuboStatus,
             expiresAt,
@@ -9268,7 +9269,7 @@ r2FileList?.addEventListener("click", async (e) => {
       const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const meta = cachedItem?.metadata || cachedItem || {};
       const isR2 = meta.backend === "r2" || meta.b === "r2" || cachedItem?.backend === "r2" || rowProvider === "r2";
-      const objectRef = getObjectRefForUi(isR2 ? "r2" : "filebase", meta.s3Key || key, cid);
+      const objectRef = await getObjectRefForUi(isR2 ? "r2" : "filebase", meta.s3Key || key, cid);
       await requestAuthorizedRelease(objectRef, "manual-placement", "kubo");
       if (cachedItem) {
         addOrUpdateLocalLedgerItem(rowProvider, {
@@ -9344,7 +9345,7 @@ r2FileList?.addEventListener("click", async (e) => {
         if (!blob) throw new Error("実体データの取得に失敗しました");
 
         const expectedCid = await calculateFilebaseCid(new Uint8Array(await blob.arrayBuffer()));
-        const objectRef = getObjectRefForUi("r2", s3Key, expectedCid);
+        const objectRef = await getObjectRefForUi("r2", s3Key, expectedCid);
         await kuboPlacementApplication.acquire({
           objectRef,
           cid: expectedCid,
@@ -9410,7 +9411,7 @@ r2FileList?.addEventListener("click", async (e) => {
     try {
       const cachedBeforePin = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const sourceMeta = cachedBeforePin?.metadata || cachedBeforePin || {};
-      const acquisitionObjectRef = getObjectRefForUi("filebase", sourceMeta.s3Key || key, cid);
+      const acquisitionObjectRef = await getObjectRefForUi("filebase", sourceMeta.s3Key || key, cid);
       activeKuboPins.add(cid);
       await kuboPlacementApplication.acquire({
         objectRef: acquisitionObjectRef,
@@ -9470,7 +9471,7 @@ r2FileList?.addEventListener("click", async (e) => {
       const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const meta = cachedItem?.metadata || cachedItem || {};
       let currentKuboStatus = meta.kuboStatus || "not_pinned";
-      const objectRef = getObjectRefForUi("filebase", meta.s3Key || s3Key || key, cid);
+      const objectRef = await getObjectRefForUi("filebase", meta.s3Key || s3Key || key, cid);
 
       const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
       if (currentKuboStatus !== "pinned" && isKuboAutoPin && cid) {
@@ -9522,7 +9523,7 @@ r2FileList?.addEventListener("click", async (e) => {
     if (!ok) return;
 
     try {
-      await requestAuthorizedRelease(getObjectRefForUi("r2", s3Key, cid), "manual-placement", "r2");
+      await requestAuthorizedRelease(await getObjectRefForUi("r2", s3Key, cid), "manual-placement", "r2");
 
       // ローカルハッシュキャッシュをパージ
       deleteR2Hash(s3Key);

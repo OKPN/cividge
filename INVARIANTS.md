@@ -11,8 +11,30 @@
 
 ## Lifecycle authority
 
-- A Link is canonical `host:filename`; an ObjectRef is `r2:<s3Key>` or
-  `ipfs:<CID>`; and a Placement is a backend copy. They are not interchangeable.
+- A Link is canonical `host:filename`. An immutable Object has exactly one
+  provider-independent `sha256:<lowercase digest>` ObjectId calculated from
+  the exact final bytes. R2 keys, Filebase/Kubo CIDs and provider ownership
+  belong to Placements, not Object identity.
+- **[INV-OBJECT-IDENTITY-INDEPENDENT-OF-PLACEMENT]** Equal final bytes have
+  one ObjectId across R2, Filebase and Kubo; different bytes have different
+  ObjectIds. No provider, bucket, key, CID or delivery path participates in it.
+- **[INV-ONE-LIFECYCLE-AUTHORITY-PER-OBJECT]** Every managed Link and
+  Placement for one ObjectId converges on one ObjectLifecycle authority.
+- **[INV-CID-MEANS-CID]** A field named CID contains a real content identifier
+  or is absent; `cid="r2"` and unconditional CID lowercasing are forbidden.
+- **[INV-SINGLE-PLACEMENT-AUTHORITY]** Physical release requires a current
+  claim from the ObjectLifecycle for the exact ObjectId and its full Link set.
+- S3 Placement authority records the exact `(bucket, key)`; a browser or Worker
+  may actuate it only through the matching configured bucket.
+- **[INV-DERIVED-ARTIFACT-NOT-LINK]** A generated video thumbnail has different
+  bytes from its parent, but is a dependent preview, not a video Placement or
+  an independently managed Object/Link. It receives no LinkBinding or public
+  KV Link. A real user upload named `foo.thumb.webp` remains a normal Link.
+- **[INV-DERIVED-ARTIFACT-FOLLOWS-PARENT]** The parent ObjectLifecycle owns the
+  thumbnail's deterministic R2 key and claim state. Peer Links share one
+  thumbnail; removing one peer keeps it. Only release of the final parent Link
+  authorizes thumbnail cleanup, with retryable failure and no effect on video
+  identity, LinkBinding, or delivery when preview generation fails.
 - `createLink` and `removeLink` pass the lifecycle authority. Peer Links have
   no old/new or primary/secondary role.
 - A GET does one canonical KV lookup, performs no storage fallback and causes
@@ -42,7 +64,7 @@ Object/Link/Placementのlifecycle authorityではない。旧schemaのKV record�
 ### [INV-FRESH-AUTHORITY-CUTOVER]
 
 既存Linkをすべて破棄するclean cutoverでは、ObjectLifecycleとLinkBindingの
-双方を空の新namespaceへ向け、配信KVとbrowser managed-list cacheも新世代に
+双方を空の新routing epochへ向け、配信KVとbrowser managed-list cacheも新世代に
 する。同じCIDは新authorityで再利用可能であり、特定CIDを永久に排除しない。
 R2/Filebase/Kuboの旧物理実体は自動削除しない。物理観測をLinkへ昇格させない。
 
@@ -165,18 +187,18 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 
 ## 1. メディア表示とサムネイル描画 (Media & Thumbnail Invariants)
 
-### [INV-FRONT-001] 動画サムネイルの `preload="metadata"` 担保
+### [INV-FRONT-001] 動画プレビューは親 Link の表示写像
 * **規則 (Rule)**:  
-  ストレージ管理一覧で動画サムネイルを表示する際、`<video>` タグには必ず **`preload="metadata"`** を指定しなければならない。
+  ストレージ管理一覧では、親動画 Link の `?preview=1` から派生 WebP を表示する。取得できない場合は通常の動画プレースホルダーへ戻す。
 
 * **理由 (Rationale)**:  
-  ブラウザの仕様上、`preload="none"` を指定するとブラウザはメディアデータを 1 バイトも取得しないため、先頭フレームがレンダリングされずサムネイル枠が真っ黒になってしまう。サムネイル描画にはメタデータおよび先頭フレームの取得が不可欠である。
+  一覧のプレビューのために動画本体をRange取得したり、派生画像へ独立した公開Linkを作ったりしない。プレビュー生成失敗は動画本体の公開を妨げない。
 
 * **前提条件 (Dependency)**:  
-  この先走り通信（メタデータ取得）は、Worker 側の **[INV-DELIVERY-001]（台帳存在時の 404 キャッシュ禁止 / 30秒 Grace Period）** が担保されていることで、アップロード直後でも 404 キャッシュロックを引き起こさずに安全に動作する。
+  `?preview=1` は親Linkのcanonical KV lookup、expiry、password gateを通る。派生画像に独立した配信identityはない。
 
 * **禁止事項 (Prohibited)**:  
-  - 404 を回避しようとして動画サムネイルを安易に `preload="none"` に変更すること（動画サムネイルが全滅するため）。
+  - ファイル名の `.thumb.webp` だけを根拠に管理一覧から行を隠すこと。
 
 ---
 

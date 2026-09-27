@@ -47,7 +47,7 @@ specification explicitly says otherwise.
    serve the Object. Its physical cleanup remains subject to the last-reference
    rule.
 9. **Lifecycle authority** — The SQLite-backed Durable Object named from the
-   canonical ObjectRef (`r2:<s3Key>` or `ipfs:<cid>`) owns the authoritative
+   canonical ObjectId (`sha256:<digest>` of exact final bytes) owns the authoritative
    Link relation and lifecycle state. Delivery KV is a projection and
    localStorage is neither an Object authority nor a last-reference oracle.
 10. **Actuator separation** — R2 cleanup is executed by the Worker. Filebase
@@ -57,7 +57,7 @@ specification explicitly says otherwise.
    explicit out-of-band trust boundary.
 11. **Immutable Object bytes** — Conversion, metadata policy, EXIF processing,
    and MP4 FastStart complete before Object creation. Different bytes require
-   a new Object and must never overwrite an existing locator before conflict
+   a new ObjectId and must never overwrite an existing locator before conflict
    authorization succeeds.
 12. **Placement liveness** — Browser-actuated claims have an authoritative
    lease. An abandoned `PINNING`/`RELEASING` claim returns to a claimable
@@ -65,6 +65,14 @@ specification explicitly says otherwise.
 13. **Stable relay namespace** — Relay delivery ingress is
    `/r/<relay-id>/<filename>`. `/r/` is routing/security classification, not
    Link identity, and must not be flattened or replaced by per-relay WAF rules.
+
+`ObjectRef` in existing API field names is the canonical ObjectId, not an R2
+key or IPFS CID. It is `sha256:<digest>` of the exact final bytes after every
+conversion/metadata/FastStart operation. R2 `(bucket,key)`, Filebase S3
+`(bucket,key,cid)`, Worker-managed Filebase RPC `cid`, and Kubo `cid` are
+Placement locators. The delivery KV may project these locators but is never
+the authority for Object membership or physical release. CIDv0 is
+case-sensitive; a CID field never carries a backend marker.
 
 ## Required lifecycle transitions
 

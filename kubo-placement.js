@@ -68,7 +68,7 @@ export function createKuboPlacementApplication({
         if (existingOnly) throw new Error("Kubo CID is not pinned");
         const started = await performAcquire(cid);
         if (!started?.success) throw new Error(started?.error || "Kubo pin request failed");
-        if (started.cid && started.cid.toLowerCase() !== cid.toLowerCase()) {
+        if (started.cid && started.cid !== cid) {
           throw new Error("Kubo returned a different content CID");
         }
       }

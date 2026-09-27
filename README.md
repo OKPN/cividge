@@ -13,10 +13,18 @@ AI creators need more than a temporary file host: they need stable links for Civ
 - **Browser:** local conversion and direct S3 API upload.
 - **Storage:** a Cloudflare R2 bucket or Filebase IPFS bucket in your own account.
 - **Delivery:** readable URLs in the form `delivery-domain/file-name`.
-- **Control plane:** Workers KV records aliases, expiry, password gates, and delivery metadata.
+- **Control plane:** LinkBinding and ObjectLifecycle Durable Objects own Link and Object/Placement state; Workers KV is their public delivery projection.
 - **Preservation:** Filebase/IPFS and an optional Kubo node can keep content reachable after Filebase capacity is released.
 
 This is not a promise of permanent storage. It is a practical, user-controlled design that avoids dependence on one application server and makes the storage lifecycle explicit.
+
+Managed Object identity is `sha256:<digest>` of the exact final uploaded bytes.
+R2 keys and Filebase/Kubo CIDs are Placement locators, not Object identities;
+equal bytes stored in several providers share one ObjectLifecycle authority.
+The pre-release switch from provider-derived ObjectRefs starts a new
+LinkBinding routing epoch. Old KV projections and browser list caches are not
+compatible with it and must be discarded before deploying this cutover;
+R2/Filebase/Kubo physical data are not deleted by that reset.
 
 The lifecycle properties that Cividge must preserve are defined in
 [SPEC.md](SPEC.md). It is the contract for links, shared CID cleanup, expiry,
@@ -31,7 +39,7 @@ password gates, retries, and Kubo preservation.
 - Local Filebase CID detection: duplicate bytes become an alias instead of another upload.
 - Separate FIFO capacity controls for R2 and Filebase.
 - Optional Kubo pin preservation before Filebase releases an object.
-- Video Open Graph thumbnails that follow aliases and are deleted with their parent origin object.
+- Video previews are R2 auxiliary bytes owned by the parent ObjectLifecycle, not independent public Links.
 - Optional Windows **Send To** integration and external upload API.
 - One global per-file upload limit: **80 MB (80,000,000 bytes)**, checked on the original and final media bytes by the browser and on received bytes by the Worker API.
 - `X-Image-Width` and `X-Image-Height` response headers for newly uploaded images.
@@ -248,8 +256,8 @@ Install and start Kubo, then normally set its RPC URL to `http://127.0.0.1:5001`
 ## Delivery, expiry, and deletion behavior
 
 - Public links use `delivery-domain/file-name`, not CID URLs.
-- Video `.thumb.webp` objects are generated for Open Graph cards, hidden from the main list, and removed only when their parent video origin is removed.
-- Video thumbnail references follow aliases and renamed links.
+- A generated video preview is stored once per parent ObjectId in Worker R2 (including when the video itself is on Filebase) and served through the parent Link's `?preview=1` representation. It never gets its own LinkBinding or public KV Link, so the managed list contains only the video row. A real image uploaded with a `.thumb.webp` filename is unaffected. If preview R2 is unavailable, the video remains published and the list shows a placeholder.
+- The preview stays while any peer Link remains. After the final Link is removed, the parent ObjectLifecycle authorizes retryable preview cleanup. Preview generation failure does not undo the video upload; the list uses a video placeholder if no preview is available.
 - Expiry does not use a Cron sweep. On the first request after expiry, Cividge turns that link into a 404. A CID remains pinned while another alias to the same CID remains active.
 - Filebase FIFO releases the Filebase pin while preserving the URL for IPFS delivery. R2 FIFO deletes the old R2 object and its associated links.
 - For newly uploaded images, delivery responses include `X-Image-Width` and `X-Image-Height` so clients can choose whether to preload a direct image.

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "../kubo-placement.js";
+const objectId = "sha256:" + "a".repeat(64);
 
 test("Kubo acquisition rejoins an authoritative PINNING claim and reports PRESENT", async () => {
   const calls = [];
@@ -31,7 +32,7 @@ test("Kubo acquisition rejoins an authoritative PINNING claim and reports PRESEN
   });
 
   const result = await application.acquire({
-    objectRef: "ipfs:bafy-test",
+    objectRef: objectId,
     cid: "bafy-test",
     onState: state => states.push(state),
   });
@@ -45,7 +46,7 @@ test("Kubo acquisition rejoins an authoritative PINNING claim and reports PRESEN
   assert.equal(calls.some(call => call.action === "claimPlacement"), false);
   assert.deepEqual(calls.at(-1), {
     action: "reportPlacement",
-    objectRef: "ipfs:bafy-test",
+    objectRef: objectId,
     placement: "kubo",
     claimId: "existing",
     generation: 4,
@@ -80,7 +81,7 @@ test("Kubo acquisition failure returns authority to RETRYABLE", async () => {
 
   const states = [];
   await assert.rejects(() => application.acquire({
-    objectRef: "ipfs:bafy-retry",
+    objectRef: objectId,
     cid: "bafy-retry",
     onState: state => states.push(state),
   }), /offline/);
@@ -89,6 +90,7 @@ test("Kubo acquisition failure returns authority to RETRYABLE", async () => {
 });
 
 test("R2 import uses the same acquisition protocol and rejects a different CID", async () => {
+  const cidV0 = "QmA" + "a".repeat(43);
   const reports = [];
   let pinned = false;
   const application = createKuboPlacementApplication({
@@ -112,17 +114,17 @@ test("R2 import uses the same acquisition protocol and rejects a different CID",
   });
 
   await application.acquire({
-    objectRef: "r2:photo.webp",
-    cid: "bafy-expected",
-    performAcquire: async () => { pinned = true; return { success: true, cid: "bafy-expected" }; },
+    objectRef: objectId,
+    cid: cidV0,
+    performAcquire: async () => { pinned = true; return { success: true, cid: cidV0 }; },
   });
   assert.equal(reports.at(-1).outcome, "present");
 
   pinned = false;
   await assert.rejects(() => application.acquire({
-    objectRef: "r2:photo.webp",
-    cid: "bafy-expected",
-    performAcquire: async () => ({ success: true, cid: "bafy-other" }),
+    objectRef: objectId,
+    cid: cidV0,
+    performAcquire: async () => ({ success: true, cid: "Qma" + "a".repeat(43) }),
   }), /different content CID/);
   assert.equal(reports.at(-1).outcome, "retryable");
 });

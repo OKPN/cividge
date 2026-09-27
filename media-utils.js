@@ -28,17 +28,15 @@ export function getContentTypeFromFilename(filename, fallback = "application/oct
 
 const VIDEO_THUMBNAIL_PARENT_EXTENSIONS = new Set(["mp4", "webm", "mov"]);
 
+// Reserved R2 actuator namespace, not a public filename convention. Only the
+// parent ObjectLifecycle authorizes mutations within this prefix.
+export function isWorkerDerivedR2Key(storageKey = "") {
+  return String(storageKey).startsWith("derived/thumbnails/");
+}
+
 export function isVideoThumbnailParentKey(key = "") {
   const ext = String(key).split(".").pop().toLowerCase();
   return VIDEO_THUMBNAIL_PARENT_EXTENSIONS.has(ext);
-}
-
-export function getVideoThumbnailKey(originKey = "") {
-  return isVideoThumbnailParentKey(originKey) ? `${originKey}.thumb.webp` : null;
-}
-
-export function isGeneratedVideoThumbnailKey(key = "") {
-  return /\.(mp4|webm|mov)\.thumb\.webp$/i.test(String(key));
 }
 
 export async function getImageDimensions(blob, contentType = "") {
