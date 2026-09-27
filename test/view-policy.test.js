@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalFilenamePolicy, canonicalConversionMode, isConversionModeEnabled, filterManagedContents } from "../view-policy.js";
+import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, filterManagedContents } from "../view-policy.js";
 
 test("All, R2 and Filebase are filters over the same managed rows", () => {
   const rows = [
@@ -15,15 +15,19 @@ test("All, R2 and Filebase are filters over the same managed rows", () => {
 
 test("passthrough and output formats have one conversion mode", () => {
   assert.equal(isConversionModeEnabled("passthrough"), false);
-  for (const mode of ["image/webp", "image/jxl", "image/jpeg"]) {
+  for (const mode of ["webp", "jxl", "jpeg"]) {
     assert.equal(isConversionModeEnabled(mode), true);
   }
-  assert.equal(canonicalConversionMode("image/png"), "image/webp");
+  assert.equal(canonicalConversionMode("image/png"), "webp");
+  assert.equal(canonicalConversionMode("image/jxl"), "webp");
+  assert.equal(conversionModeToMime("passthrough"), null);
+  assert.equal(conversionModeToMime("webp"), "image/webp");
+  assert.equal(conversionModeToMime("jxl"), "image/jxl");
+  assert.equal(conversionModeToMime("jpeg"), "image/jpeg");
 });
 
-test("empty filename input and prior original-name token normalize to one policy", () => {
+test("empty filename input normalizes to the sole non-renaming policy", () => {
   assert.equal(canonicalFilenamePolicy(""), "{original}");
   assert.equal(canonicalFilenamePolicy("  "), "{original}");
-  assert.equal(canonicalFilenamePolicy("{name}"), "{original}");
   assert.equal(canonicalFilenamePolicy("{original}_{num:2}"), "{original}_{num:2}");
 });

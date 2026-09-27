@@ -1,12 +1,17 @@
 // UI projections only. These values do not authorize Link or Placement changes.
-const CONVERSION_MODES = new Set(["passthrough", "image/webp", "image/jxl", "image/jpeg"]);
+const CONVERSION_MODES = new Set(["passthrough", "webp", "jxl", "jpeg"]);
+const CONVERSION_MIME = Object.freeze({ webp: "image/webp", jxl: "image/jxl", jpeg: "image/jpeg" });
 
 export function canonicalConversionMode(input) {
-  return CONVERSION_MODES.has(input) ? input : "image/webp";
+  return CONVERSION_MODES.has(input) ? input : "webp";
+}
+
+export function conversionModeToMime(mode) {
+  return CONVERSION_MIME[canonicalConversionMode(mode)] || null;
 }
 
 export function canonicalFilenamePolicy(input) {
-  return String(input || "").trim().replaceAll("{name}", "{original}") || "{original}";
+  return String(input || "").trim() || "{original}";
 }
 
 export function isConversionModeEnabled(mode) {

@@ -18,7 +18,7 @@ import { normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gatew
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
 import { matchesSelectedRelayProbe } from "./relay-compat.js";
-import { canonicalFilenamePolicy, canonicalConversionMode, isConversionModeEnabled, filterManagedContents } from "./view-policy.js";
+import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, filterManagedContents } from "./view-policy.js";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -175,6 +175,10 @@ const i18nDict = {
     dataSyncDesc: "Civitai ウォッチリスト、Cloudflare R2 接続情報、画像変換設定を別の端末やスマホへ安全に引き継ぎます。",
     btnClearAllData: "🗑️ 全クリア",
     retentionPeriod: "⏳ 有効期間 (時限)",
+    cachePolicyLabel: "キャッシュポリシー",
+    cachePolicyBoard: "掲示板・一時共有（削除反映を優先）",
+    cachePolicyPublished: "ブログ・記録（edge最大7日）",
+    cachePolicyHint: "Filebase・Kuboに保持されていない場合、公開edgeは最大1日です。ブラウザは短いキャッシュのままです。",
     ttl1h: "1時間 (1時間後消滅)",
     ttl12h: "12時間 (12時間後消滅)",
     ttl1d: "1日間 (24時間後消滅)",
@@ -432,6 +436,10 @@ const i18nDict = {
     dataSyncDesc: "Securely sync Civitai creators watch list, Cloudflare R2 credentials, and converter settings to mobile or other devices.",
     btnClearAllData: "🗑️ Clear All",
     retentionPeriod: "⏳ Retention (TTL)",
+    cachePolicyLabel: "Cache policy",
+    cachePolicyBoard: "Board / temporary sharing (faster deletion)",
+    cachePolicyPublished: "Published / records (edge up to 7 days)",
+    cachePolicyHint: "Without Filebase or Kubo preservation, the public edge is capped at 1 day. Browser caching stays short.",
     ttlNever: "Keep Forever (No Expiry)",
     ttl1h: "1 Hour (Auto-expire)",
     ttl12h: "12 Hours (Auto-expire)",
@@ -1128,6 +1136,7 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
     if (mutationOptions.createOnly) payload.createOnly = true;
     if (mutationOptions.confirmPlacementPresent) payload.confirmPlacementPresent = true;
     if (mutationOptions.policyChange) payload.policyChange = true;
+    if (mutationOptions.cachePolicy) payload.cachePolicy = mutationOptions.cachePolicy;
     if (mutationOptions.uploadAttemptId) payload.uploadAttemptId = mutationOptions.uploadAttemptId;
     if (contentCid) payload.contentCid = contentCid;
     if (backend) payload.backend = backend;
@@ -3070,7 +3079,7 @@ function buildAppExportPayload() {
   if (currentCivitaiUser) payload.cu = currentCivitaiUser;
   if (civitaiUserList.length > 0) payload.cul = civitaiUserList;
 
-  payload.fmt = formatSelect?.value || "image/webp";
+  payload.fmt = getConversionMode();
   payload.pat = canonicalFilenamePolicy(renamePattern?.value);
 
   return payload;
@@ -4064,8 +4073,12 @@ closePinDisplayModalButton?.addEventListener("click", () => {
   if (pinDisplayModal) pinDisplayModal.style.display = "none";
 });
 
+function getConversionMode() {
+  return canonicalConversionMode(formatSelect?.value);
+}
+
 function isConversionEnabled() {
-  return isConversionModeEnabled(formatSelect?.value || "image/webp");
+  return isConversionModeEnabled(getConversionMode());
 }
 
 function isFilenameChanged() {
@@ -4091,6 +4104,7 @@ qualityRange?.addEventListener("input", () => {
 });
 
 formatSelect?.addEventListener("change", () => {
+  formatSelect.value = getConversionMode();
   localStorage.setItem("formatSelect", formatSelect.value);
   syncConversionQuality();
   render();
@@ -4098,7 +4112,7 @@ formatSelect?.addEventListener("change", () => {
 });
 
 renamePattern?.addEventListener("input", () => {
-  if (renamePattern.value.trim()) localStorage.setItem("renamePattern", canonicalFilenamePolicy(renamePattern.value));
+  localStorage.setItem("renamePattern", canonicalFilenamePolicy(renamePattern.value));
   render();
   updateRenamePreview();
 });
@@ -4111,6 +4125,7 @@ renamePattern?.addEventListener("blur", () => {
 clearRenamePattern?.addEventListener("click", () => {
   if (renamePattern) {
     renamePattern.value = "";
+    localStorage.setItem("renamePattern", canonicalFilenamePolicy(renamePattern.value));
     renamePattern.focus();
     updateRenamePreview();
   }
@@ -5345,7 +5360,7 @@ function updateRenamePreview() {
 
   // 画像以外（MP3等）なら変換設定に関わらず元拡張子を維持
   const ext = (isConvertOn && isFirstImage)
-    ? (extensions[formatSelect?.value || "image/webp"] || "webp")
+    ? (extensions[conversionModeToMime(getConversionMode())] || "webp")
     : (firstExt || "ext");
 
   const dummyName = firstFile ? firstFile.name.replace(/\.[^.]+$/, "") : "sample";
@@ -5977,7 +5992,7 @@ fileList?.addEventListener("change", (e) => {
 let lastConvertedSignature = null;
 
 function getCurrentConfigSignature() {
-  const format = formatSelect ? formatSelect.value : "image/webp";
+  const format = getConversionMode();
   const quality = qualityRange ? qualityRange.value : "85";
   const pattern = canonicalFilenamePolicy(renamePattern?.value);
   const fileSig = state.files.map(f => `${f.name}:${f.size}:${f.lastModified}`).join("|");
@@ -6089,9 +6104,9 @@ async function convertImage(file, index = 0) {
   }
 
   const options = {
-    mimeType: formatSelect ? formatSelect.value : "image/webp",
+    mimeType: conversionModeToMime(getConversionMode()),
     quality: qualityRange ? Number(qualityRange.value) / 100 : 0.85,
-    name: createOutputName(file.name, formatSelect ? formatSelect.value : "image/webp", index),
+    name: createOutputName(file.name, conversionModeToMime(getConversionMode()), index),
   };
 
   let finalBlob = null;
@@ -6546,6 +6561,8 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
       : requestedTtl;
     const expiresAt = ttlSeconds > 0 ? (Date.now() + ttlSeconds * 1000) : null;
     const civitaiTemporary = Boolean(uploadOptions.civitaiTemporary);
+    const cachePolicy = document.querySelector("#uploadCachePolicySelect")?.value === "PUBLISHED"
+      ? "PUBLISHED" : "BOARD";
 
     const arrayBuffer = await result.blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
@@ -6620,7 +6637,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             contentType, managedPlan.storageKey, password, null, ttlSeconds, expiresAt, false, null,
             managedPlan.baseDomain, true, null, imageDimensions?.width, imageDimensions?.height,
             civitaiTemporary, isFilebase ? null : calculatedCid, targetProvider,
-            { createOnly: true, uploadAttemptId: managedPlan.attemptId });
+            { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy });
         }
         result.isUploaded = true;
         result.uploadedProvider = targetProvider;
@@ -6686,7 +6703,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             civitaiTemporary,
             null,
             "filebase",
-            { confirmPlacementPresent: true }
+            { confirmPlacementPresent: true, cachePolicy }
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
           storeIpfsCid(kvKey, duplicate.cid);
@@ -6747,7 +6764,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
             civitaiTemporary,
             calculatedCid,
             "r2",
-            { confirmPlacementPresent: true }
+            { confirmPlacementPresent: true, cachePolicy }
           );
           if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
           storeR2Hash(kvKey, calculatedCid);
@@ -6890,7 +6907,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         civitaiTemporary,
         null,
         "filebase",
-        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId } : { confirmPlacementPresent: true }
+        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy } : { confirmPlacementPresent: true, cachePolicy }
       );
       result.kvKey = fbKvKey;
       
@@ -6940,7 +6957,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
         civitaiTemporary,
         calculatedCid,
         "r2",
-        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId } : { confirmPlacementPresent: true }
+        managedPlan ? { createOnly: true, uploadAttemptId: managedPlan.attemptId, cachePolicy } : { confirmPlacementPresent: true, cachePolicy }
       );
       result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
       result.kvKey = r2KvKey;
@@ -10152,29 +10169,25 @@ function createOutputName(originalName, mimeType, index = 0) {
   const baseName = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
   const originalExt = dotIndex > 0 ? originalName.slice(dotIndex + 1) : "";
 
-  const isRenameOn = isFilenameChanged();
   const isConvertOn = isConversionEnabled();
+  const filenamePolicy = canonicalFilenamePolicy(renamePattern?.value);
+  let safeBase = filenamePolicy.replaceAll("{original}", baseName);
 
-  let safeBase = baseName;
+  safeBase = safeBase.replace(/\{rand[ao]m(?::(\d+))?\}/g, (match, digits) => {
+    const len = digits ? parseInt(digits, 10) : 6;
+    return generateRandomString(len);
+  });
 
-  if (isRenameOn) {
-    const pattern = canonicalFilenamePolicy(renamePattern?.value);
-    safeBase = pattern.replaceAll("{original}", baseName);
+  safeBase = safeBase.replace(/\{num(?::(\d+))?\}/g, (match, digits) => {
+    const numValue = index + 1;
+    if (digits) {
+      const targetLength = parseInt(digits, 10);
+      return String(numValue).padStart(targetLength, "0");
+    }
+    return String(numValue);
+  });
 
-    safeBase = safeBase.replace(/\{rand[ao]m(?::(\d+))?\}/g, (match, digits) => {
-      const len = digits ? parseInt(digits, 10) : 6;
-      return generateRandomString(len);
-    });
-
-    safeBase = safeBase.replace(/\{num(?::(\d+))?\}/g, (match, digits) => {
-      const numValue = index + 1;
-      if (digits) {
-        const targetLength = parseInt(digits, 10);
-        return String(numValue).padStart(targetLength, "0");
-      }
-      return String(numValue);
-    });
-
+  if (filenamePolicy !== "{original}") {
     safeBase = safeBase.replace(/[\\/:*?"<>|]/g, "-");
   }
 

@@ -69,6 +69,19 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 
 ## 0. アーキテクチャの根本原則と倫理憲章 (Core Architecture Principles)
 
+### [PRINCIPLE-UI-IS-PROJECTION] UI は Domain の写像
+
+* **設計原則**: Domain 内部では、identity・不変条件・状態遷移・権限・capability・failure semantics が同じ意味を表すなら、プリミティブを重複させず、可能な限り一つの canonical state へ正規化する。一方、UI は人間向けの Presentation / Projection であり、理解や操作のしやすさのためにラベル、グループ、説明、視覚的な区別、操作手順を増やしてよい。UI 構造は Domain 構造と一対一である必要はない。
+* **境界**: UI 上の複数表現が同じ意味を持つ場合、保存・実行時には同じ canonical domain state へ正規化する。表示上だけの区別を独立した永続 state、authority、domain primitive に昇格させない。UI の利便性を理由に、Domain から除いた意味の重複を再導入しない。
+* **画像変換の例**: UI は「変換しない / WebP / JPEG XL / JPEG」と表示してよい。canonical な `conversionMode` は `passthrough | webp | jxl | jpeg` の一つだけとし、MIME type は実際の変換を行う境界で導出する。変換の有無を別の永続 boolean として持たない。
+* **ファイル名の例**: UI は「元のファイル名を維持」「名前を変更する」などの案内や選択肢を示してよい。保存・実行される `filenamePolicy` は `{original}` または具体的な pattern に正規化し、別の `renameEnabled` を永続化しない。空入力も `{original}` へ正規化する。
+
+「意味空間を減らす」は「UI の選択肢や説明を最小限まで削る」ことではない。たとえば UI に checkbox と select の二段階操作が必要でも、それをそのまま `boolean + mode` という二重の永続意味にしてはならない。**Domain は圧縮する。UI は人間のために展開してよい。UI は Domain の写像であり、Domain そのものではない。**
+
+### [INV-FILENAME-POLICY-CANONICAL]
+
+空文字列は filename policy ではない。非リネームの唯一の canonical representation は `{original}` とする。UI 入力途中の空欄は許すが、保存・復元・実行時には `{original}` へ正規化し、別の rename boolean を保存しない。
+
 ### [INV-CORE-001] 無料枠の徹底節約とサイバー攻撃バッファの維持原則 (Zero-Waste & Attack Buffer Principle)
 * **規則 (Rule)**:  
   本システムは、**Cloudflare の無料アカウント枠（KV 書き込み/リスト: 1日1,000回、KV 読み込み: 1日100,000回）の範囲内で完全に自活・運用されること** を絶対の前提とする。  
