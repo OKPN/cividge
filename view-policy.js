@@ -21,3 +21,18 @@ export function isConversionModeEnabled(mode) {
 export function filterManagedContents(contents, view) {
   return view === "all" ? contents : contents.filter(item => item.storageProvider === view);
 }
+
+export function requireConvertedBlob(blob, mimeType) {
+  if (!blob || blob.type !== mimeType) {
+    throw new Error(`要求形式 ${mimeType} の変換結果を得られませんでした`);
+  }
+  return blob;
+}
+
+export async function fetchManagedFiles(fetcher, endpoint, headers) {
+  const res = await fetcher(endpoint, { headers });
+  if (!res.ok) throw new Error(`KV台帳の取得に失敗しました (${res.status})`);
+  const data = await res.json();
+  if (!Array.isArray(data.files)) throw new Error("KV台帳の応答形式が不正です");
+  return data.files;
+}

@@ -18,7 +18,7 @@ import { normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gatew
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
 import { matchesSelectedRelayProbe } from "./relay-compat.js";
-import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, filterManagedContents } from "./view-policy.js";
+import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, filterManagedContents, requireConvertedBlob, fetchManagedFiles } from "./view-policy.js";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -1167,29 +1167,14 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
       if (ttl > 0) {
         payload.ttl = ttl;
         payload.expiresAt = expiresAt || (Date.now() + ttl * 1000);
-        try {
-          const ttlMap = JSON.parse(localStorage.getItem("fileTtlMap") || "{}");
-          ttlMap[key] = { ttl, expiresAt: payload.expiresAt };
-          localStorage.setItem("fileTtlMap", JSON.stringify(ttlMap));
-        } catch (e) {}
       } else if (expiresAt && Number(expiresAt) > 0) {
         // 保存先の状態更新時は継続時間を復元できない場合がある。絶対期限を優先する。
         payload.expiresAt = Number(expiresAt);
-        try {
-          const ttlMap = JSON.parse(localStorage.getItem("fileTtlMap") || "{}");
-          ttlMap[key] = { ttl: 0, expiresAt: payload.expiresAt };
-          localStorage.setItem("fileTtlMap", JSON.stringify(ttlMap));
-        } catch (e) {}
       } else {
         // ⏳ 0 または無期限化: KV側にも明示的に解除を指示
         payload.ttl = 0;
         payload.expiresAt = 0;
         payload.clearTtl = true;
-        try {
-          const ttlMap = JSON.parse(localStorage.getItem("fileTtlMap") || "{}");
-          delete ttlMap[key];
-          localStorage.setItem("fileTtlMap", JSON.stringify(ttlMap));
-        } catch (e) {}
       }
     }
     if (password && typeof password === "string" && password.trim().length > 0) {
@@ -1766,17 +1751,9 @@ async function fetchKvFiles() {
   }
   const token = getAdminApiToken();
   const endpoint = getKvApiEndpoint();
-  try {
-    const headers = {};
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(endpoint, { headers });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.files || [];
-  } catch (e) {
-    console.warn("Failed to fetch KV files:", e);
-    return [];
-  }
+  const headers = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return fetchManagedFiles(fetch, endpoint, headers);
 }
 
 // --- 🌐 R2 公開・配信ドメイン管理 ---
@@ -5375,7 +5352,7 @@ function updateRenamePreview() {
   
   let previewName = pattern.replaceAll("{original}", dummyName);
 
-  previewName = previewName.replace(/\{rand[ao]m(?::(\d+))?\}/g, (match, digits) => {
+  previewName = previewName.replace(/\{random(?::(\d+))?\}/g, (match, digits) => {
     const len = digits ? parseInt(digits, 10) : 6;
     return "a8Kx21".slice(0, Math.min(len, 6)).padEnd(len, "x");
   });
@@ -6134,10 +6111,10 @@ async function convertImage(file, index = 0) {
       // Canvas変換（生写真のGPS位置情報・Exifは自動更地化）
       finalBlob = await canvasToBlob(canvas, options.mimeType, options.quality);
     }
+    requireConvertedBlob(finalBlob, options.mimeType);
   } catch (err) {
     console.error("Image conversion error:", err);
-    alert(`画像変換エラー (${options.name}): ${err.message}`);
-    finalBlob = file;
+    throw new Error(`画像変換エラー (${options.name}): ${err.message}`, { cause: err });
   }
 
   const finalUrl = URL.createObjectURL(finalBlob);
@@ -6166,12 +6143,20 @@ async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) 
   const limitBytes = limitMb * 1024 * 1024;
 
   try {
-    const listCommand = new ListObjectsV2Command({
-      Bucket: bucketName,
-      MaxKeys: 1000,
-    });
-    const response = await s3.send(listCommand);
-    const contents = response.Contents || [];
+    const contents = [];
+    let continuationToken;
+    do {
+      const response = await s3.send(new ListObjectsV2Command({
+        Bucket: bucketName,
+        MaxKeys: 1000,
+        ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+      }));
+      contents.push(...(response.Contents || []));
+      if (response.IsTruncated && !response.NextContinuationToken) {
+        throw new Error("Filebase一覧の続きが取得できません");
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
     if (contents.length === 0) return;
 
     let currentTotalBytes = contents.reduce((acc, cur) => acc + (cur.Size || 0), 0);
@@ -7761,13 +7746,14 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
     renderStorageOnboardingCard();
     return;
   }
-  if (!forceRefresh && !hasAdminAccess() && storageCachedContents.length > 0) {
-    renderCurrentStoragePage();
-    return;
-  }
   if (storageCachedContents.length === 0) {
     storageCachedContents = ["r2", "filebase"].flatMap(loadDisplayCache);
-    if (storageCachedContents.length > 0) renderCurrentStoragePage();
+  }
+  // Startup and tab changes display only the local projection. The Refresh
+  // button is the explicit observation boundary for KV and provider lists.
+  if (!forceRefresh) {
+    renderCurrentStoragePage();
+    return;
   }
   try {
     // One delivery projection for both placement views. Provider observations
@@ -7799,7 +7785,8 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
   } catch (error) {
     if (fetchGeneration !== storageFetchGeneration) return;
     console.error("Storage fetch error:", error);
-    r2FileList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)}</span>`;
+    renderCurrentStoragePage();
+    r2FileList.insertAdjacentHTML("afterbegin", `<span class="item-meta error" role="status" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)} — 前回の一覧を表示しています</span>`);
   }
 }
 
@@ -7823,21 +7810,23 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
   try {
     let s3RawList = [];
     if (s3 && bucketName) {
-      try {
-        const command = new ListObjectsV2Command({
+      let continuationToken;
+      do {
+        const response = await s3.send(new ListObjectsV2Command({
           Bucket: bucketName,
           MaxKeys: 1000,
-        });
-        const response = await s3.send(command);
-        s3RawList = (response.Contents || []).map(item => ({
+          ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+        }));
+        s3RawList.push(...(response.Contents || []).map(item => ({
           Key: item.Key,
           Size: item.Size || 0,
           LastModified: item.LastModified,
-        }));
-      } catch (s3Err) {
-        console.warn("S3 ListObjectsV2 error:", s3Err);
-        if (!hasKvAccess) throw s3Err;
-      }
+        })));
+        if (response.IsTruncated && !response.NextContinuationToken) {
+          throw new Error("S3一覧の続きが取得できません");
+        }
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+      } while (continuationToken);
     }
 
     if (fetchGeneration !== storageFetchGeneration) return [];
@@ -8262,9 +8251,8 @@ async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bu
     if (!key) continue;
 
     // 🛡️ ストレージ分離ガード: 現在開いているストレージ（provider）とアイテムの所属が不一致なら絶対にKV削除しない
-    const itemProvider = item.storageProvider
-      ? normalizeDeliveryProvider(item.storageProvider)
-      : ((item.metadata?.backend === "r2" || item.metadata?.b === "r2" || cid === "r2") ? "r2" : "filebase");
+    const itemProvider = item.storageProvider;
+    if (itemProvider !== "r2" && itemProvider !== "filebase") continue;
     if (itemProvider !== targetProvider) {
       continue;
     }
@@ -8296,9 +8284,8 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
     if (!key) continue;
 
     // 🛡️ ストレージ分離ガード: 現在開いているストレージ（provider）とアイテムの所属が不一致なら絶対にKV削除しない
-    const itemProvider = item.storageProvider
-      ? normalizeDeliveryProvider(item.storageProvider)
-      : ((item.metadata?.backend === "r2" || item.metadata?.b === "r2" || cid === "r2") ? "r2" : "filebase");
+    const itemProvider = item.storageProvider;
+    if (itemProvider !== "r2" && itemProvider !== "filebase") continue;
     if (itemProvider !== targetProvider) {
       continue;
     }
@@ -10173,7 +10160,7 @@ function createOutputName(originalName, mimeType, index = 0) {
   const filenamePolicy = canonicalFilenamePolicy(renamePattern?.value);
   let safeBase = filenamePolicy.replaceAll("{original}", baseName);
 
-  safeBase = safeBase.replace(/\{rand[ao]m(?::(\d+))?\}/g, (match, digits) => {
+  safeBase = safeBase.replace(/\{random(?::(\d+))?\}/g, (match, digits) => {
     const len = digits ? parseInt(digits, 10) : 6;
     return generateRandomString(len);
   });

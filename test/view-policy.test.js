@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, filterManagedContents } from "../view-policy.js";
+import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, filterManagedContents, requireConvertedBlob, fetchManagedFiles } from "../view-policy.js";
 
 test("All, R2 and Filebase are filters over the same managed rows", () => {
   const rows = [
@@ -30,4 +30,20 @@ test("empty filename input normalizes to the sole non-renaming policy", () => {
   assert.equal(canonicalFilenamePolicy(""), "{original}");
   assert.equal(canonicalFilenamePolicy("  "), "{original}");
   assert.equal(canonicalFilenamePolicy("{original}_{num:2}"), "{original}_{num:2}");
+});
+
+test("failed conversion cannot silently retain original bytes under a new extension", () => {
+  const original = new Blob(["png"], { type: "image/png" });
+  assert.throws(() => requireConvertedBlob(original, "image/webp"), /image\/webp/);
+  assert.throws(() => requireConvertedBlob(null, "image/webp"), /image\/webp/);
+  assert.equal(requireConvertedBlob(new Blob(["webp"], { type: "image/webp" }), "image/webp").type, "image/webp");
+});
+
+test("failed managed-list fetch is not an empty observation", async () => {
+  const previousSnapshot = [{ rawKey: "public.example:kept.webp", storageProvider: "r2" }];
+  await assert.rejects(fetchManagedFiles(async () => { throw new Error("network down"); }, "/api", {}), /network down/);
+  await assert.rejects(fetchManagedFiles(async () => ({ ok: false, status: 503 }), "/api", {}), /503/);
+  await assert.rejects(fetchManagedFiles(async () => ({ ok: true, json: async () => ({ files: null }) }), "/api", {}), /応答形式/);
+  assert.deepEqual(previousSnapshot, [{ rawKey: "public.example:kept.webp", storageProvider: "r2" }]);
+  assert.deepEqual(await fetchManagedFiles(async () => ({ ok: true, json: async () => ({ files: [] }) }), "/api", {}), []);
 });

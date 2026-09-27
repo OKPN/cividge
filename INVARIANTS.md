@@ -3,8 +3,10 @@
 > **Lifecycle authority supersession.** Browser peer scans, tombstones,
 > client-side last-reference decisions, and direct physical deletion described
 > by older text are obsolete. `localStorage` is UI/cache only;
-> `host:filename` is the only Link identity; ObjectLifecycle is authoritative
-> for Link/Object/Placement transitions; delivery KV is a projection; and
+> `host:filename` is the only Link identity; LinkBinding is authoritative for
+> Link-key uniqueness, generation, binding, and policy; ObjectLifecycle is
+> authoritative for Object membership, Placement lifecycle, and release;
+> delivery KV is a projection; and
 > physical release requires an authority-issued task.
 
 ## Lifecycle authority
@@ -17,6 +19,11 @@
   no write, repair, delete, or release.
 - Object release requires an authoritative empty Link set. FIFO, expiry,
   manual delete, and Civitai cleanup only request release.
+- Public delivery distinguishes a successful canonical KV miss (404) from a
+  KV read failure or a known Link whose origin cannot be fetched (503,
+  `no-store`). The latter must never be cached as a missing Link.
+- A managed-list refresh failure retains the last local snapshot and reports
+  failure; it does not turn an unavailable observation into an empty list.
 - Worker executes R2 work. Browser/local holders execute Filebase/Kubo only
   after an issued task and report success or retryable failure. Their
   credentials are an explicit boundary, not lifecycle authority.
