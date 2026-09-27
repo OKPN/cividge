@@ -18,6 +18,7 @@ import { normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gatew
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
 import { matchesSelectedRelayProbe } from "./relay-compat.js";
+import { canonicalFilenamePolicy, canonicalConversionMode, isConversionModeEnabled, filterManagedContents } from "./view-policy.js";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -72,11 +73,11 @@ const i18nDict = {
     uploadLimitError: "ファイルサイズ ({size} MB) が上限の 80 MB を超えています。",
     uploadLimitCount: "80 MBを超えるファイル {count} 件を除外しました。",
     settings: "設定",
-    enableConvertLabel: "画像を変換する",
-    enableRenameLabel: "ファイル名をリネームする",
     outputFormat: "出力形式",
+    allStorageTab: "すべて",
+    passthroughFormat: "変換しない",
     quality: "品質",
-    renameRule: "リネーム規則",
+    renameRule: "ファイル名ルール",
     originalName: "元ファイル名",
     seq01: "連番 (01)",
     seq001: "連番 (001)",
@@ -328,11 +329,11 @@ const i18nDict = {
     uploadLimitError: "File size ({size} MB) exceeds the 80 MB limit.",
     uploadLimitCount: "Excluded {count} files over the 80 MB limit.",
     settings: "Settings",
-    enableConvertLabel: "Convert Images",
-    enableRenameLabel: "Rename Files",
     outputFormat: "Output Format",
+    allStorageTab: "All",
+    passthroughFormat: "No conversion",
     quality: "Quality",
-    renameRule: "Rename Pattern",
+    renameRule: "Filename Rule",
     originalName: "Original Name",
     seq01: "Sequence (01)",
     seq001: "Sequence (001)",
@@ -564,10 +565,6 @@ const copyAllPromptsBtn = document.querySelector("#copyAllPromptsBtn");
 const civitaiPromptsMap = {};
 
 // 設定要素
-const enableConvertCheck = document.querySelector("#enableConvertCheck");
-const convertSettingsArea = document.querySelector("#convertSettingsArea");
-const enableRenameCheck = document.querySelector("#enableRenameCheck");
-const renameSettingsArea = document.querySelector("#renameSettingsArea");
 const enableTtlCheck = document.querySelector("#enableTtlCheck");
 const tempTtlSelect = document.querySelector("#tempTtlSelect");
 const formatSelect = document.querySelector("#formatSelect");
@@ -724,9 +721,11 @@ const civitaiGalleryState = {
 };
 
 // R2 & Filebase ファイル一覧 & タブ要素
+const storageTabAll = document.querySelector("#storageTabAll");
 const storageTabR2 = document.querySelector("#storageTabR2");
 const storageTabFilebase = document.querySelector("#storageTabFilebase");
-let activeStorageTab = localStorage.getItem("activeStorageTab") || "r2";
+let activeStorageTab = localStorage.getItem("activeStorageTab") === "filebase" ? "filebase" : "r2";
+let managedStorageView = "all";
 
 const r2FileList = document.querySelector("#r2FileList");
 const reloadR2FilesButton = document.querySelector("#reloadR2FilesButton");
@@ -814,9 +813,9 @@ function applyLanguage(lang) {
   // 言語切替でも、件数0のオンボーディングを含めストレージ領域を必ず
   // 現在の言語で再描画する。従来は一覧が1件以上の場合だけだったため、
   // 未設定時の案内カードが切替後に古いDOMのまま残っていた。
-  const storageConfigured = activeStorageTab === "filebase"
-    ? isFilebaseConfigured()
-    : isR2Configured();
+  const storageConfigured = managedStorageView === "all"
+    ? (isR2Configured() || isFilebaseConfigured() || hasAdminAccess())
+    : (activeStorageTab === "filebase" ? isFilebaseConfigured() : isR2Configured());
   if (storageConfigured) {
     renderCurrentStoragePage();
   } else {
@@ -1659,7 +1658,7 @@ function recalculateStorageUsage(provider) {
   const countedKeys = new Set();
   let uniqueTotalSize = 0;
   for (const c of (storageCachedContents || [])) {
-    if (!c.isFromS3) continue;
+    if (c.storageProvider !== provider || !c.isFromS3) continue;
     const eKey = isFilebase ? (c.cid || getStoredIpfsCid(c.Key) || c.s3Key || c.Key) : (c.s3Key || c.Key);
     if (eKey && countedKeys.has(eKey)) continue;
     if (eKey) countedKeys.add(eKey);
@@ -1674,9 +1673,11 @@ function removeItemsFromLocalLedger(provider, keysToRemove, { purgeOriginAlso = 
   const keyList = Array.isArray(keysToRemove) ? keysToRemove : [keysToRemove];
   const keySet = new Set(keyList.filter(Boolean));
   if (keySet.size === 0) return;
+  storageFetchGeneration++;
 
   if (Array.isArray(storageCachedContents)) {
     storageCachedContents = storageCachedContents.filter(item => {
+      if (item.storageProvider !== provider) return true;
       const k1 = item.Key || item.name;
       const k2 = item.rawKey;
       const k3 = item.s3Key;
@@ -1687,7 +1688,7 @@ function removeItemsFromLocalLedger(provider, keysToRemove, { purgeOriginAlso = 
     });
   }
 
-  saveLedgerToLocalStorage(provider, storageCachedContents || []);
+  saveLedgerToLocalStorage(provider, (storageCachedContents || []).filter(item => item.storageProvider === provider));
   recalculateStorageUsage(provider);
   renderCurrentStoragePage();
 }
@@ -1711,6 +1712,7 @@ function removeCommittedLinkFromUi(linkKey) {
   renderUrlPalette();
   recalculateStorageUsage(activeStorageTab);
   renderCurrentStoragePage();
+  updateSelectedR2ActionButtonsState();
 }
 
 function retireManagedEntry(provider, item) {
@@ -1724,6 +1726,7 @@ function addOrUpdateLocalLedgerItem(provider, item) {
   if (item.entryKind !== "link" && item.entryKind !== "local") throw new Error("Managed entry kind is required");
   const targetKey = item.rawKey || (item.metadata?.d ? `${item.metadata.d}:${item.Key}` : (item.Key || item.name));
   if (!targetKey) return;
+  storageFetchGeneration++;
   if (item.entryKind === "local") setLocalEntryRetired(provider, item, false);
 
   if (!Array.isArray(storageCachedContents)) {
@@ -1732,16 +1735,16 @@ function addOrUpdateLocalLedgerItem(provider, item) {
 
   const existingIdx = storageCachedContents.findIndex(existing => {
     const existingRawKey = existing.rawKey || (existing.metadata?.d ? `${existing.metadata.d}:${existing.Key}` : (existing.Key || existing.name));
-    return existingRawKey === targetKey;
+    return existing.storageProvider === provider && existingRawKey === targetKey;
   });
 
   if (existingIdx >= 0) {
-    storageCachedContents[existingIdx] = { ...storageCachedContents[existingIdx], ...item };
+    storageCachedContents[existingIdx] = { ...storageCachedContents[existingIdx], ...item, storageProvider: provider };
   } else {
-    storageCachedContents.unshift(item);
+    storageCachedContents.unshift({ ...item, storageProvider: provider });
   }
 
-  saveLedgerToLocalStorage(provider, storageCachedContents);
+  saveLedgerToLocalStorage(provider, storageCachedContents.filter(entry => entry.storageProvider === provider));
   recalculateStorageUsage(provider);
   renderCurrentStoragePage();
 }
@@ -2859,31 +2862,17 @@ function loadSettings() {
   renderCivitaiUserSelect();
   updateCivitaiStatus();
 
-  const savedEnableConvert = localStorage.getItem("enableConvert");
-  if (savedEnableConvert !== null && enableConvertCheck) {
-    enableConvertCheck.checked = savedEnableConvert === "true";
-  }
-  if (convertSettingsArea && enableConvertCheck) {
-    convertSettingsArea.classList.toggle("is-disabled-area", !enableConvertCheck.checked);
-  }
-
-  const savedEnableRename = localStorage.getItem("enableRename");
-  if (savedEnableRename !== null && enableRenameCheck) {
-    enableRenameCheck.checked = savedEnableRename === "true";
-  }
-  if (renameSettingsArea && enableRenameCheck) {
-    renameSettingsArea.classList.toggle("is-disabled-area", !enableRenameCheck.checked);
-  }
-
   const savedEnableZip = localStorage.getItem("enableZip");
   if (savedEnableZip !== null && enableZipCheck) {
     enableZipCheck.checked = savedEnableZip === "true";
   }
 
   const savedFormat = localStorage.getItem("formatSelect");
-  if (savedFormat && extensions[savedFormat] && formatSelect) {
-    formatSelect.value = savedFormat;
+  if (formatSelect) {
+    formatSelect.value = canonicalConversionMode(savedFormat);
+    localStorage.setItem("formatSelect", formatSelect.value);
   }
+  syncConversionQuality();
 
   const savedQuality = localStorage.getItem("qualityRange");
   if (savedQuality) {
@@ -2892,8 +2881,9 @@ function loadSettings() {
   }
 
   const savedRename = localStorage.getItem("renamePattern");
-  if (savedRename && renamePattern) {
-    renamePattern.value = savedRename;
+  if (renamePattern) {
+    renamePattern.value = canonicalFilenamePolicy(savedRename);
+    localStorage.setItem("renamePattern", renamePattern.value);
   }
 
   syncStorageLimitControl();
@@ -3080,13 +3070,8 @@ function buildAppExportPayload() {
   if (currentCivitaiUser) payload.cu = currentCivitaiUser;
   if (civitaiUserList.length > 0) payload.cul = civitaiUserList;
 
-  const enableConvert = localStorage.getItem("enableConvert");
-  if (enableConvert !== null) payload.conv = (enableConvert === "true");
-
-  const enableRename = localStorage.getItem("enableRename");
-  if (enableRename !== null) payload.ren = (enableRename === "true");
-  const pattern = localStorage.getItem("renamePattern");
-  if (pattern) payload.pat = pattern;
+  payload.fmt = formatSelect?.value || "image/webp";
+  payload.pat = canonicalFilenamePolicy(renamePattern?.value);
 
   return payload;
 }
@@ -3192,17 +3177,16 @@ function applyAppImportPayload(payload) {
   }
 
   // 3. 変換・リネーム設定
-  if (payload.conv !== undefined) {
-    localStorage.setItem("enableConvert", String(payload.conv));
-    if (enableConvertCheck) enableConvertCheck.checked = Boolean(payload.conv);
+  if (payload.fmt !== undefined) {
+    const mode = canonicalConversionMode(payload.fmt);
+    localStorage.setItem("formatSelect", mode);
+    if (formatSelect) formatSelect.value = mode;
+    syncConversionQuality();
   }
-  if (payload.ren !== undefined) {
-    localStorage.setItem("enableRename", String(payload.ren));
-    if (enableRenameCheck) enableRenameCheck.checked = Boolean(payload.ren);
-  }
-  if (payload.pat) {
-    localStorage.setItem("renamePattern", payload.pat);
-    if (renamePattern) renamePattern.value = payload.pat;
+  if (payload.pat !== undefined) {
+    const policy = canonicalFilenamePolicy(payload.pat);
+    localStorage.setItem("renamePattern", policy);
+    if (renamePattern) renamePattern.value = policy;
   }
 
   // 4. IPFS CID 対応表の同期復元
@@ -4080,26 +4064,20 @@ closePinDisplayModalButton?.addEventListener("click", () => {
   if (pinDisplayModal) pinDisplayModal.style.display = "none";
 });
 
-// --- UI イベントリスナー ---
-enableConvertCheck?.addEventListener("change", () => {
-  const isChecked = enableConvertCheck.checked;
-  localStorage.setItem("enableConvert", String(isChecked));
-  if (convertSettingsArea) {
-    convertSettingsArea.classList.toggle("is-disabled-area", !isChecked);
-  }
-  render();
-  updateRenamePreview();
-});
+function isConversionEnabled() {
+  return isConversionModeEnabled(formatSelect?.value || "image/webp");
+}
 
-enableRenameCheck?.addEventListener("change", () => {
-  const isChecked = enableRenameCheck.checked;
-  localStorage.setItem("enableRename", String(isChecked));
-  if (renameSettingsArea) {
-    renameSettingsArea.classList.toggle("is-disabled-area", !isChecked);
-  }
-  render();
-  updateRenamePreview();
-});
+function isFilenameChanged() {
+  return canonicalFilenamePolicy(renamePattern?.value) !== "{original}";
+}
+
+function syncConversionQuality() {
+  if (qualityRange) qualityRange.disabled = !isConversionEnabled();
+  if (qualityOutput) qualityOutput.style.opacity = isConversionEnabled() ? "1" : "0.5";
+}
+
+// --- UI イベントリスナー ---
 
 enableZipCheck?.addEventListener("change", () => {
   const isChecked = enableZipCheck.checked;
@@ -4114,19 +4092,26 @@ qualityRange?.addEventListener("input", () => {
 
 formatSelect?.addEventListener("change", () => {
   localStorage.setItem("formatSelect", formatSelect.value);
+  syncConversionQuality();
+  render();
   updateRenamePreview();
 });
 
 renamePattern?.addEventListener("input", () => {
-  localStorage.setItem("renamePattern", renamePattern.value.trim());
+  if (renamePattern.value.trim()) localStorage.setItem("renamePattern", canonicalFilenamePolicy(renamePattern.value));
+  render();
   updateRenamePreview();
+});
+renamePattern?.addEventListener("blur", () => {
+  renamePattern.value = canonicalFilenamePolicy(renamePattern.value);
+  localStorage.setItem("renamePattern", renamePattern.value);
+  render();
 });
 
 clearRenamePattern?.addEventListener("click", () => {
   if (renamePattern) {
     renamePattern.value = "";
     renamePattern.focus();
-    localStorage.setItem("renamePattern", "");
     updateRenamePreview();
   }
 });
@@ -4148,7 +4133,7 @@ document.querySelector(".pattern-helpers")?.addEventListener("click", (event) =>
     const newPos = start + insertText.length;
     renamePattern.setSelectionRange(newPos, newPos);
 
-    localStorage.setItem("renamePattern", renamePattern.value.trim());
+    localStorage.setItem("renamePattern", canonicalFilenamePolicy(renamePattern.value));
     updateRenamePreview();
   }
 });
@@ -5199,7 +5184,7 @@ function createComfyBadgeHtml(file, result) {
   const meta = file.metaStatus;
   if (!meta) return '<div style="font-size: 10px; color: var(--muted); margin-top: 3px;">🔍 メタデータ解析中...</div>';
 
-  const isConvertOn = enableConvertCheck?.checked ?? true;
+  const isConvertOn = isConversionEnabled();
 
   let badge = "";
   if (meta.hasWorkflow) {
@@ -5327,8 +5312,8 @@ function setUiLock(locked) {
   const r2Ok = isR2Configured();
   const fbOk = isFilebaseConfigured();
   const hasFiles = state.files.length > 0;
-  const isConvertOn = enableConvertCheck?.checked ?? true;
-  const isRenameOn = enableRenameCheck?.checked ?? true;
+  const isConvertOn = isConversionEnabled();
+  const isRenameOn = isFilenameChanged();
   const isZipOn = enableZipCheck?.checked ?? false;
   const canProcessLocal = isConvertOn || isRenameOn || isZipOn;
 
@@ -5355,8 +5340,8 @@ function updateRenamePreview() {
     ? (firstFile.type.startsWith("image/") || ["jpg", "jpeg", "png", "webp", "gif", "avif", "bmp"].includes(firstExt.toLowerCase()))
     : true;
 
-  const isRenameOn = enableRenameCheck?.checked ?? true;
-  const isConvertOn = enableConvertCheck?.checked ?? true;
+  const isRenameOn = isFilenameChanged();
+  const isConvertOn = isConversionEnabled();
 
   // 画像以外（MP3等）なら変換設定に関わらず元拡張子を維持
   const ext = (isConvertOn && isFirstImage)
@@ -5371,9 +5356,9 @@ function updateRenamePreview() {
   }
 
   const rawPattern = renamePattern?.value;
-  const pattern = (rawPattern !== undefined && rawPattern !== "") ? rawPattern : "{name}";
+  const pattern = canonicalFilenamePolicy(rawPattern);
   
-  let previewName = pattern.replaceAll("{name}", dummyName);
+  let previewName = pattern.replaceAll("{original}", dummyName);
 
   previewName = previewName.replace(/\{rand[ao]m(?::(\d+))?\}/g, (match, digits) => {
     const len = digits ? parseInt(digits, 10) : 6;
@@ -5396,8 +5381,8 @@ function render() {
   const hasFiles = state.files.length > 0;
   if (fileCount) fileCount.textContent = `${state.files.length}件`;
 
-  const isConvertOn = enableConvertCheck?.checked ?? true;
-  const isRenameOn = enableRenameCheck?.checked ?? true;
+  const isConvertOn = isConversionEnabled();
+  const isRenameOn = isFilenameChanged();
   const isZipOn = enableZipCheck?.checked ?? false;
   const canProcessLocal = isConvertOn || isRenameOn || isZipOn;
 
@@ -5510,8 +5495,8 @@ function createCardActionHtml(file, result, index) {
   const lang = getAppLanguage();
   const dict = i18nDict[lang] || i18nDict.ja;
 
-  const isConvertOn = enableConvertCheck?.checked ?? true;
-  const isRenameOn = enableRenameCheck?.checked ?? true;
+  const isConvertOn = isConversionEnabled();
+  const isRenameOn = isFilenameChanged();
   const canProcessLocal = isConvertOn || isRenameOn;
   const r2Ok = isR2Configured();
   const fbOk = isFilebaseConfigured();
@@ -5927,6 +5912,16 @@ r2FileList?.addEventListener("change", (e) => {
         false, null, null, null, undefined, null, null,
         { policyChange: true }
       ).then(() => {
+        const provider = article?.dataset?.provider;
+        const current = storageCachedContents.find(item => item.storageProvider === provider && (item.rawKey || item.Key) === key);
+        if (current) {
+          addOrUpdateLocalLedgerItem(provider, {
+            ...current,
+            expiresAt: expiresAt || null,
+            ttl: ttlSeconds,
+            metadata: { ...current.metadata, expiresAt: expiresAt || null, ttl: ttlSeconds },
+          });
+        }
         // 成功フィードバック
         e.target.style.transition = "all 0.2s ease";
         e.target.style.borderColor = "#22c55e";
@@ -5982,14 +5977,12 @@ fileList?.addEventListener("change", (e) => {
 let lastConvertedSignature = null;
 
 function getCurrentConfigSignature() {
-  const isConvertOn = enableConvertCheck?.checked ?? true;
   const format = formatSelect ? formatSelect.value : "image/webp";
   const quality = qualityRange ? qualityRange.value : "85";
-  const isRenameOn = enableRenameCheck?.checked ?? true;
-  const pattern = renamePattern ? renamePattern.value : "";
+  const pattern = canonicalFilenamePolicy(renamePattern?.value);
   const fileSig = state.files.map(f => `${f.name}:${f.size}:${f.lastModified}`).join("|");
 
-  return `${isConvertOn}_${format}_${quality}_${isRenameOn}_${pattern}_${fileSig}`;
+  return `${format}_${format === "passthrough" ? "" : quality}_${pattern}_${fileSig}`;
 }
 
 function isConversionCacheValid() {
@@ -6077,7 +6070,7 @@ async function convertImage(file, index = 0) {
   const isImageExt = ["jpg", "jpeg", "png", "webp", "gif", "avif", "bmp", "jxl"].includes(fileExt);
   const isImage = isImageMime || isImageExt;
 
-  const isConvertOn = enableConvertCheck?.checked ?? true;
+  const isConvertOn = isConversionEnabled();
 
   if (!isImage || !isConvertOn) {
     const url = URL.createObjectURL(file);
@@ -7006,7 +6999,7 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
     // 🧬 アップロードされたファイルのワークフロー有無をローカルストレージに記録
     // （※画像変換ONの画像はCanvasでExif/WFが削除されるため、非変換時または動画のみ保持）
     try {
-      const isConvertOn = enableConvertCheck?.checked ?? true;
+  const isConvertOn = isConversionEnabled();
       const fileExt = (result.name || "").split('.').pop().toLowerCase();
       const isVideo = ["mp4", "webm", "mov"].includes(fileExt);
       const retainsWorkflow = (!isConvertOn || isVideo) && (result.metaStatus?.hasWorkflow || result.metaStatus?.hasPrompt);
@@ -7196,7 +7189,7 @@ function getStorageListLabels() {
 
 function updateStorageTabsUi() {
   if (storageTabR2 && storageTabFilebase) {
-    if (activeStorageTab === "filebase") {
+    if (managedStorageView === "filebase") {
       storageTabFilebase.style.border = "1px solid #38bdf8";
       storageTabFilebase.style.background = "rgba(56, 189, 248, 0.15)";
       storageTabFilebase.style.color = "#38bdf8";
@@ -7207,7 +7200,7 @@ function updateStorageTabsUi() {
       storageTabR2.style.color = "var(--muted)";
       storageTabR2.style.fontWeight = "600";
 
-    } else {
+    } else if (managedStorageView === "r2") {
       storageTabR2.style.border = "1px solid #f97316";
       storageTabR2.style.background = "rgba(249, 115, 22, 0.15)";
       storageTabR2.style.color = "#fb923c";
@@ -7218,11 +7211,27 @@ function updateStorageTabsUi() {
       storageTabFilebase.style.color = "var(--muted)";
       storageTabFilebase.style.fontWeight = "600";
 
+    } else {
+      for (const button of [storageTabR2, storageTabFilebase]) {
+        button.style.border = "1px solid var(--border)";
+        button.style.background = "rgba(255, 255, 255, 0.04)";
+        button.style.color = "var(--muted)";
+        button.style.fontWeight = "600";
+      }
     }
   }
+  if (storageTabAll) {
+    storageTabAll.style.border = managedStorageView === "all" ? "1px solid #a5b4fc" : "1px solid var(--border)";
+    storageTabAll.style.background = managedStorageView === "all" ? "rgba(165,180,252,0.15)" : "rgba(255,255,255,0.04)";
+    storageTabAll.style.color = managedStorageView === "all" ? "#c7d2fe" : "var(--muted)";
+  }
+  // Capacity and FIFO controls act on one provider, never on the All view.
+  const usage = document.querySelector("#storageUsage");
+  if (usage) usage.style.display = managedStorageView === "all" ? "none" : "flex";
+  if (autoFifoLabel) autoFifoLabel.style.display = managedStorageView === "all" ? "none" : "inline-flex";
   const r2WarningBadge = document.querySelector("#r2BillingWarningBadge");
   if (r2WarningBadge) {
-    r2WarningBadge.style.display = activeStorageTab === "filebase" ? "none" : "inline-flex";
+    r2WarningBadge.style.display = managedStorageView !== "r2" ? "none" : "inline-flex";
   }
   syncAutoFifoControl();
 }
@@ -7288,7 +7297,7 @@ r2PrevPageBtn?.addEventListener("click", () => {
 
 // ▶ 次へ
 r2NextPageBtn?.addEventListener("click", () => {
-  const visibleCount = storageCachedContents.filter(item => item.storageProvider === activeStorageTab).length;
+  const visibleCount = getVisibleManagedContents().length;
   const totalPages = Math.max(1, Math.ceil(visibleCount / (storagePerPage || 1)));
   if (storageCurrentPage < totalPages) {
     storageCurrentPage++;
@@ -7304,30 +7313,32 @@ r2PerPageSelect?.addEventListener("change", (e) => {
   renderCurrentStoragePage();
 });
 
-storageTabR2?.addEventListener("click", () => {
-  activeStorageTab = "r2";
-  localStorage.setItem("activeStorageTab", "r2");
+function getVisibleManagedContents() {
+  return filterManagedContents(storageCachedContents, managedStorageView);
+}
+
+function selectManagedStorageView(view) {
+  managedStorageView = view;
+  if (view !== "all") {
+    activeStorageTab = view;
+    localStorage.setItem("activeStorageTab", view);
+    syncStorageLimitControl();
+    renderR2DomainSelect(view);
+  }
   storageCurrentPage = 1;
   updateStorageTabsUi();
-  syncStorageLimitControl();
-  renderR2DomainSelect("r2");
-  const cached = loadDisplayCache("r2");
-  storageCachedContents = cached;
-  if (cached.length > 0) renderCurrentStoragePage();
-  fetchAndRenderR2Files({ forceRefresh: true });
+  recalculateStorageUsage(activeStorageTab);
+  renderCurrentStoragePage();
+  updateSelectedR2ActionButtonsState();
+}
+
+storageTabAll?.addEventListener("click", () => selectManagedStorageView("all"));
+storageTabR2?.addEventListener("click", () => {
+  selectManagedStorageView("r2");
 });
 
 storageTabFilebase?.addEventListener("click", () => {
-  activeStorageTab = "filebase";
-  localStorage.setItem("activeStorageTab", "filebase");
-  storageCurrentPage = 1;
-  updateStorageTabsUi();
-  syncStorageLimitControl();
-  renderR2DomainSelect("filebase");
-  const cached = loadDisplayCache("filebase");
-  storageCachedContents = cached;
-  if (cached.length > 0) renderCurrentStoragePage();
-  fetchAndRenderR2Files({ forceRefresh: true });
+  selectManagedStorageView("filebase");
 });
 
 reloadR2FilesButton?.addEventListener("click", () => {
@@ -7726,11 +7737,58 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
 async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivitaiTransfers = false } = {}) {
   if (!r2FileList) return;
   const fetchGeneration = ++storageFetchGeneration;
-  const requestedProvider = activeStorageTab;
   updateStorageTabsUi();
+  if (!isR2Configured() && !isFilebaseConfigured() && !hasAdminAccess()) {
+    storageCachedContents = [];
+    updateStoragePaginationUI(0);
+    renderStorageOnboardingCard();
+    return;
+  }
+  if (!forceRefresh && !hasAdminAccess() && storageCachedContents.length > 0) {
+    renderCurrentStoragePage();
+    return;
+  }
+  if (storageCachedContents.length === 0) {
+    storageCachedContents = ["r2", "filebase"].flatMap(loadDisplayCache);
+    if (storageCachedContents.length > 0) renderCurrentStoragePage();
+  }
+  try {
+    // One delivery projection for both placement views. Provider observations
+    // are joined to this same generation; a tab switch never starts a fetch.
+    const kvFiles = await fetchKvFiles();
+    if (fetchGeneration !== storageFetchGeneration) return;
+    const groups = await Promise.all(["r2", "filebase"].map(provider =>
+      fetchManagedProviderContents(provider, kvFiles, fetchGeneration, cleanupExpiredCivitaiTransfers)
+    ));
+    if (fetchGeneration !== storageFetchGeneration) {
+      // An explicit refresh may retire an expired temporary transfer. Its
+      // mutation invalidates this read; acquire one new common generation.
+      if (cleanupExpiredCivitaiTransfers) await fetchAndRenderR2Files({ forceRefresh: true });
+      return;
+    }
+    storageCachedContents = groups.flat().sort((a, b) => new Date(b.LastModified || 0) - new Date(a.LastModified || 0));
+    for (const provider of ["r2", "filebase"]) {
+      saveLedgerToLocalStorage(provider, storageCachedContents.filter(item => item.storageProvider === provider));
+    }
+    paletteFiles = storageCachedContents.map(item => {
+      const key = item.rawKey || item.Key || "";
+      const domain = getFileStoredDomain(key, item.Key || "", item.metadata?.allowedHost || item.metadata?.d || "").replace(/\/$/, "");
+      return { key: item.Key, url: `${domain}/${encodeURIComponent(item.Key)}` };
+    });
+    renderUrlPalette();
+    recalculateStorageUsage(activeStorageTab);
+    renderCurrentStoragePage();
+    auditDriftingFiles(storageCachedContents);
+  } catch (error) {
+    if (fetchGeneration !== storageFetchGeneration) return;
+    console.error("Storage fetch error:", error);
+    r2FileList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)}</span>`;
+  }
+}
 
-  const lang = getAppLanguage();
-  const dict = i18nDict[lang] || i18nDict.ja;
+async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles, fetchGeneration, cleanupExpiredCivitaiTransfers) {
+  if (fetchGeneration !== storageFetchGeneration) return [];
+
   const isFilebase = requestedProvider === "filebase";
   const s3 = getS3Client(requestedProvider);
   const bucketName = getBucketName(requestedProvider);
@@ -7740,35 +7798,10 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
 
   // 🌟 ストレージ未設定、かつ KV台帳連携もない場合のみオンボーディングカードを描画。
   // KV台帳連携がある場合は、S3秘密鍵が端末に入っていなくてもKV台帳ビュー（閲覧・共有専用）として一覧を表示！
-  if ((!isStorageConfigured || !s3 || !bucketName) && !hasKvAccess) {
-    storageCachedContents = [];
-    storageCurrentPage = 1;
-    updateStoragePaginationUI(0);
-    renderStorageOnboardingCard();
-    state.r2TotalSize = 0;
-    updateStorageUsageUI();
-    return;
-  }
-
-  // 🚀 [INV-CORE-005] Local-First 原則:
-  // 明示的な強制更新（forceRefresh === true）でない場合、手元キャッシュがあればサーバー通信（KV/S3）を完全スキップ！
-  if (!storageCachedContents || storageCachedContents.length === 0) {
-    const localLedger = loadDisplayCache(requestedProvider);
-    if (localLedger && localLedger.length > 0) {
-      storageCachedContents = localLedger;
-    }
-  }
-
-  if (!forceRefresh && !hasKvAccess && storageCachedContents && storageCachedContents.length > 0) {
-    recalculateStorageUsage(requestedProvider);
-    renderCurrentStoragePage();
-    return;
-  }
+  if ((!isStorageConfigured || !s3 || !bucketName) && !hasKvAccess) return [];
 
   const isViewerMode = (!isStorageConfigured || !s3 || !bucketName) && hasKvAccess;
-  if (!storageCachedContents || storageCachedContents.length === 0) {
-    r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
-  }
+  if (!storageCachedContents.length) r2FileList.innerHTML = `<span class="status-text saving" style="padding: 18px; display: block;">${providerLabel}${isViewerMode ? " (KV台帳モード)" : ""} ファイル一覧を取得中...</span>`;
 
   try {
     let s3RawList = [];
@@ -7790,7 +7823,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
       }
     }
 
-    if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
+    if (fetchGeneration !== storageFetchGeneration) return [];
     let contents = [];
     const baseDomain = (getSelectedR2Domain(requestedProvider) || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "");
 
@@ -7806,12 +7839,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
         if (cid) s3CidToItem.set(cid, s3Item);
       }
 
-      let kvFiles = [];
-      try {
-        kvFiles = await fetchKvFiles();
-      } catch (kvErr) {
-        console.warn("fetchKvFiles merge error:", kvErr);
-      }
+      const kvFiles = canonicalKvFiles.map(item => ({ ...item, metadata: { ...item.metadata } }));
 
       // KV アイテムの CID 補完と S3 実体キーの紐付け学習
       for (const kvItem of kvFiles) {
@@ -7967,12 +7995,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
         s3KeyToItem.set(s3Item.Key, s3Item);
       }
 
-      let kvFiles = [];
-      try {
-        kvFiles = await fetchKvFiles();
-      } catch (e) {
-        console.warn("fetchKvFiles error in R2 mode:", e);
-      }
+      const kvFiles = canonicalKvFiles.map(item => ({ ...item, metadata: { ...item.metadata } }));
 
       const consumedS3Keys = new Set();
       const processedPhysicalKeys = new Set();
@@ -8146,26 +8169,8 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
 
     // （※ 自宅 Kubo 遅延マイグレーションは一覧描画後に実行します）
 
-    if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
-    paletteFiles = contents.map(item => {
-      const itemKey = item.rawKey || item.Key || "";
-      const itemDisplayName = item.Key || "";
-      const rawAllowedHost = item.metadata?.allowedHost || item.metadata?.d || "";
-      const fileDomain = getFileStoredDomain(itemKey, itemDisplayName, rawAllowedHost).replace(/\/$/, "");
-      return {
-        key: item.Key,
-        url: `${fileDomain}/${encodeURIComponent(item.Key)}`,
-      };
-    });
-    renderUrlPalette();
-
-    r2FileList.innerHTML = "";
-    if (contents.length === 0) {
-      r2FileList.innerHTML = `<span class="item-meta" style="padding: 18px; color: var(--muted); display: block; text-align: center;">${escapeHtml(dict.noFilesR2)}</span>`;
-      state.r2TotalSize = 0;
-      updateStorageUsageUI();
-      return;
-    }
+    if (fetchGeneration !== storageFetchGeneration) return [];
+    if (contents.length === 0) return [];
 
     // 🏠 Kubo の連携設定とオンライン状態を事前チェック（未設定時・オフライン時のUI制御用）
     const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
@@ -8183,18 +8188,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
     // 更新日時の降順ソート
     contents.sort((a, b) => new Date(b.LastModified || 0) - new Date(a.LastModified || 0));
 
-    // 使用容量は Filebase / S3 に実体があるもののみカウント（アンピン済みは容量 0、同一実体エイリアスは重複排除して1回のみ合算）
-    const countedKeys = new Set();
-    let uniqueTotalSize = 0;
-    for (const c of contents) {
-      if (!c.isFromS3) continue;
-      const eKey = isFilebase ? (c.cid || getStoredIpfsCid(c.Key) || c.s3Key || c.Key) : (c.s3Key || c.Key);
-      if (eKey && countedKeys.has(eKey)) continue;
-      if (eKey) countedKeys.add(eKey);
-      uniqueTotalSize += (c.Size || 0);
-    }
-    state.r2TotalSize = uniqueTotalSize;
-    updateStorageUsageUI();
+    // Capacity display is derived from the committed shared snapshot.
 
     // 🔗 同一 CID 状態統合（CID State Unification） & 実体 Kubo 状態同期:
     // IPFSでは同一CID＝同一実体。同じCIDを持つ別名ファイル同士で Filebase保持状態・Kubo保持状態を完全同期
@@ -8232,17 +8226,11 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
     }
 
     // 全件キャッシュとページネーションUI更新
-    if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
-    storageCachedContents = contents;
-    saveLedgerToLocalStorage(requestedProvider, contents);
-    renderCurrentStoragePage();
-
-    // 🌊 IPFS 漂流中ファイルの安否確認＆3ストライク自動整理（Filebase / R2 共通）
-    auditDriftingFiles(contents);
+    if (fetchGeneration !== storageFetchGeneration) return [];
+    return contents;
   } catch (error) {
-    if (fetchGeneration !== storageFetchGeneration || activeStorageTab !== requestedProvider) return;
-    console.error("Storage fetch error:", error);
-    r2FileList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)}</span>`;
+    if (fetchGeneration !== storageFetchGeneration) return [];
+    throw error;
   }
 }
 
@@ -8323,7 +8311,7 @@ function renderCurrentStoragePage() {
   const dict = i18nDict[lang] || i18nDict.ja;
   // 取得元が現在タブと一致するカードだけを描画する。非同期取得中の旧タブ
   // データや、旧バージョンがメモリに残した未分類データを表示しない。
-  const visibleContents = storageCachedContents.filter(item => item.storageProvider === activeStorageTab);
+  const visibleContents = getVisibleManagedContents();
   const totalItems = visibleContents.length;
   const labels = getStorageListLabels();
 
@@ -8808,11 +8796,12 @@ async function auditDriftingFiles(contents) {
     const isAlive = await checkDriftSurvival(publicUrl);
     const result = recordDriftCheckResult(rawKey, isAlive);
 
-    const elem = r2FileList?.querySelector(`.result-item[data-key="${CSS.escape(rawKey)}"]`);
+    const elem = [...(r2FileList?.querySelectorAll(`.result-item[data-key="${CSS.escape(rawKey)}"]`) || [])]
+      .find(card => card.dataset.provider === item.storageProvider);
     const badge = elem?.querySelector(`.drifting-badge-${CSS.escape(rawKey)}`);
     if (result.shouldRetire) {
       console.warn(`🌊 漂流ファイルを3回連続の取得失敗により管理一覧から退役: ${rawKey}`);
-      removeItemsFromLocalLedger(activeStorageTab, [rawKey]);
+      removeItemsFromLocalLedger(item.storageProvider, [rawKey]);
       if (elem) {
         elem.style.transition = "opacity 0.4s ease, transform 0.4s ease";
         elem.style.opacity = "0";
@@ -8847,9 +8836,10 @@ async function auditDriftingFiles(contents) {
 // ストレージファイル操作イベント委譲
 r2FileList?.addEventListener("click", async (e) => {
   const target = e.target;
-  const isFilebase = activeStorageTab === "filebase";
-  const s3 = getS3Client(activeStorageTab);
-  const bucketName = getBucketName(activeStorageTab);
+  const rowProvider = target.closest(".result-item")?.dataset?.provider || activeStorageTab;
+  const isFilebase = rowProvider === "filebase";
+  const s3 = getS3Client(rowProvider);
+  const bucketName = getBucketName(rowProvider);
 
   // 📋 配信ドメインバッジ（＋の左）クリックで直接クリップボードにコピー
   if (target.classList.contains("copy-card-url-btn") || target.closest(".copy-card-url-btn")) {
@@ -8935,7 +8925,7 @@ r2FileList?.addEventListener("click", async (e) => {
 
       const newKey = ext ? `${newBaseName}${ext}` : newBaseName;
 
-      const isFilebase = activeStorageTab === "filebase";
+      const isFilebase = rowProvider === "filebase";
       const currentSize = parseInt(btn.dataset.size || article?.dataset?.size || "0", 10);
       let cid = btn.dataset.cid || article?.dataset?.cid || getStoredIpfsCid(oldKey) || getStoredIpfsCid(originalS3Key);
       if (!isFilebase && (!cid || cid === "")) {
@@ -8947,9 +8937,9 @@ r2FileList?.addEventListener("click", async (e) => {
       // 🚀 [INV-CORE-005] 手元台帳キャッシュからメタデータ取得と同名衝突チェック（kv.list 全件走査 2重連打を完全根絶）
       const localLedgerList = (storageCachedContents && storageCachedContents.length > 0)
         ? storageCachedContents
-        : (loadLedgerFromLocalStorage(activeStorageTab) || []);
+        : (loadLedgerFromLocalStorage(rowProvider) || []);
 
-      const currentKv = localLedgerList.find(f => (f.rawKey || f.Key) === oldKey);
+      const currentKv = localLedgerList.find(f => f.storageProvider === rowProvider && (f.rawKey || f.Key) === oldKey);
       if (currentKv) {
         if (!cid) cid = currentKv.cid || currentKv.contentCid || currentKv.metadata?.cid;
         if (!size) size = currentKv.Size || currentKv.size || currentKv.metadata?.size || 0;
@@ -9037,9 +9027,9 @@ r2FileList?.addEventListener("click", async (e) => {
         // 元Linkはpeerとしてそのまま残す。delete/update/renameは行わない。
 
         // 🚀 [INV-CORE-005] Local-First: 手元台帳に新名前レコードを追加して即時描画
-        const existingItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === oldKey);
+        const existingItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === oldKey);
         if (existingItem) {
-          addOrUpdateLocalLedgerItem(activeStorageTab, {
+          addOrUpdateLocalLedgerItem(rowProvider, {
             ...existingItem,
             // Presentation name and canonical Link identity are distinct.
             // Keep host:filename only in rawKey; using it as Key makes the
@@ -9078,7 +9068,7 @@ r2FileList?.addEventListener("click", async (e) => {
     const s3Key = article?.dataset?.s3key || displayName || oldKey;
     const cid = article?.dataset?.cid || "";
     const size = Number(article?.dataset?.size || 0);
-    const itemProvider = article?.dataset?.provider || activeStorageTab;
+    const itemProvider = article?.dataset?.provider || rowProvider;
     const isFilebase = itemProvider === "filebase";
     const currentDomain = (article?.dataset?.allowedhost || "").replace(/^https?:\/\//, "").replace(/\/$/, "").split(":")[0];
 
@@ -9147,7 +9137,7 @@ r2FileList?.addEventListener("click", async (e) => {
         }
 
         // 🚀 [INV-CORE-005] 手元台帳から既存アイテムのメタデータを取得（kv.list 呼び出しゼロ化）
-        const currentItem = (storageCachedContents || []).find(f => (f.rawKey || f.Key) === oldKey || f.Key === displayName);
+        const currentItem = (storageCachedContents || []).find(f => f.storageProvider === rowProvider && ((f.rawKey || f.Key) === oldKey || f.Key === displayName));
         if (currentItem) {
           unpinned = Boolean(currentItem.unpinned || currentItem.metadata?.unpinned);
           kuboStatus = currentItem.metadata?.kuboStatus || null;
@@ -9197,7 +9187,7 @@ r2FileList?.addEventListener("click", async (e) => {
         closeModal();
 
         // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳にエイリアスレコードを追加して即時描画
-        addOrUpdateLocalLedgerItem(activeStorageTab, {
+        addOrUpdateLocalLedgerItem(rowProvider, {
           storageProvider: targetBackend,
           entryKind: "link",
           Key: displayName,
@@ -9271,13 +9261,13 @@ r2FileList?.addEventListener("click", async (e) => {
     target.textContent = "解除中...";
 
     try {
-      const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const meta = cachedItem?.metadata || cachedItem || {};
-      const isR2 = meta.backend === "r2" || meta.b === "r2" || cachedItem?.backend === "r2" || activeStorageTab === "r2";
+      const isR2 = meta.backend === "r2" || meta.b === "r2" || cachedItem?.backend === "r2" || rowProvider === "r2";
       const objectRef = getObjectRefForUi(isR2 ? "r2" : "filebase", meta.s3Key || key, cid);
       await requestAuthorizedRelease(objectRef, "manual-placement", "kubo");
       if (cachedItem) {
-        addOrUpdateLocalLedgerItem(activeStorageTab, {
+        addOrUpdateLocalLedgerItem(rowProvider, {
           ...cachedItem,
           kuboStatus: "not_pinned",
           metadata: { ...(cachedItem.metadata || {}), kuboStatus: "not_pinned" },
@@ -9297,7 +9287,7 @@ r2FileList?.addEventListener("click", async (e) => {
   if (target.classList.contains("kubo-pin-manual-btn")) {
     const key = target.dataset.key;
     const cid = target.dataset.cid;
-    const provider = target.dataset.provider || activeStorageTab;
+    const provider = target.dataset.provider || rowProvider;
     if (!cid && provider !== "r2") return;
 
     const endpoint = getKuboRpcEndpoint();
@@ -9366,11 +9356,11 @@ r2FileList?.addEventListener("click", async (e) => {
         }
 
         // Projection metadata is synchronized from the lifecycle authority.
-        const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+        const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
 
         // 🚀 [INV-CORE-005] Local-First: 手元台帳を即座に更新して再描画（サーバー全件フェッチゼロ化）
         if (cachedItem) {
-          addOrUpdateLocalLedgerItem(activeStorageTab, {
+          addOrUpdateLocalLedgerItem(rowProvider, {
             ...cachedItem,
             kuboStatus: "pinned",
             contentCid: realCid || (isValidIpfsCid(cid) ? cid : null),
@@ -9414,7 +9404,7 @@ r2FileList?.addEventListener("click", async (e) => {
     }
 
     try {
-      const cachedBeforePin = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const cachedBeforePin = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const sourceMeta = cachedBeforePin?.metadata || cachedBeforePin || {};
       const acquisitionObjectRef = getObjectRefForUi("filebase", sourceMeta.s3Key || key, cid);
       activeKuboPins.add(cid);
@@ -9430,9 +9420,9 @@ r2FileList?.addEventListener("click", async (e) => {
         },
       });
       activeKuboPins.delete(cid);
-      const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       if (cachedItem) {
-        addOrUpdateLocalLedgerItem(activeStorageTab, {
+        addOrUpdateLocalLedgerItem(rowProvider, {
           ...cachedItem,
           kuboStatus: "pinned",
           kuboPlacementState: KUBO_PLACEMENT_STATE.PRESENT,
@@ -9473,7 +9463,7 @@ r2FileList?.addEventListener("click", async (e) => {
 
     try {
       // 🚀 [INV-CORE-005] 手元台帳から既存のメタデータを取得（kv.getWithMetadata 通信ゼロ化）
-      const cachedItem = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const cachedItem = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       const meta = cachedItem?.metadata || cachedItem || {};
       let currentKuboStatus = meta.kuboStatus || "not_pinned";
       const objectRef = getObjectRefForUi("filebase", meta.s3Key || s3Key || key, cid);
@@ -9498,9 +9488,9 @@ r2FileList?.addEventListener("click", async (e) => {
       }
 
       // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳の該当アイテムを更新し即座に再描画
-      const item = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const item = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       if (item) {
-        addOrUpdateLocalLedgerItem(activeStorageTab, {
+        addOrUpdateLocalLedgerItem(rowProvider, {
           ...item,
           isFromS3: false,
         });
@@ -9535,9 +9525,9 @@ r2FileList?.addEventListener("click", async (e) => {
       deleteR2Hash(key);
 
       // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳の該当アイテムを更新し即座に再描画
-      const item = (storageCachedContents || []).find(i => (i.rawKey || i.Key) === key);
+      const item = (storageCachedContents || []).find(i => i.storageProvider === rowProvider && (i.rawKey || i.Key) === key);
       if (item) {
-        addOrUpdateLocalLedgerItem(activeStorageTab, {
+        addOrUpdateLocalLedgerItem(rowProvider, {
           ...item,
           isFromS3: false,
         });
@@ -9561,7 +9551,7 @@ r2FileList?.addEventListener("click", async (e) => {
     // was the final Link and whether physical cleanup may start.
     if (!key) return;
     try {
-      const item = (storageCachedContents || []).find(entry => (entry.rawKey || entry.Key) === key);
+      const item = (storageCachedContents || []).find(entry => entry.storageProvider === rowProvider && (entry.rawKey || entry.Key) === key);
       if (!item) throw new Error("Managed entry is no longer in the current list");
       const isLocalEntry = item.entryKind === "local";
       const ok = await showCustomConfirm(
@@ -9572,7 +9562,7 @@ r2FileList?.addEventListener("click", async (e) => {
       );
       if (!ok) return;
       if (isLocalEntry) {
-        retireManagedEntry(activeStorageTab, item);
+        retireManagedEntry(rowProvider, item);
         return;
       }
       if (!hasAdminAccess()) throw new Error("Link deletion requires the KV Worker admin capability");
@@ -9580,7 +9570,7 @@ r2FileList?.addEventListener("click", async (e) => {
       await requestAuthorizedRelease(deleted?.objectRef, "manual-delete").catch(error => {
         console.warn("Object retained because release is not yet authorized:", error);
       });
-      removeItemsFromLocalLedger(activeStorageTab, [key]);
+      removeItemsFromLocalLedger(rowProvider, [key]);
     } catch (err) {
       await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
     }
@@ -9615,10 +9605,12 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
   // complete authoritative relation; this page must not infer shared Objects.
   try {
     for (const checkbox of checkboxes) {
-      const item = (storageCachedContents || []).find(entry => (entry.rawKey || entry.Key) === checkbox.dataset.key);
+      const provider = checkbox.closest(".result-item")?.dataset?.provider;
+      const item = (storageCachedContents || []).find(entry => entry.storageProvider === provider && (entry.rawKey || entry.Key) === checkbox.dataset.key);
       if (!item) throw new Error(`Managed entry is no longer in the current list: ${checkbox.dataset.key}`);
       if (item.entryKind === "local") {
-        setLocalEntryRetired(activeStorageTab, item, true);
+        setLocalEntryRetired(provider, item, true);
+        removeItemsFromLocalLedger(provider, [checkbox.dataset.key]);
         continue;
       }
       if (!hasAdminAccess()) throw new Error("Link deletion requires the KV Worker admin capability");
@@ -9626,8 +9618,8 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
       await requestAuthorizedRelease(deleted?.objectRef, "manual-bulk-delete").catch(error => {
         console.warn("Bulk release deferred:", error);
       });
+      removeItemsFromLocalLedger(provider, [checkbox.dataset.key]);
     }
-    removeItemsFromLocalLedger(activeStorageTab, checkboxes.map(cb => cb.dataset.key));
     updateSelectedR2ActionButtonsState();
   } catch (error) {
     await showCustomAlert(`一括削除に失敗しました: ${error.message}`, "❌ エラー");
@@ -10160,14 +10152,14 @@ function createOutputName(originalName, mimeType, index = 0) {
   const baseName = dotIndex > 0 ? originalName.slice(0, dotIndex) : originalName;
   const originalExt = dotIndex > 0 ? originalName.slice(dotIndex + 1) : "";
 
-  const isRenameOn = enableRenameCheck?.checked ?? true;
-  const isConvertOn = enableConvertCheck?.checked ?? true;
+  const isRenameOn = isFilenameChanged();
+  const isConvertOn = isConversionEnabled();
 
   let safeBase = baseName;
 
   if (isRenameOn) {
-    const pattern = renamePattern?.value?.trim() || "{name}";
-    safeBase = pattern.replaceAll("{name}", baseName);
+    const pattern = canonicalFilenamePolicy(renamePattern?.value);
+    safeBase = pattern.replaceAll("{original}", baseName);
 
     safeBase = safeBase.replace(/\{rand[ao]m(?::(\d+))?\}/g, (match, digits) => {
       const len = digits ? parseInt(digits, 10) : 6;

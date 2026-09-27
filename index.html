@@ -87,17 +87,14 @@
               <h2 data-i18n="settings">設定</h2>
             </div>
 
-            <!-- ① 画像変換設定トグル -->
+            <!-- ① 画像変換設定 -->
             <div class="settings-section">
               <div class="toggle-control-group">
-                <label class="check-label-row">
-                  <input type="checkbox" id="enableConvertCheck" checked>
-                  <span class="section-label-text" data-i18n="enableConvertLabel">画像を変換する</span>
-                </label>
                 <div id="convertSettingsArea" class="toggle-sub-area" style="display: flex; flex-direction: column; gap: 10px; margin-top: 4px;">
                   <label class="field">
                     <span data-i18n="outputFormat">出力形式</span>
                     <select id="formatSelect">
+                      <option value="passthrough" data-i18n="passthroughFormat">変換しない</option>
                       <option value="image/webp" selected>WebP</option>
                       <option value="image/jxl">JXL</option>
                       <option value="image/jpeg">JPEG</option>
@@ -115,22 +112,18 @@
               </div>
             </div>
 
-            <!-- ② リネーム設定トグル -->
+            <!-- ② ファイル名ルール -->
             <div class="settings-section" style="border-top: 1px dashed var(--border); padding-top: 14px;">
               <div class="toggle-control-group">
-                <label class="check-label-row">
-                  <input type="checkbox" id="enableRenameCheck" checked>
-                  <span class="section-label-text" data-i18n="enableRenameLabel">ファイル名をリネームする</span>
-                </label>
                 <div id="renameSettingsArea" class="toggle-sub-area" style="display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
                   <label class="field">
-                    <span data-i18n="renameRule">リネーム規則</span>
+                    <span data-i18n="renameRule">ファイル名ルール</span>
                     <div class="input-clear-wrapper">
-                      <input id="renamePattern" type="text" value="{name}" spellcheck="false" style="padding-right: 28px;">
+                      <input id="renamePattern" type="text" value="{original}" spellcheck="false" style="padding-right: 28px;">
                       <button type="button" id="clearRenamePattern" title="入力をクリア">&times;</button>
                     </div>
                     <div class="pattern-helpers" style="margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap;">
-                      <button type="button" class="tag-button" data-insert="{name}" data-i18n="originalName">元ファイル名</button>
+                      <button type="button" class="tag-button" data-insert="{original}" data-i18n="originalName">元ファイル名</button>
                       <button type="button" class="tag-button" data-insert="{num:2}" data-i18n="seq01">連番 (01)</button>
                       <button type="button" class="tag-button" data-insert="{num:3}" data-i18n="seq001">連番 (001)</button>
                       <button type="button" class="tag-button" data-insert="{randam:6}" data-i18n="random6">ランダム (6文字)</button>
@@ -609,6 +602,7 @@
         <section class="panel r2-files-panel">
           <div class="panel-heading" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
             <div class="storage-tab-group" style="display: flex; gap: 6px; align-items: center;">
+              <button type="button" class="tab-button active" id="storageTabAll" data-i18n="allStorageTab" style="font-size: 13px; font-weight: 700; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer;">すべて</button>
               <button type="button" class="tab-button active" id="storageTabR2" style="font-size: 13px; font-weight: 700; padding: 6px 14px; border-radius: 6px; border: 1px solid #f97316; background: rgba(249, 115, 22, 0.15); color: #fb923c; cursor: pointer; transition: all 0.15s ease;">⚡ Cloudflare R2</button>
               <button type="button" class="tab-button" id="storageTabFilebase" style="font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); color: var(--muted); cursor: pointer; transition: all 0.15s ease;">🪐 Filebase</button>
             </div>
