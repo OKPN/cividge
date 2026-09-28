@@ -9,7 +9,7 @@ import { KUBO_PLACEMENT_STATE } from "../kubo-placement.js";
 const STORAGE_LEDGER_KEY_PREFIX = "cividge_managed_projection_v5_";
 const RETIRED_LOCAL_ENTRY_KEY_PREFIX = "cividge_retired_local_entries_v1_";
 
-function localEntryIdentity(item) {
+export function localEntryIdentity(item) {
   return String(item?.s3Key || item?.Key || item?.name || "");
 }
 

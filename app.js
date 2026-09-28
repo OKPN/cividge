@@ -9,7 +9,7 @@ import { createManagedPreflight } from "./upload/managed-preflight.js";
 import { createUploadOrchestrator } from "./upload/upload-orchestrator.js";
 import { createVideoThumbnailRegistration } from "./upload/video-thumbnail.js";
 import { recordUploadedWorkflow } from "./upload/workflow-cache.js";
-import { getRetiredLocalEntries, setLocalEntryRetired, saveLedgerToLocalStorage, loadLedgerFromLocalStorage, loadDisplayCache } from "./managed/managed-cache.js";
+import { localEntryIdentity, getRetiredLocalEntries, setLocalEntryRetired, saveLedgerToLocalStorage, loadLedgerFromLocalStorage, loadDisplayCache } from "./managed/managed-cache.js";
 import { createWorkerClient } from "./api/worker-client.js";
 import { createFilenameTools } from "./upload/filename-policy.js";
 import { createStorageConnections } from "./storage/connections.js";

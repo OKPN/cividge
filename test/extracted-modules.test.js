@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createFilenameTools } from "../upload/filename-policy.js";
 import { createWorkerClient } from "../api/worker-client.js";
-import { loadDisplayCache, loadLedgerFromLocalStorage, saveLedgerToLocalStorage } from "../managed/managed-cache.js";
+import { localEntryIdentity, loadDisplayCache, loadLedgerFromLocalStorage, saveLedgerToLocalStorage } from "../managed/managed-cache.js";
 import { detectComfyMetadata } from "../media/metadata.js";
 import { applyFastStartToMp4 } from "../media/mp4-faststart.js";
 import { createR2Content } from "../storage/r2-content.js";
@@ -59,6 +60,13 @@ test("extracted managed cache displays local observations but not cached Link au
   } finally {
     globalThis.localStorage = previousStorage;
   }
+});
+
+test("managed refresh uses the same exported identity as the local retirement cache", () => {
+  assert.equal(localEntryIdentity({ s3Key: "physical-key", Key: "display-name" }), "physical-key");
+  assert.equal(localEntryIdentity({ Key: "display-name" }), "display-name");
+  const appSource = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+  assert.match(appSource, /import \{[^}]*\blocalEntryIdentity\b[^}]*\} from "\.\/managed\/managed-cache\.js"/s);
 });
 
 test("extracted media operations retain empty metadata and non-MP4 passthrough", async () => {
