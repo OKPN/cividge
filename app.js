@@ -8,6 +8,7 @@ import { createUploadState } from "./upload/upload-state.js";
 import { createManagedPreflight } from "./upload/managed-preflight.js";
 import { createUploadOrchestrator } from "./upload/upload-orchestrator.js";
 import { createVideoThumbnailRegistration } from "./upload/video-thumbnail.js";
+import { createVideoPreviewCache } from "./media/video-preview-cache.js";
 import { recordUploadedWorkflow } from "./upload/workflow-cache.js";
 import { localEntryIdentity, getRetiredLocalEntries, setLocalEntryRetired, saveLedgerToLocalStorage, loadLedgerFromLocalStorage, loadDisplayCache } from "./managed/managed-cache.js";
 import { createWorkerClient } from "./api/worker-client.js";
@@ -698,6 +699,9 @@ async function requestAuthorizedRelease(objectRef, reason, placement = null) {
   if (!objectRef || !hasAdminAccess()) return null;
   const action = placement ? "requestPlacementRelease" : "requestRelease";
   const result = await lifecycleRequest({ action, objectRef, reason, ...(placement ? { placement } : {}) });
+  if (!placement && Array.isArray(result?.lifecycle?.links) && result.lifecycle.links.length === 0) {
+    void videoPreviewCache.remove(objectRef).catch(() => {});
+  }
   if (result?.browserTasks?.length) await executeAuthorizedBrowserReleaseTasks(objectRef, result.browserTasks);
   return result;
 }
@@ -4233,7 +4237,15 @@ const { ensureStorageCapacityFilebase, ensureStorageCapacityR2 } = createStorage
 const prepareManagedUpload = createManagedPreflight({ lifecycleRequest, linkBindingRequest,
   getSelectedR2Domain, getCurrentOrigin: () => window.location.origin,
   buildKvKey, getIpfsCidFromS3Response });
-const queueVideoThumbnail = createVideoThumbnailRegistration({ hasAdminAccess, getCustomKvWorkerUrl, getAdminApiToken });
+const videoPreviewCache = createVideoPreviewCache();
+const queueVideoThumbnail = createVideoThumbnailRegistration({ hasAdminAccess, getCustomKvWorkerUrl, getAdminApiToken,
+  cachePreview: (objectId, blob) => videoPreviewCache.write(objectId, blob),
+  onPreviewCached: objectId => {
+    for (const card of r2FileList.querySelectorAll("article.result-item")) {
+      if (card.dataset.objectid === objectId) void showVideoPreview(card, objectId);
+    }
+  },
+});
 const executeUpload = createUploadOrchestrator({
   getS3Client, getBucketName, hasAdminAccess, calculateFilebaseCid,
   prepareManagedUpload, linkBindingRequest, lifecycleRequest, registerKvCid,
@@ -5520,6 +5532,29 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
 
 
 // 📄 現在のページに該当するストレージカード群をDOM描画
+async function showVideoPreview(article, objectId, publicUrl = article.dataset.previewurl) {
+  if (!objectId || !publicUrl) return;
+  let blob = null;
+  try { blob = await videoPreviewCache.read(objectId); } catch (_) { /* cache unavailable */ }
+  if (!blob) {
+    try { blob = await videoPreviewCache.fetchOnMiss(objectId, publicUrl); } catch (_) { /* keep placeholder */ }
+  }
+  if (!blob || !article.isConnected || article.dataset.objectid !== objectId) return;
+  const link = article.querySelector(".thumb-link");
+  if (!link) return;
+  const objectUrl = URL.createObjectURL(blob);
+  const img = document.createElement("img");
+  img.className = "thumb";
+  img.alt = "";
+  img.src = objectUrl;
+  img.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+  img.addEventListener("error", () => {
+    URL.revokeObjectURL(objectUrl);
+    img.replaceWith(Object.assign(document.createElement("div"), { className: "thumb format-badge", textContent: "VIDEO" }));
+  }, { once: true });
+  link.replaceChildren(img);
+}
+
 function renderCurrentStoragePage() {
   if (!r2FileList) return;
   const lang = getAppLanguage();
@@ -5618,13 +5653,13 @@ function renderCurrentStoragePage() {
           <span style="font-size: 9px; font-weight: 700; letter-spacing: 0.5px;">PROTECTED</span>
         </div>
       `;
-    } else if (item.isCached && (isImage || isVideo)) {
+    } else if (item.isCached && isImage) {
       // Cached rows are shown without fetching their public URL on startup.
-      thumbHtml = `<div class="thumb format-badge">${escapeHtml(isVideo ? "VIDEO" : ext.toUpperCase())}</div>`;
+      thumbHtml = `<div class="thumb format-badge">${escapeHtml(ext.toUpperCase())}</div>`;
     } else if (isImage) {
       thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}" loading="lazy">`;
     } else if (isVideo) {
-      thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}?preview=1" loading="lazy" onerror="this.onerror=null;this.outerHTML='<div class=\'thumb format-badge\'>VIDEO</div>'">`;
+      thumbHtml = `<div class="thumb format-badge">VIDEO</div>`;
     } else {
       thumbHtml = `<div class="thumb format-badge">${escapeHtml(ext.toUpperCase() || "FILE")}</div>`;
     }
@@ -5816,6 +5851,26 @@ function renderCurrentStoragePage() {
     `;
 
     r2FileList.append(article);
+
+    if (isVideo && !hasPassword) {
+      article.dataset.previewurl = publicUrl;
+      const knownObjectId = item.objectId || item.metadata?.oid || item.metadata?.objectId;
+      if (/^sha256:[0-9a-f]{64}$/.test(knownObjectId || "")) {
+        article.dataset.objectid = knownObjectId;
+        void showVideoPreview(article, knownObjectId);
+      } else if (item.entryKind === "link" && hasAdminAccess()) {
+        // Older presentation caches may lack ObjectId. Resolve only this Link;
+        // thumbnail display never requires a managed-list Refresh.
+        void objectIdForManagedLink(itemKey).then(objectId => {
+          if (!article.isConnected || !managedController.getContents().includes(item)) return;
+          item.objectId = objectId;
+          item.metadata = { ...(item.metadata || {}), oid: objectId, objectId };
+          saveLedgerToLocalStorage(item.storageProvider, managedController.getContents().filter(row => row.storageProvider === item.storageProvider));
+          article.dataset.objectid = objectId;
+          return showVideoPreview(article, objectId);
+        }).catch(() => {});
+      }
+    }
 
     if (checkRemoteFileWf(item.Key)) {
       const placeholder = article.querySelector('.r2-wf-badge-placeholder');

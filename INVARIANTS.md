@@ -404,6 +404,15 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 * 同一originの同一ブラウザでは、前回表示した管理一覧をlocalStorageの最終観測projectionから復元し、reload後も表示を継続する。cached / freshはmanaged UI projectionの鮮度であり、`HistoryLink`や`CachedLink`という別のLink domain stateではない。
 * 復元した行の表示（Displayed）はObject / Link / Placementの現在の存在証明（Authoritatively Exists）ではない。一方、正本でないことは非表示にする理由ではない（Not authoritative != Do not display）。明示Refreshの成功またはこのブラウザでacknowledgeされたmutationまで、cached viewを表示してよい。
 
+### [INV-PREVIEW-CACHE-IS-PRESENTATION-ONLY] プレビューキャッシュは表示専用
+* ブラウザ内の動画サムネイルは表示を速めるための再生成可能なcacheであり、Link、Placement、Object lifecycleの存在証明や削除許可に使用しない。取得・保存・削除に失敗しても管理一覧と親動画の状態は変えない。
+
+### [INV-PREVIEW-CACHE-FOLLOWS-OBJECT-IDENTITY] 親ObjectIdに従うプレビュー
+* 動画サムネイルのcache keyは親ObjectIdとする。同名でもObjectIdが異なる動画に古いpreviewを再利用しない。filenameやLink keyをpreviewのidentityにしない。
+
+### [INV-CACHED-PREVIEW-MAY-SURVIVE-RELOAD] 再読み込み後の表示継続
+* 一度生成または正常取得した動画previewは、同一ブラウザでreload後も表示してよい。managed一覧のRefreshとpreview cache参照・不足時の個別取得は別操作とする。
+
 ### [INV-MANAGED-VIEW-FAILURE-DOES-NOT-ERASE] 観測失敗は空集合ではない
 * 更新・観測の失敗を「管理対象が0件」と解釈してはならない。既に表示可能なcached / current viewがある場合は保持し、失敗をUIへ示す。
 * 明示Refreshが成功して0件を返した場合だけ、空一覧を新しい観測として採用し、保存済みprojectionも空へ更新する。

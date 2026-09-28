@@ -57,6 +57,7 @@ export function saveLedgerToLocalStorage(provider, contents) {
       item.unpinned || item.metadata?.unpinned ? 1 : 0,
       item.password || item.passwordHash || item.metadata?.password || item.metadata?.passwordHash ? 1 : 0,
       item.mime || item.metadata?.mime || "",
+      item.objectId || item.metadata?.oid || item.metadata?.objectId || "",
     ]);
     localStorage.setItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`, JSON.stringify(tuples));
   } catch (e) {
@@ -95,6 +96,7 @@ export function loadLedgerFromLocalStorage(provider) {
       const unpinned = t[15] === 1;
       const isPasswordProtected = t[16] === 1;
       const mime = t[17] || undefined;
+      const objectId = /^sha256:[0-9a-f]{64}$/.test(t[18] || "") ? t[18] : undefined;
       return {
         Key: name,
         name,
@@ -112,6 +114,7 @@ export function loadLedgerFromLocalStorage(provider) {
         entryKind,
         isPasswordProtected,
         mime,
+        objectId,
         ttl,
         expiresAt,
         metadata: {
@@ -125,6 +128,8 @@ export function loadLedgerFromLocalStorage(provider) {
           bucket,
           unpinned,
           mime,
+          oid: objectId,
+          objectId,
           ttl,
           expiresAt
         },
