@@ -15,6 +15,7 @@ import { createFilenameTools } from "./upload/filename-policy.js";
 import { createStorageConnections } from "./storage/connections.js";
 import { i18nDict } from "./ui/i18n.js";
 import { insertFilenamePatternToken } from "./ui/filename-pattern-input.js";
+import { canUseCivitaiPostIntent, projectedFinalUploadMedia } from "./ui/civitai-capability.js";
 import { detectComfyMetadata } from "./media/metadata.js";
 import QRCode from "qrcode";
 import * as fflate from "fflate";
@@ -3686,17 +3687,14 @@ function createCardActionHtml(file, result, index) {
     ? "font-size: 11px; padding: 0 8px; height: 28px;"
     : "opacity: 0.35; font-size: 11px; padding: 0 8px; height: 28px; cursor: not-allowed;";
 
-  const currentName = result ? result.name : file.name;
-  const ext = currentName.split('.').pop().toLowerCase();
-  const isCivitaiSupported = ["jpg", "jpeg", "png", "webp", "mp4", "webm"].includes(ext);
+  const canUseCivitai = canUseCivitaiPostIntent(projectedFinalUploadMedia(file, result, getConversionMode()));
   const isProtected = Boolean(file.hasPassword || result?.hasPassword);
-  const civitaiOk = upOk && isCivitaiSupported && !isProtected;
+  const civitaiOk = upOk && canUseCivitai && !isProtected;
   const civitaiStyle = civitaiOk
     ? "color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); font-size: 11px; padding: 0 8px; height: 28px;"
     : "opacity: 0.35; font-size: 11px; padding: 0 8px; height: 28px; cursor: not-allowed;";
   let civitaiBtnTitle = "リネームを無視して変換・5分間だけ一時保存し、Civitaiの投稿画面を開く";
   if (!upOk) civitaiBtnTitle = "ストレージ未接続のためCivitai連携不可";
-  else if (!isCivitaiSupported) civitaiBtnTitle = "Civitai非対応フォーマット";
   else if (isProtected) civitaiBtnTitle = "パスワード保護中のファイルはCivitai連携不可";
 
   if (result && result.isUploaded) {
@@ -3716,7 +3714,7 @@ function createCardActionHtml(file, result, index) {
       <input type="text" class="url-output" value="${escapeHtml(deliveryUrl)}" readonly style="width: 140px; font-size: 11px; height: 28px; padding: 0 6px; background: rgba(0,0,0,0.3); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8; border-radius: 4px;" title="クリックで全選択＆コピー" onclick="this.select()">
       <button type="button" class="ghost-button copy-button" style="font-size: 11px; padding: 0 8px; height: 28px;">${escapeHtml(dict.copyUrl || "コピー")}</button>
       <button type="button" class="ghost-button download-single-btn" data-index="${index}" style="font-size: 11px; padding: 0 8px; height: 28px;" title="${dlBtnTitle}" ${dlBtnDisabled}>📥 DL</button>
-      ${!result.hasPassword ? `<button type="button" class="ghost-button civitai-post-btn" data-index="${index}" data-url="${escapeHtml(deliveryUrl)}" data-name="${escapeHtml(result.name)}" style="${civitaiStyle}" title="${civitaiBtnTitle}" ${civitaiOk ? '' : 'disabled'}>🎨 Civitai</button>` : ""}
+      ${canUseCivitai ? `<button type="button" class="ghost-button civitai-post-btn" data-index="${index}" data-url="${escapeHtml(deliveryUrl)}" data-name="${escapeHtml(result.name)}" style="${civitaiStyle}" title="${civitaiBtnTitle}" ${civitaiOk ? '' : 'disabled'}>🎨 Civitai</button>` : ""}
     `;
   }
 
@@ -3732,7 +3730,7 @@ function createCardActionHtml(file, result, index) {
     <button type="button" class="ghost-button download-single-btn" data-index="${index}" style="font-size: 11px; padding: 0 8px; height: 28px;" title="${dlBtnTitle}" ${dlBtnDisabled}>📥 DL</button>
     <button type="button" class="ghost-button upload-r2-btn" data-index="${index}" style="${r2Style}" title="${r2Ok ? 'このファイルをCloudflare R2へアップロード' : 'R2接続設定が未完了'}" ${r2Ok ? '' : 'disabled'}>⚡ R2</button>
     <button type="button" class="ghost-button upload-filebase-btn" data-index="${index}" style="${fbStyle}" title="${fbOk ? 'このファイルをFilebase (IPFS)へアップロード' : 'Filebase接続設定が未完了'}" ${fbOk ? '' : 'disabled'}>🪐 IPFS</button>
-    <button type="button" class="ghost-button civitai-post-btn" data-index="${index}" style="${civitaiStyle}" title="${civitaiBtnTitle}" ${civitaiOk ? '' : 'disabled'}>🎨 Civitai</button>
+    ${canUseCivitai ? `<button type="button" class="ghost-button civitai-post-btn" data-index="${index}" style="${civitaiStyle}" title="${civitaiBtnTitle}" ${civitaiOk ? '' : 'disabled'}>🎨 Civitai</button>` : ""}
   `;
 }
 
@@ -5580,6 +5578,7 @@ function renderCurrentStoragePage() {
     const publicUrl = getPublicDeliveryUrl(item.Key, isFilebase ? "filebase" : "r2", fileDomain);
 
     const hasPassword = Boolean(item.isPasswordProtected || item.password || item.metadata?.passwordHash || item.metadata?.password);
+    const canUseCivitai = canUseCivitaiPostIntent({ name: itemDisplayName, mimeType: item.metadata?.mime || item.mime });
     const plainPwd = item.password || item.metadata?.password;
     const pwdBadgeHtml = hasPassword
       ? `<span class="password-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;" title="${escapeHtml(labels.protected)}">🔒 ${plainPwd ? `${labels.passphrase} ${escapeHtml(plainPwd)}` : labels.protected}</span>`
@@ -5692,7 +5691,7 @@ function renderCurrentStoragePage() {
       actionButtonsHtml = `
         ${r2CardTtlSelect}
         ${r2CardDomainBadge}
-        ${!hasPassword ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Civitai の投稿画面を開く">🎨 Civitai</button>` : ""}
+        ${canUseCivitai ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); ${hasPassword ? 'opacity: 0.35; cursor: not-allowed;' : ''}" title="${hasPassword ? 'パスワード保護中のファイルはCivitai連携不可' : 'Civitai の投稿画面を開く'}" ${hasPassword ? 'disabled' : ''}>🎨 Civitai</button>` : ""}
         <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${isFromS3 ? '1' : '0'}">${item.entryKind === "local" ? (lang === "en" ? "Remove from list" : "一覧から退場") : labels.delete}</button>
       `;
     } else {
@@ -5759,7 +5758,7 @@ function renderCurrentStoragePage() {
       actionButtonsHtml = `
         ${r2CardTtlSelect}
         ${r2CardDomainBadge}
-        ${!hasPassword ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Civitai の投稿画面を開く">🎨 Civitai</button>` : ""}
+        ${canUseCivitai ? `<button type="button" class="ghost-button civitai-r2-post-btn" data-url="${escapeHtml(publicUrl)}" data-name="${escapeHtml(itemDisplayName)}" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); ${hasPassword ? 'opacity: 0.35; cursor: not-allowed;' : ''}" title="${hasPassword ? 'パスワード保護中のファイルはCivitai連携不可' : 'Civitai の投稿画面を開く'}" ${hasPassword ? 'disabled' : ''}>🎨 Civitai</button>` : ""}
         <button type="button" class="ghost-button danger-button delete-r2-file-btn" data-key="${escapeHtml(itemKey)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-cid="${escapeHtml(itemCid || "")}" data-origin="${item.isFromS3 ? '1' : '0'}">${item.entryKind === "local" ? (lang === "en" ? "Remove from list" : "一覧から退場") : escapeHtml(dict.deleteNow)}</button>
       `;
     }

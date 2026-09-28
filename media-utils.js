@@ -26,6 +26,14 @@ export function getContentTypeFromFilename(filename, fallback = "application/oct
   return MIME_TYPES[ext] || fallback;
 }
 
+// Keep upload conversion and pre-upload capability projection on the same
+// image classification. This does not describe Civitai's accepted formats.
+export function isConvertibleImage(file) {
+  const ext = String(file?.name || "").split(".").pop().toLowerCase();
+  return Boolean(file?.type?.startsWith("image/") ||
+    ["jpg", "jpeg", "png", "webp", "gif", "avif", "bmp", "jxl"].includes(ext));
+}
+
 const VIDEO_THUMBNAIL_PARENT_EXTENSIONS = new Set(["mp4", "webm", "mov"]);
 
 // Reserved R2 actuator namespace, not a public filename convention. Only the

@@ -53,7 +53,7 @@ test("extracted managed cache restores Link and local observations without makin
   try {
     saveLedgerToLocalStorage("r2", [
       { entryKind: "link", Key: "a.webp", rawKey: "host.example:a.webp", Size: 10, ttl: 604800, expiresAt: 1900000000000,
-        s3Key: null, passwordHash: "do-not-persist-this-hash", metadata: { backend: "filebase_rpc", bucket: "private-bucket", unpinned: true } },
+        s3Key: null, passwordHash: "do-not-persist-this-hash", metadata: { backend: "filebase_rpc", bucket: "private-bucket", unpinned: true, mime: "image/webp" } },
       { entryKind: "local", Key: "local.webp", rawKey: "local.webp", Size: 20 },
     ]);
     assert.equal(loadLedgerFromLocalStorage("r2").length, 2);
@@ -65,6 +65,7 @@ test("extracted managed cache restores Link and local observations without makin
     assert.equal(loadDisplayCache("r2")[0].metadata.backend, "filebase_rpc");
     assert.equal(loadDisplayCache("r2")[0].metadata.unpinned, true);
     assert.equal(loadDisplayCache("r2")[0].isPasswordProtected, true);
+    assert.equal(loadDisplayCache("r2")[0].metadata.mime, "image/webp");
     assert.doesNotMatch([...values.values()].join(""), /do-not-persist-this-hash/);
   } finally {
     globalThis.localStorage = previousStorage;

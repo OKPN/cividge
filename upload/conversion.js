@@ -1,6 +1,7 @@
 import encodeJxl, { init as initJxl } from "@jsquash/jxl/encode.js";
 import jxlWasmUrl from "@jsquash/jxl/codec/enc/jxl_enc.wasm?url";
 import { conversionModeToMime, requireConvertedBlob } from "../view-policy.js";
+import { isConvertibleImage } from "../media-utils.js";
 
 let jxlInitialized = false;
 async function ensureJxl() {
@@ -42,11 +43,7 @@ function canvasToBlob(canvas, mimeType, quality) {
 
 export function createImageConverter({ getConversionMode, isConversionEnabled, qualityRange, createOutputName }) {
   async function convertImage(file, index = 0) {
-    const dotIndex = file.name.lastIndexOf(".");
-    const fileExt = dotIndex > 0 ? file.name.slice(dotIndex + 1).toLowerCase() : "";
-    const isImageMime = file.type && file.type.startsWith("image/");
-    const isImageExt = ["jpg", "jpeg", "png", "webp", "gif", "avif", "bmp", "jxl"].includes(fileExt);
-    const isImage = isImageMime || isImageExt;
+    const isImage = isConvertibleImage(file);
 
     const isConvertOn = isConversionEnabled();
 
