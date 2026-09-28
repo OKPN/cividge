@@ -268,6 +268,8 @@ const copyComposerTextButton = document.querySelector("#copyComposerTextButton")
 // QRコードモーダル要素
 const qrModal = document.querySelector("#qrModal");
 const qrCanvas = document.querySelector("#qrCanvas");
+const qrContainer = document.querySelector("#qrContainer");
+const qrStatus = document.querySelector("#qrStatus");
 const closeQrModalButton = document.querySelector("#closeQrModalButton");
 
 // 言語切替
@@ -2316,9 +2318,6 @@ fetchAndRenderCivitaiGallery();
 
 // --- イベントリスナー: R2 設定自動保存 ---
 function saveR2SettingsAuto() {
-  s3ClientR2 = null;
-  s3ClientFilebase = null;
-
   // 🛡️ 入力欄を操作中（フォーカス中）の消去のみ許可し、触っていない別アコーディオンの既存設定を誤削除しない
   const safeSaveField = (inputEl, key) => {
     if (!inputEl) return;
@@ -2857,18 +2856,24 @@ let lastGeneratedSyncUrl = "";
 const copySyncUrlButton = document.querySelector("#copySyncUrlButton");
 
 async function openSyncQrModal() {
-  saveR2SettingsAuto();
-  const payload = buildAppExportPayload();
-  const hasData = payload.a || payload.fb || payload.kv || payload.ku || payload.cu || (payload.cul && payload.cul.length > 0) || (payload.dl && payload.dl.length > 0);
-  if (!hasData) {
-    alert("⚠️ 引き継ぐ設定（クラウドストレージ接続設定またはCivitaiクリエイターリスト）がありません。");
-    return;
-  }
-
+  const messages = i18nDict[getAppLanguage()] || i18nDict.ja;
+  lastGeneratedSyncUrl = "";
+  if (qrContainer) qrContainer.style.display = "none";
+  if (qrStatus) qrStatus.textContent = messages.qrGenerating;
+  if (copySyncUrlButton) copySyncUrlButton.disabled = true;
+  if (qrModal) qrModal.style.display = "grid";
   try {
+    saveR2SettingsAuto();
+    const payload = buildAppExportPayload();
+    const hasData = payload.a || payload.fb || payload.kv || payload.ku || payload.cu || (payload.cul && payload.cul.length > 0) || (payload.dl && payload.dl.length > 0);
+    if (!hasData) {
+      if (qrStatus) qrStatus.textContent = messages.qrNoData;
+      return;
+    }
     const jsonStr = JSON.stringify(payload);
     const compressed = compressPayloadSync(jsonStr);
     lastGeneratedSyncUrl = `${window.location.origin}${window.location.pathname}#sync=z.${compressed}`;
+    if (copySyncUrlButton) copySyncUrlButton.disabled = false;
 
     if (qrCanvas) {
       await QRCode.toCanvas(qrCanvas, lastGeneratedSyncUrl, {
@@ -2880,12 +2885,14 @@ async function openSyncQrModal() {
           light: "#ffffff",
         },
       });
+      if (qrContainer) qrContainer.style.display = "inline-block";
     }
-
-    if (qrModal) qrModal.style.display = "grid";
+    if (qrStatus) qrStatus.textContent = "";
   } catch (err) {
     console.error("QR Code generation error:", err);
-    alert("QRコードの生成に失敗しました。");
+    if (qrStatus) qrStatus.textContent = /too big to be stored in a QR Code/i.test(err?.message || "")
+      ? messages.qrTooLarge
+      : messages.qrFailed;
   }
 }
 
