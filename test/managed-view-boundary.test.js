@@ -13,6 +13,13 @@ test("managed card rendering never starts a provider or Worker observation", () 
   assert.doesNotMatch(renderer, /\bobserveMissingFilebaseCids\s*\(/);
 });
 
+test("cached image rows use the original public URL without a managed refresh", () => {
+  assert.doesNotMatch(renderer, /item\.isCached\s*&&\s*isImage/);
+  assert.match(renderer, /else if \(isImage\)\s*\{[\s\S]*?src="\$\{escapeHtml\(publicUrl\)\}"/);
+  assert.match(renderer, /if \(isImage && !hasPassword\)[\s\S]*?addEventListener\("error"/);
+  assert.match(renderer, /event\.currentTarget\.replaceWith\(fallback\)/);
+});
+
 test("tab and page projection paths do not start a network observation", () => {
   const begin = source.indexOf("function selectManagedStorageView(view) {");
   const end = source.indexOf('reloadR2FilesButton?.addEventListener("click"', begin);

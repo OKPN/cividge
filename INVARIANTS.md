@@ -413,6 +413,12 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 ### [INV-CACHED-PREVIEW-MAY-SURVIVE-RELOAD] 再読み込み後の表示継続
 * 一度生成または正常取得した動画previewは、同一ブラウザでreload後も表示してよい。managed一覧のRefreshとpreview cache参照・不足時の個別取得は別操作とする。
 
+### [INV-PREVIEW-INDEPENDENT-OF-MANAGED-REFRESH] プレビュー復元と一覧更新の分離
+* 管理一覧の行を復元した後、画像は元Objectの公開URLをpreviewとして表示し、動画は親ObjectIdのderived preview cacheを参照する。いずれも一覧全体のRefreshを必要とせず、不足しているpreviewだけを個別取得できる。
+
+### [INV-PREVIEW-FAILURE-DOES-NOT-ERASE-MANAGED-ROW] プレビュー失敗は行を消さない
+* 画像・動画previewの取得や表示に失敗した場合はpreviewだけをplaceholderに戻す。managed row、Link、Placement、Object lifecycleを削除・無効化しない。
+
 ### [INV-MANAGED-VIEW-FAILURE-DOES-NOT-ERASE] 観測失敗は空集合ではない
 * 更新・観測の失敗を「管理対象が0件」と解釈してはならない。既に表示可能なcached / current viewがある場合は保持し、失敗をUIへ示す。
 * 明示Refreshが成功して0件を返した場合だけ、空一覧を新しい観測として採用し、保存済みprojectionも空へ更新する。

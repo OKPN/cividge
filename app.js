@@ -5653,10 +5653,8 @@ function renderCurrentStoragePage() {
           <span style="font-size: 9px; font-weight: 700; letter-spacing: 0.5px;">PROTECTED</span>
         </div>
       `;
-    } else if (item.isCached && isImage) {
-      // Cached rows are shown without fetching their public URL on startup.
-      thumbHtml = `<div class="thumb format-badge">${escapeHtml(ext.toUpperCase())}</div>`;
     } else if (isImage) {
+      // The original public image is its preview, including for locally restored rows.
       thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}" loading="lazy">`;
     } else if (isVideo) {
       thumbHtml = `<div class="thumb format-badge">VIDEO</div>`;
@@ -5851,6 +5849,15 @@ function renderCurrentStoragePage() {
     `;
 
     r2FileList.append(article);
+
+    if (isImage && !hasPassword) {
+      article.querySelector(".thumb-link img.thumb")?.addEventListener("error", event => {
+        const fallback = document.createElement("div");
+        fallback.className = "thumb format-badge";
+        fallback.textContent = ext.toUpperCase() || "IMAGE";
+        event.currentTarget.replaceWith(fallback);
+      }, { once: true });
+    }
 
     if (isVideo && !hasPassword) {
       article.dataset.previewurl = publicUrl;
