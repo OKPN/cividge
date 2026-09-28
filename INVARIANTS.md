@@ -413,6 +413,10 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 ### [INV-CACHED-PREVIEW-MAY-SURVIVE-RELOAD] 再読み込み後の表示継続
 * 一度生成または正常取得した動画previewは、同一ブラウザでreload後も表示してよい。managed一覧のRefreshとpreview cache参照・不足時の個別取得は別操作とする。
 
+### [INV-CACHED-VIDEO-PREVIEW-RESTORES-ON-STARTUP] 起動時の動画preview復元
+* 復元したmanaged動画行に親ObjectIdがあり、そのObjectIdのpreviewが同一originのCache Storageに存在する場合、初期描画で利用する。managed一覧のRefreshを必要としない。
+* preview cacheはService Workerの静的asset cache更新時にも保持する。cache miss時は既知の公開Linkの `?preview=1` だけを個別取得でき、失敗しても行は残す。cache hitはObject/Link/Placementの存在証明ではない。
+
 ### [INV-PREVIEW-INDEPENDENT-OF-MANAGED-REFRESH] プレビュー復元と一覧更新の分離
 * 管理一覧の行を復元した後、画像は元Objectの公開URLをpreviewとして表示し、動画は親ObjectIdのderived preview cacheを参照する。いずれも一覧全体のRefreshを必要とせず、不足しているpreviewだけを個別取得できる。
 

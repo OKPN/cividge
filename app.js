@@ -9,6 +9,7 @@ import { createManagedPreflight } from "./upload/managed-preflight.js";
 import { createUploadOrchestrator } from "./upload/upload-orchestrator.js";
 import { createVideoThumbnailRegistration } from "./upload/video-thumbnail.js";
 import { createVideoPreviewCache } from "./media/video-preview-cache.js";
+import { showManagedVideoPreview } from "./media/managed-video-preview.js";
 import { recordUploadedWorkflow } from "./upload/workflow-cache.js";
 import { localEntryIdentity, getRetiredLocalEntries, setLocalEntryRetired, saveLedgerToLocalStorage, loadLedgerFromLocalStorage, loadDisplayCache } from "./managed/managed-cache.js";
 import { createWorkerClient } from "./api/worker-client.js";
@@ -5540,26 +5541,7 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
 
 // 📄 現在のページに該当するストレージカード群をDOM描画
 async function showVideoPreview(article, objectId, publicUrl = article.dataset.previewurl) {
-  if (!objectId || !publicUrl) return;
-  let blob = null;
-  try { blob = await videoPreviewCache.read(objectId); } catch (_) { /* cache unavailable */ }
-  if (!blob) {
-    try { blob = await videoPreviewCache.fetchOnMiss(objectId, publicUrl); } catch (_) { /* keep placeholder */ }
-  }
-  if (!blob || !article.isConnected || article.dataset.objectid !== objectId) return;
-  const link = article.querySelector(".thumb-link");
-  if (!link) return;
-  const objectUrl = URL.createObjectURL(blob);
-  const img = document.createElement("img");
-  img.className = "thumb";
-  img.alt = "";
-  img.src = objectUrl;
-  img.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
-  img.addEventListener("error", () => {
-    URL.revokeObjectURL(objectUrl);
-    img.replaceWith(Object.assign(document.createElement("div"), { className: "thumb format-badge", textContent: "VIDEO" }));
-  }, { once: true });
-  link.replaceChildren(img);
+  return showManagedVideoPreview(article, objectId, publicUrl, videoPreviewCache);
 }
 
 function renderCurrentStoragePage() {

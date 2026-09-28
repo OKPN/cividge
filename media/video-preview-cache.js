@@ -1,6 +1,6 @@
 // Browser-only presentation cache. The parent ObjectId, never a filename or
 // Link key, identifies a generated video preview.
-const CACHE_NAME = "cividge-video-previews-v1";
+export const VIDEO_PREVIEW_CACHE_NAME = "cividge-video-previews-v1";
 const OBJECT_ID = /^sha256:[0-9a-f]{64}$/;
 
 export function createVideoPreviewCache({ cacheStorage = globalThis.caches,
@@ -13,7 +13,7 @@ export function createVideoPreviewCache({ cacheStorage = globalThis.caches,
   async function read(objectId) {
     const url = key(objectId);
     if (!url || !cacheStorage) return null;
-    const response = await (await cacheStorage.open(CACHE_NAME)).match(url);
+    const response = await (await cacheStorage.open(VIDEO_PREVIEW_CACHE_NAME)).match(url);
     return response?.ok && response.headers.get("Content-Type")?.startsWith("image/webp")
       ? response.blob() : null;
   }
@@ -21,7 +21,7 @@ export function createVideoPreviewCache({ cacheStorage = globalThis.caches,
   async function write(objectId, blob) {
     const url = key(objectId);
     if (!url || !cacheStorage || !blob || !blob.type.startsWith("image/webp")) return false;
-    await (await cacheStorage.open(CACHE_NAME)).put(url, new Response(blob, {
+    await (await cacheStorage.open(VIDEO_PREVIEW_CACHE_NAME)).put(url, new Response(blob, {
       headers: { "Content-Type": "image/webp" },
     }));
     return true;
@@ -39,7 +39,7 @@ export function createVideoPreviewCache({ cacheStorage = globalThis.caches,
   async function remove(objectId) {
     const url = key(objectId);
     if (!url || !cacheStorage) return false;
-    return (await cacheStorage.open(CACHE_NAME)).delete(url);
+    return (await cacheStorage.open(VIDEO_PREVIEW_CACHE_NAME)).delete(url);
   }
 
   return { read, write, fetchOnMiss, remove };

@@ -1,6 +1,9 @@
 "use strict";
 
 const CACHE_NAME = 'file-publisher-v2';
+// This Cache Storage belongs to the managed video's presentation layer, not
+// to the service worker's versioned static assets. Activation must preserve it.
+const VIDEO_PREVIEW_CACHE_NAME = 'cividge-video-previews-v1';
 const urlsToCache = [];
 
 self.addEventListener('install', (event) => {
@@ -16,7 +19,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME) {
+          if (cacheName !== CACHE_NAME && cacheName !== VIDEO_PREVIEW_CACHE_NAME) {
             console.log('Deleting old cache:', cacheName);
             return caches.delete(cacheName);
           }
