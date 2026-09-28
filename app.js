@@ -44,6 +44,9 @@ import {
 
 // --- アプリケーション状態 ---
 const uploadState = createUploadState();
+// Cached managed rows render during module startup, before upload wiring below.
+// The preview resolver must already have its cache at that point.
+const videoPreviewCache = createVideoPreviewCache();
 
 let paletteFiles = [];
 
@@ -4245,7 +4248,6 @@ const { ensureStorageCapacityFilebase, ensureStorageCapacityR2 } = createStorage
 const prepareManagedUpload = createManagedPreflight({ lifecycleRequest, linkBindingRequest,
   getSelectedR2Domain, getCurrentOrigin: () => window.location.origin,
   buildKvKey, getIpfsCidFromS3Response });
-const videoPreviewCache = createVideoPreviewCache();
 const queueVideoThumbnail = createVideoThumbnailRegistration({ hasAdminAccess, getCustomKvWorkerUrl, getAdminApiToken,
   cachePreview: (objectId, blob) => videoPreviewCache.write(objectId, blob),
   onPreviewCached: objectId => {

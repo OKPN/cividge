@@ -114,6 +114,10 @@ test("service worker activation preserves the preview cache", async () => {
 
 test("startup and explicit Refresh converge on the same managed video presenter", () => {
   const source = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+  const cacheInitialization = source.indexOf("const videoPreviewCache = createVideoPreviewCache()");
+  const startupInvocation = source.indexOf("\nfetchAndRenderR2Files();");
+  assert.ok(cacheInitialization > 0 && cacheInitialization < startupInvocation,
+    "startup cached-row rendering must not read videoPreviewCache in its temporal dead zone");
   const startup = source.slice(source.indexOf("async function fetchAndRenderR2Files("), source.indexOf("async function fetchManagedProviderContents("));
   const renderer = source.slice(source.indexOf("function renderCurrentStoragePage()"), source.indexOf("// --- 🌊 IPFS漂流ファイル"));
   assert.match(startup, /seedLocalDisplay\(\)/);
