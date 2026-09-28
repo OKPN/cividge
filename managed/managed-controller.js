@@ -13,7 +13,6 @@ export function createManagedController({ loadDisplayCache, loadLedgerFromLocalS
   let perPage = initialPerPage;
   let totalSize = 0;
   let refreshing = false;
-  let localCidHydrationStarted = false;
 
   function getActiveProvider() { return activeProvider; }
   function getView() { return view; }
@@ -50,25 +49,6 @@ export function createManagedController({ loadDisplayCache, loadLedgerFromLocalS
     return true;
   }
   function clear() { contents = []; refreshing = false; }
-  function beginLocalCidHydration() {
-    if (localCidHydrationStarted) return false;
-    localCidHydrationStarted = true;
-    return true;
-  }
-  function finishLocalCidHydration(accepted) {
-    if (!accepted) localCidHydrationStarted = false;
-  }
-  function applyCidObservation(rows, generation) {
-    if (!isCurrentObservation(generation)) return false;
-    const byKey = new Map(rows.filter(row => row.cid).map(row => [row.rawKey || row.Key, row.cid]));
-    for (const row of contents) {
-      if (row.storageProvider !== "filebase" || row.cid) continue;
-      const cid = byKey.get(row.rawKey || row.Key);
-      if (cid) row.cid = cid;
-    }
-    return true;
-  }
-
   function seedLocalDisplay() {
     if (contents.length === 0) contents = ["r2", "filebase"].flatMap(loadDisplayCache);
     return contents;
@@ -133,7 +113,7 @@ export function createManagedController({ loadDisplayCache, loadLedgerFromLocalS
   }
 
   return { getContents, beginObservation, invalidateObservation, isCurrentObservation,
-    finishObservation, isRefreshing, beginLocalCidHydration, finishLocalCidHydration, applyCidObservation,
+    finishObservation, isRefreshing,
     clear, seedLocalDisplay, adoptObservation, removeLocalItems, applyCommittedDelete,
     retireLocal, upsert, visible, visiblePage, getActiveProvider, getView, getPage, getPerPage,
     selectView, resetPage, setPerPage, previousPage, nextPage, clampPage,

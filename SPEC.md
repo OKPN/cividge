@@ -140,10 +140,13 @@ retires through canonical `removeLink`; a `local` entry retires through local
 presence is an observation that may update an entry but cannot itself perform
 the entry's retirement. A physical-only discovery is not a lifecycle Link.
 After authoritative deletion, LinkBinding retains a RETIRED generation.
-The admin list shows only BOUND Links whose KV projection carries that exact
-generation; a stale KV row cannot revive a deleted Link. The browser discards
-pre-delete in-flight list results and persisted Link rows are not display
-authority on reload. Explicit re-upload/rebind creates a newer generation.
+An explicit admin refresh shows only BOUND Links whose KV projection carries
+that exact generation; a stale KV row cannot revive a deleted Link. The browser
+discards pre-delete in-flight list results. On reload it may show last-observed
+Link rows from localStorage as a cached presentation, not as binding authority.
+Acknowledged deletion and policy changes update both memory and this cache.
+A successful explicit refresh replaces the cache even with zero entries; a
+failed refresh preserves it. Explicit re-upload/rebind creates a newer generation.
 An explicit upload may reconcile an uncertain Placement release only after a
 read-only inspection of the same physical locator: verified presence restores
 PRESENT, absence settles RELEASED before a fresh acquisition. An active

@@ -43,7 +43,7 @@ test("extracted Worker client keeps endpoints, authorization, and error code", a
   }
 });
 
-test("extracted managed cache displays local observations but not cached Link authority", () => {
+test("extracted managed cache restores Link and local observations without making them authority", () => {
   const previousStorage = globalThis.localStorage;
   const values = new Map();
   globalThis.localStorage = {
@@ -52,11 +52,20 @@ test("extracted managed cache displays local observations but not cached Link au
   };
   try {
     saveLedgerToLocalStorage("r2", [
-      { entryKind: "link", Key: "host.example:a.webp", rawKey: "host.example:a.webp", Size: 10 },
+      { entryKind: "link", Key: "a.webp", rawKey: "host.example:a.webp", Size: 10, ttl: 604800, expiresAt: 1900000000000,
+        s3Key: null, passwordHash: "do-not-persist-this-hash", metadata: { backend: "filebase_rpc", bucket: "private-bucket", unpinned: true } },
       { entryKind: "local", Key: "local.webp", rawKey: "local.webp", Size: 20 },
     ]);
     assert.equal(loadLedgerFromLocalStorage("r2").length, 2);
-    assert.deepEqual(loadDisplayCache("r2").map(item => item.entryKind), ["local"]);
+    assert.deepEqual(loadDisplayCache("r2").map(item => item.entryKind), ["link", "local"]);
+    assert.equal(loadDisplayCache("r2")[0].isCached, true);
+    assert.equal(loadDisplayCache("r2")[0].expiresAt, 1900000000000);
+    assert.equal(loadDisplayCache("r2")[0].metadata.ttl, 604800);
+    assert.equal(loadDisplayCache("r2")[0].s3Key, null);
+    assert.equal(loadDisplayCache("r2")[0].metadata.backend, "filebase_rpc");
+    assert.equal(loadDisplayCache("r2")[0].metadata.unpinned, true);
+    assert.equal(loadDisplayCache("r2")[0].isPasswordProtected, true);
+    assert.doesNotMatch([...values.values()].join(""), /do-not-persist-this-hash/);
   } finally {
     globalThis.localStorage = previousStorage;
   }

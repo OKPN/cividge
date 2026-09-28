@@ -397,7 +397,20 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 
 ### [INV-NO-RESURRECTION-AFTER-DELETE] Link削除後の再昇格禁止
 * authoritative delete後、古いKV projection、storage observation、localStorage、削除前に開始した非同期取得で同じLink世代をactive UIへ戻してはならない。
-* LinkBindingはRETIREDと単調増加するLink generationを保持し、管理一覧はBOUNDかつKV projectionのgenerationが一致するLinkだけを表示する。公開GETの単一KV照会にはDOを追加しない。
+* LinkBindingはRETIREDと単調増加するLink generationを保持し、明示Refreshの結果にはBOUNDかつKV projectionのgenerationが一致するLinkだけを採用する。公開GETの単一KV照会にはDOを追加しない。
+* 同一ブラウザで前回観測したLink行は、reload時にlocalStorageからcached presentationとして表示してよい。これは現在のBOUND判定ではない。削除成功時はメモリと保存済みsnapshotの両方から除去する。
+
+### [INV-MANAGED-VIEW-PERSISTS-LOCALLY] 管理一覧の表示継続
+* 同一originの同一ブラウザでは、前回表示した管理一覧をlocalStorageの最終観測projectionから復元し、reload後も表示を継続する。cached / freshはmanaged UI projectionの鮮度であり、`HistoryLink`や`CachedLink`という別のLink domain stateではない。
+* 復元した行の表示（Displayed）はObject / Link / Placementの現在の存在証明（Authoritatively Exists）ではない。一方、正本でないことは非表示にする理由ではない（Not authoritative != Do not display）。明示Refreshの成功またはこのブラウザでacknowledgeされたmutationまで、cached viewを表示してよい。
+
+### [INV-MANAGED-VIEW-FAILURE-DOES-NOT-ERASE] 観測失敗は空集合ではない
+* 更新・観測の失敗を「管理対象が0件」と解釈してはならない。既に表示可能なcached / current viewがある場合は保持し、失敗をUIへ示す。
+* 明示Refreshが成功して0件を返した場合だけ、空一覧を新しい観測として採用し、保存済みprojectionも空へ更新する。
+
+### [INV-MANAGED-CACHE-PRESERVES-ACKNOWLEDGED-MUTATIONS] 保存済み表示の単調性
+* ローカル一覧は未観測の外部変更について古くてもよい。ただしこのブラウザで成功確認済みの削除・TTL変更等はmanaged snapshotと保存済みprojectionの両方へ反映し、reload時に旧値へ戻してはならない。
+* mutationより前に開始した取得結果や古いcacheは、そのacknowledged resultを巻き戻せない。表示の継続とlifecycleの許可判定を混同せず、localStorageをauthorityにしない。
 
 ### [INV-DELETE-VISIBILITY-MONOTONIC] 削除表示の単調性
 * 削除成功後のUIはVISIBLE→ABSENTの一方向とする。明示的な再upload/rebindで新generationを作る場合だけ、同じcanonical keyを再表示できる。

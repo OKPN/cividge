@@ -4938,51 +4938,26 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
   if (!r2FileList) return;
   const fetchGeneration = managedController.beginObservation({ refresh: forceRefresh });
   updateStorageTabsUi();
+  managedController.seedLocalDisplay();
   if (!isR2Configured() && !isFilebaseConfigured() && !hasAdminAccess()) {
-    managedController.clear();
-    updateStoragePaginationUI(0);
-    renderStorageOnboardingCard();
+    if (managedController.getContents().length) renderCurrentStoragePage();
+    else renderStorageOnboardingCard();
+    if (forceRefresh) {
+      managedController.finishObservation(fetchGeneration);
+      r2FileList.insertAdjacentHTML("afterbegin", '<span class="item-meta error" role="status" style="padding: 18px; color: var(--danger); display: block; text-align: center;">更新できません。接続設定を確認してください。前回の一覧を保持しています</span>');
+    }
     return;
   }
-  managedController.seedLocalDisplay();
   // Startup and tab changes display only the local projection. The Refresh
   // button is the explicit observation boundary for KV and provider lists.
   if (!forceRefresh) {
     renderCurrentStoragePage();
-    // The old card renderer resolved missing Filebase CIDs on first display.
-    // Keep that first-display behavior as one managed observation, never as
-    // render-triggered I/O (or a request on every tab/page switch).
-    const s3 = getS3Client("filebase");
-    const bucket = getBucketName("filebase");
-    const missingRows = managedController.getContents()
-      .filter(row => row.storageProvider === "filebase" && row.isFromS3 &&
-        !isValidIpfsCid(row.cid || row.metadata?.cid || getStoredIpfsCid(row.s3Key || row.Key)))
-      .map(row => ({ ...row }));
-    if (s3 && bucket && missingRows.length && managedController.beginLocalCidHydration()) {
-      void observeMissingFilebaseCids(missingRows, {
-        cachedCid: getStoredIpfsCid,
-        validCid: isValidIpfsCid,
-        isCurrent: () => managedController.isCurrentObservation(fetchGeneration),
-        headCid: async key => getIpfsCidFromS3Response(await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }))),
-        onResolved: (key, cid, rows) => {
-          storeIpfsCid(key, cid);
-          for (const row of rows) {
-            storeIpfsCid(row.rawKey || row.Key, cid);
-            storeIpfsCid(row.Key, cid);
-          }
-        },
-      }).then(accepted => {
-        const committed = accepted && managedController.applyCidObservation(missingRows, fetchGeneration);
-        managedController.finishLocalCidHydration(committed);
-        if (committed) renderCurrentStoragePage();
-      }).catch(error => {
-        managedController.finishLocalCidHydration(false);
-        console.warn("Filebase CID observation failed:", error);
-      });
-    }
     return;
   }
   try {
+    if (!hasAdminAccess() && managedController.getContents().some(item => item.entryKind === "link")) {
+      throw new Error("Linkの現在状態を確認できません。Workerの管理接続を設定してください");
+    }
     // One delivery projection for both placement views. Provider observations
     // are joined to this same generation; a tab switch never starts a fetch.
     const kvFiles = await fetchKvFiles();
@@ -5604,7 +5579,7 @@ function renderCurrentStoragePage() {
     // 公開・コピー用URLはストレージ種別やCIDの有無にかかわらず常に配信ドメイン + ファイル名。
     const publicUrl = getPublicDeliveryUrl(item.Key, isFilebase ? "filebase" : "r2", fileDomain);
 
-    const hasPassword = Boolean(item.password || item.metadata?.passwordHash || item.metadata?.password);
+    const hasPassword = Boolean(item.isPasswordProtected || item.password || item.metadata?.passwordHash || item.metadata?.password);
     const plainPwd = item.password || item.metadata?.password;
     const pwdBadgeHtml = hasPassword
       ? `<span class="password-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;" title="${escapeHtml(labels.protected)}">🔒 ${plainPwd ? `${labels.passphrase} ${escapeHtml(plainPwd)}` : labels.protected}</span>`
@@ -5644,6 +5619,9 @@ function renderCurrentStoragePage() {
           <span style="font-size: 9px; font-weight: 700; letter-spacing: 0.5px;">PROTECTED</span>
         </div>
       `;
+    } else if (item.isCached && (isImage || isVideo)) {
+      // Cached rows are shown without fetching their public URL on startup.
+      thumbHtml = `<div class="thumb format-badge">${escapeHtml(isVideo ? "VIDEO" : ext.toUpperCase())}</div>`;
     } else if (isImage) {
       thumbHtml = `<img class="thumb" alt="" src="${escapeHtml(publicUrl)}" loading="lazy">`;
     } else if (isVideo) {
@@ -5848,6 +5826,16 @@ function renderCurrentStoragePage() {
     }
 
   });
+
+  if (visibleContents.some(item => item.isCached)) {
+    const notice = document.createElement("p");
+    notice.className = "item-meta";
+    notice.setAttribute("role", "status");
+    notice.textContent = lang === "en"
+      ? "Showing the last observed list. Refresh to check the current state."
+      : "前回確認した一覧を表示しています。更新で現在の状態を確認できます。";
+    r2FileList.prepend(notice);
+  }
 
   updateSelectedR2ActionButtonsState();
 }
