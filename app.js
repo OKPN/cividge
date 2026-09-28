@@ -63,6 +63,8 @@ const copyAllPromptsBtn = document.querySelector("#copyAllPromptsBtn");
 const civitaiPromptsMap = {};
 
 // 設定要素
+const enableConvertCheck = document.querySelector("#enableConvertCheck");
+const enableRenameCheck = document.querySelector("#enableRenameCheck");
 const enableTtlCheck = document.querySelector("#enableTtlCheck");
 const tempTtlSelect = document.querySelector("#tempTtlSelect");
 const formatSelect = document.querySelector("#formatSelect");
@@ -70,6 +72,10 @@ const qualityRange = document.querySelector("#qualityRange");
 const qualityOutput = document.querySelector("#qualityOutput");
 const renamePattern = document.querySelector("#renamePattern");
 const clearRenamePattern = document.querySelector("#clearRenamePattern");
+// Presentation-only choices for turning a checkbox back on. Neither value is
+// persisted separately from the canonical conversion/filename setting.
+let lastUiConversionMode = "webp";
+let lastUiFilenamePolicy = "{original}_{random:6}";
 const enableZipCheck = document.querySelector("#enableZipCheck");
 const { createOutputName, truncateFilename } = createFilenameTools({ isConversionEnabled, getFilenamePolicy: () => canonicalFilenamePolicy(renamePattern?.value) });
 const { convertImage } = createImageConverter({ getConversionMode, isConversionEnabled, qualityRange, createOutputName });
@@ -1853,11 +1859,7 @@ function loadSettings() {
   }
 
   const savedFormat = localStorage.getItem("formatSelect");
-  if (formatSelect) {
-    formatSelect.value = canonicalConversionMode(savedFormat);
-    localStorage.setItem("formatSelect", formatSelect.value);
-  }
-  syncConversionQuality();
+  if (formatSelect) commitConversionMode(savedFormat);
 
   const savedQuality = localStorage.getItem("qualityRange");
   if (savedQuality) {
@@ -1866,10 +1868,7 @@ function loadSettings() {
   }
 
   const savedRename = localStorage.getItem("renamePattern");
-  if (renamePattern) {
-    renamePattern.value = canonicalFilenamePolicy(savedRename);
-    localStorage.setItem("renamePattern", renamePattern.value);
-  }
+  if (renamePattern) commitFilenamePolicy(savedRename);
 
   syncStorageLimitControl();
 
@@ -2163,15 +2162,10 @@ function applyAppImportPayload(payload) {
 
   // 3. 変換・リネーム設定
   if (payload.fmt !== undefined) {
-    const mode = canonicalConversionMode(payload.fmt);
-    localStorage.setItem("formatSelect", mode);
-    if (formatSelect) formatSelect.value = mode;
-    syncConversionQuality();
+    commitConversionMode(payload.fmt);
   }
   if (payload.pat !== undefined) {
-    const policy = canonicalFilenamePolicy(payload.pat);
-    localStorage.setItem("renamePattern", policy);
-    if (renamePattern) renamePattern.value = policy;
+    commitFilenamePolicy(payload.pat);
   }
 
   // 4. IPFS CID 対応表の同期復元
@@ -3062,8 +3056,25 @@ function isFilenameChanged() {
 }
 
 function syncConversionQuality() {
+  if (enableConvertCheck) enableConvertCheck.checked = isConversionEnabled();
   if (qualityRange) qualityRange.disabled = !isConversionEnabled();
   if (qualityOutput) qualityOutput.style.opacity = isConversionEnabled() ? "1" : "0.5";
+}
+
+function commitConversionMode(mode) {
+  const canonical = canonicalConversionMode(mode);
+  if (formatSelect) formatSelect.value = canonical;
+  if (canonical !== "passthrough") lastUiConversionMode = canonical;
+  localStorage.setItem("formatSelect", canonical);
+  syncConversionQuality();
+}
+
+function commitFilenamePolicy(policy, { preserveDraft = false } = {}) {
+  const canonical = canonicalFilenamePolicy(policy);
+  if (renamePattern && !preserveDraft) renamePattern.value = canonical;
+  if (canonical !== "{original}") lastUiFilenamePolicy = canonical;
+  localStorage.setItem("renamePattern", canonical);
+  if (enableRenameCheck) enableRenameCheck.checked = canonical !== "{original}";
 }
 
 // --- UI イベントリスナー ---
@@ -3079,30 +3090,41 @@ qualityRange?.addEventListener("input", () => {
   localStorage.setItem("qualityRange", qualityRange.value);
 });
 
+enableConvertCheck?.addEventListener("change", () => {
+  commitConversionMode(enableConvertCheck.checked ? lastUiConversionMode : "passthrough");
+  render();
+  updateRenamePreview();
+});
+
 formatSelect?.addEventListener("change", () => {
-  formatSelect.value = getConversionMode();
-  localStorage.setItem("formatSelect", formatSelect.value);
-  syncConversionQuality();
+  commitConversionMode(formatSelect.value);
+  render();
+  updateRenamePreview();
+});
+
+enableRenameCheck?.addEventListener("change", () => {
+  commitFilenamePolicy(enableRenameCheck.checked ? lastUiFilenamePolicy : "{original}");
   render();
   updateRenamePreview();
 });
 
 renamePattern?.addEventListener("input", () => {
-  localStorage.setItem("renamePattern", canonicalFilenamePolicy(renamePattern.value));
+  commitFilenamePolicy(renamePattern.value, { preserveDraft: true });
   render();
   updateRenamePreview();
 });
 renamePattern?.addEventListener("blur", () => {
-  renamePattern.value = canonicalFilenamePolicy(renamePattern.value);
-  localStorage.setItem("renamePattern", renamePattern.value);
+  commitFilenamePolicy(renamePattern.value);
   render();
+  updateRenamePreview();
 });
 
 clearRenamePattern?.addEventListener("click", () => {
   if (renamePattern) {
     renamePattern.value = "";
-    localStorage.setItem("renamePattern", canonicalFilenamePolicy(renamePattern.value));
+    commitFilenamePolicy(renamePattern.value, { preserveDraft: true });
     renamePattern.focus();
+    render();
     updateRenamePreview();
   }
 });
@@ -3124,7 +3146,8 @@ document.querySelector(".pattern-helpers")?.addEventListener("click", (event) =>
     const newPos = start + insertText.length;
     renamePattern.setSelectionRange(newPos, newPos);
 
-    localStorage.setItem("renamePattern", canonicalFilenamePolicy(renamePattern.value));
+    commitFilenamePolicy(renamePattern.value, { preserveDraft: true });
+    render();
     updateRenamePreview();
   }
 });
