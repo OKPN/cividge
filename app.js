@@ -14,6 +14,7 @@ import { createWorkerClient } from "./api/worker-client.js";
 import { createFilenameTools } from "./upload/filename-policy.js";
 import { createStorageConnections } from "./storage/connections.js";
 import { i18nDict } from "./ui/i18n.js";
+import { insertFilenamePatternToken } from "./ui/filename-pattern-input.js";
 import { detectComfyMetadata } from "./media/metadata.js";
 import QRCode from "qrcode";
 import * as fflate from "fflate";
@@ -75,7 +76,7 @@ const clearRenamePattern = document.querySelector("#clearRenamePattern");
 // Presentation-only choices for turning a checkbox back on. Neither value is
 // persisted separately from the canonical conversion/filename setting.
 let lastUiConversionMode = "webp";
-let lastUiFilenamePolicy = "{original}_{random:6}";
+let lastUiFilenamePolicy = "{random:6}";
 const enableZipCheck = document.querySelector("#enableZipCheck");
 const { createOutputName, truncateFilename } = createFilenameTools({ isConversionEnabled, getFilenamePolicy: () => canonicalFilenamePolicy(renamePattern?.value) });
 const { convertImage } = createImageConverter({ getConversionMode, isConversionEnabled, qualityRange, createOutputName });
@@ -3113,7 +3114,10 @@ renamePattern?.addEventListener("input", () => {
   render();
   updateRenamePreview();
 });
-renamePattern?.addEventListener("blur", () => {
+renamePattern?.addEventListener("blur", event => {
+  // A helper click is part of the current edit; do not normalize an empty
+  // draft to {original} before that helper inserts its token.
+  if (event.relatedTarget?.closest?.(".pattern-helpers")) return;
   commitFilenamePolicy(renamePattern.value);
   render();
   updateRenamePreview();
@@ -3129,22 +3133,26 @@ clearRenamePattern?.addEventListener("click", () => {
   }
 });
 
-document.querySelector(".pattern-helpers")?.addEventListener("click", (event) => {
+const patternHelpers = document.querySelector(".pattern-helpers");
+patternHelpers?.addEventListener("mousedown", event => {
+  // Mouse activation should keep the draft and selection until insertion.
+  if (event.target.closest(".tag-button")) event.preventDefault();
+});
+patternHelpers?.addEventListener("click", (event) => {
   const target = event.target;
   if (target.classList.contains("tag-button")) {
     const insertText = target.dataset.insert;
     if (!insertText || !renamePattern) return;
 
-    const start = renamePattern.selectionStart ?? renamePattern.value.length;
-    const end = renamePattern.selectionEnd ?? renamePattern.value.length;
-    const text = renamePattern.value;
-
-    const newText = text.substring(0, start) + insertText + text.substring(end);
-    renamePattern.value = newText;
+    const { value, cursor } = insertFilenamePatternToken(
+      renamePattern.value, insertText,
+      renamePattern.selectionStart ?? renamePattern.value.length,
+      renamePattern.selectionEnd ?? renamePattern.value.length,
+    );
+    renamePattern.value = value;
 
     renamePattern.focus();
-    const newPos = start + insertText.length;
-    renamePattern.setSelectionRange(newPos, newPos);
+    renamePattern.setSelectionRange(cursor, cursor);
 
     commitFilenamePolicy(renamePattern.value, { preserveDraft: true });
     render();
