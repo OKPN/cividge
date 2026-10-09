@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 import { S3Client, DeleteObjectCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 
 export function createStorageConnections({ r2AccountId, r2BucketName, r2AccessKeyId, r2SecretAccessKey, filebaseBucket, filebaseApiKey, filebaseSecretKey, getSelectedR2Domain }) {
@@ -52,6 +53,7 @@ export function createStorageConnections({ r2AccountId, r2BucketName, r2AccessKe
     const accessKeyId = (localStorage.getItem("r2AccessKeyId") || r2AccessKeyId?.value || "").trim();
     const secretAccessKey = (localStorage.getItem("r2SecretAccessKey") || r2SecretAccessKey?.value || "").trim();
     if (!accountId || !accessKeyId || !secretAccessKey) return null;
+    if (!/^[a-f0-9]{32}$/i.test(accountId)) throw new Error("R2 Account ID must be 32 hexadecimal characters");
 
     s3ClientR2 = new S3Client({
       region: "auto",
@@ -90,7 +92,7 @@ export function createStorageConnections({ r2AccountId, r2BucketName, r2AccessKe
       });
       await s3.send(command);
     } catch (err) {
-      console.warn("DeleteObjectsCommand failed, falling back to individual DeleteObjectCommand:", err);
+      safeConsole.warn("DeleteObjectsCommand failed, falling back to individual DeleteObjectCommand:", err);
       await Promise.all(uniqueKeys.map(Key => s3.send(new DeleteObjectCommand({
         Bucket: bucketName,
         Key,

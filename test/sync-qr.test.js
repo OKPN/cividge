@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import QRCode from "qrcode";
-import * as fflate from "fflate";
+import { encryptConfiguration, encryptedConfigurationUrl } from "../security/configuration-export.js";
 import { i18nDict } from "../ui/i18n.js";
 
 const source = readFileSync(new URL("../app.js", import.meta.url), "utf8");
@@ -28,12 +28,12 @@ test("QR dialog opens before asynchronous rendering and reports failure inside t
   assert.doesNotMatch(handler, /alert\(/);
 });
 
-test("a valid compressed sync URL can exceed QR capacity without invalidating the URL", () => {
+test("an encrypted configuration URL can exceed QR capacity without invalidating the URL", async () => {
   const payload = { v: 4, kv: "https://worker.example", cul: Array.from({ length: 120 }, (_, i) =>
     `creator-${i}-${createHash("sha256").update(String(i)).digest("hex")}`) };
-  const compressed = Buffer.from(fflate.deflateSync(fflate.strToU8(JSON.stringify(payload)), { level: 9 })).toString("base64url");
-  const url = `https://cividge.pages.dev/#sync=z.${compressed}`;
+  const { encrypted } = await encryptConfiguration(payload);
+  const url = encryptedConfigurationUrl(encrypted, "https://cividge.pages.dev/");
   // Varied creator names force a capacity limit without real credentials.
   assert.throws(() => QRCode.create(url, { errorCorrectionLevel: "L" }), /too big to be stored in a QR Code/);
-  assert.match(url, /#sync=z\./);
+  assert.match(url, /#enc=v1\./);
 });

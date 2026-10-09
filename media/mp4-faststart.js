@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 // ==========================================
 // 🎬 MP4 FastStart 最適化エンジン (moov atom 先頭再配置)
 // ==========================================
@@ -107,7 +108,7 @@ export async function applyFastStartToMp4(mp4BlobOrBuffer) {
 
     return new Blob([resultBuffer], { type: "video/mp4" });
   } catch (err) {
-    console.warn("MP4 FastStart optimization skipped due to error:", err);
+    safeConsole.warn("MP4 FastStart optimization skipped due to error:", err);
     return mp4BlobOrBuffer;
   }
 }

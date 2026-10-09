@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 import { importer as importUnixFs } from "ipfs-unixfs-importer";
 import { BlackHoleBlockstore } from "blockstore-core";
 import { ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3";
@@ -72,7 +73,7 @@ export function createFilebaseContent({ isValidIpfsCid, getStoredIpfsCid, storeI
             const head = await s3.send(new HeadObjectCommand({ Bucket: bucketName, Key: object.Key }));
             return { object, cid: getIpfsCidFromS3Response(head) };
           } catch (error) {
-            console.warn(`Filebase CID lookup failed: ${object.Key}`, error);
+            safeConsole.warn(`Filebase CID lookup failed: ${object.Key}`, error);
             return { object, cid: null };
           }
         }));

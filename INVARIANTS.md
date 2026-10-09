@@ -1,8 +1,27 @@
 # システム不変条件 (System Invariants) - Cividge Frontend
 
+## Browser secret boundary
+
+### [THREAT-MODEL-BROWSER-CREDENTIALS]
+* provider credentialは同一origin/profileの長期保存と明示的なportable復元のためbrowser-local storageへ保存してよい。完全侵害されたbrowser profile、強い権限の悪意ある拡張、OS侵害への耐性は仮定しない。
+
+### [INV-CIVIDGE-MUST-NOT-EXPOSE-LOCAL-SECRETS]
+* Cividgeはlocal secretをXSS、unsafe rendering、通常URL、ログ、diagnostics、build artifacts、意図しないexportへ流してはならない。明示的なportable exportは認証付き暗号化し、復元キーをURLと別に渡す。upload-only tokenを含むcurl/BAT/sxcuは明示したclient exportとして扱う。
+
+### [INV-BROWSER-CREDENTIAL-BLAST-RADIUS]
+* browser credentialは無関係なbucket/serviceやaccount administrationへ不必要に届かないscopeにする。R2はCividge bucket限定のObject権限を使う。Filebase S3 keyのprovider仕様がaccount-wideならCividge専用accountを境界とする。実scopeはprovider側で設定・確認し、UIのbucket名を権限制限とみなさない。
+
+### [INV-UNTRUSTED-DATA-NEVER-BECOMES-CODE]
+* filename、metadata、provider応答、URL、設定文字列を実行可能なHTML/JavaScriptへ変換しない。textContent/safe DOMを優先し、HTML templateの可変値はescapeし、URLはschemeとuserinfoを検証する。
+
+### [INV-CONFIGURATION-IS-PORTABLE]
+* 永続設定は必要なprovider credentialを含め、明示的なportable backupから別browserへ復元できる構造を維持する。browser-local storageの方式変更自体を安全性の目標にしない。
+
+## Lifecycle authority boundary
+
 > **Lifecycle authority supersession.** Browser peer scans, tombstones,
 > client-side last-reference decisions, and direct physical deletion described
-> by older text are obsolete. `localStorage` is UI/cache only;
+> by older text are obsolete. `localStorage` holds settings (including browser-local credentials) and UI/cache;
 > `host:filename` is the only Link identity; LinkBinding is authoritative for
 > Link-key uniqueness, generation, binding, and policy; ObjectLifecycle is
 > authoritative for Object membership, Placement lifecycle, and release;

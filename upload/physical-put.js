@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 import { PutObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 
 // Provider-specific physical upload. This does not reserve a Link, authorize a
@@ -30,7 +31,7 @@ export async function putUploadObject({ s3, bucket, key, bytes, contentType, con
         headOutput?.Metadata?.cid || headOutput?.Metadata?.["ipfs-hash"];
       ipfsCid = checkAndValidateCid(candidate);
     } catch (error) {
-      console.warn(`HeadObject CID lookup attempt ${attempt + 1} failed:`, error);
+      safeConsole.warn(`HeadObject CID lookup attempt ${attempt + 1} failed:`, error);
     }
   }
   return { ipfsCid };

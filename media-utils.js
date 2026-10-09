@@ -1,3 +1,4 @@
+import { safeConsole } from "./security/diagnostics.js";
 // Browser-only media helpers. They do not depend on UI state, storage, or KV.
 
 export const extensions = {
@@ -73,7 +74,7 @@ export async function getImageDimensions(blob, contentType = "") {
         image.src = objectUrl;
       });
     } catch (imageError) {
-      console.debug("Image dimension lookup skipped:", bitmapError, imageError);
+      safeConsole.debug("Image dimension lookup skipped:", bitmapError, imageError);
       return null;
     }
   }

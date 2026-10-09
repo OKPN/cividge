@@ -1,3 +1,4 @@
+import { safeConsole } from "./security/diagnostics.js";
 "use strict";
 
 import { encode as encodeJpeg } from "@jsquash/jpeg";
@@ -31,7 +32,7 @@ self.onmessage = async (event) => {
       blob: new Blob([arrayBuffer], { type: mimeType }),
     });
   } catch (error) {
-    console.error("Worker conversion error:", error);
+    safeConsole.error("Worker conversion error:", error);
     self.postMessage({
       type: "ERROR",
       ok: false,

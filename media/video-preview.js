@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 // 🖼️ 動画の0秒目（先頭フレーム）を軽量WebPサムネイルとして高速抽出
 export async function captureVideoFirstFrame(videoBlob) {
   return new Promise((resolve) => {
@@ -57,7 +58,7 @@ export async function captureVideoFirstFrame(videoBlob) {
             resolve(blob);
           }, "image/webp", 0.82);
         } catch (err) {
-          console.warn("Frame capture canvas error:", err);
+          safeConsole.warn("Frame capture canvas error:", err);
           clearTimeout(timer);
           cleanup();
           resolve(null);
@@ -70,7 +71,7 @@ export async function captureVideoFirstFrame(videoBlob) {
         resolve(null);
       };
     } catch (e) {
-      console.warn("captureVideoFirstFrame error:", e);
+      safeConsole.warn("captureVideoFirstFrame error:", e);
       resolve(null);
     }
   });

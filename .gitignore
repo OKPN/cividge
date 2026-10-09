@@ -6,6 +6,9 @@ dist/
 .agents/
 *.log
 .env
+.env.*
+!.env.example
+.aws/
 .env.local
 .env.*.local
 .dev.vars

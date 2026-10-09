@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 // --- ComfyUI ワークフロー / 生成メタデータ検出ユーティリティ ---
 function parseA1111Parameters(raw) {
   if (!raw || typeof raw !== "string") return null;
@@ -292,7 +293,7 @@ async function extractMetadataChunksFromPng(fileOrBuffer) {
     }
     return { chunks, texts };
   } catch (err) {
-    console.warn("Failed to extract PNG metadata chunks:", err);
+    safeConsole.warn("Failed to extract PNG metadata chunks:", err);
     return { chunks: [], texts: {} };
   }
 }
@@ -348,7 +349,7 @@ async function injectMetadataChunksIntoPng(pngBlobOrBuffer, chunks) {
 
     return new Blob([newBuffer], { type: "image/png" });
   } catch (err) {
-    console.warn("Failed to inject PNG metadata chunks:", err);
+    safeConsole.warn("Failed to inject PNG metadata chunks:", err);
     return pngBlobOrBuffer;
   }
 }
@@ -512,12 +513,12 @@ async function injectMetadataIntoWebp(webpBlobOrBuffer, texts, width = 0, height
       URL.revokeObjectURL(testUrl);
       return injectedBlob; // 検証OK！
     } catch (testErr) {
-      console.warn("Injected WebP verification failed, safely falling back to clean WebP:", testErr);
+      safeConsole.warn("Injected WebP verification failed, safely falling back to clean WebP:", testErr);
       URL.revokeObjectURL(testUrl);
       return originalBlob; // 壊れていた場合は元の正常なWebPを返す
     }
   } catch (err) {
-    console.warn("Failed to inject WebP metadata, fallback:", err);
+    safeConsole.warn("Failed to inject WebP metadata, fallback:", err);
     return originalBlob;
   }
 }
@@ -655,7 +656,7 @@ export async function detectComfyMetadata(file) {
     if (promptDetails && promptDetails.prompt) return { hasWorkflow: false, hasPrompt: true, hasA1111: false, type: "ai_metadata", promptDetails };
 
   } catch (err) {
-    console.warn("Metadata detection error:", err);
+    safeConsole.warn("Metadata detection error:", err);
   }
 
   return { hasWorkflow: false, hasPrompt: Boolean(promptDetails?.prompt), hasA1111: false, type: promptDetails ? "comfy_prompt" : "none", promptDetails };

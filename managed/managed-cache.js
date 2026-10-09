@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 import { KUBO_PLACEMENT_STATE } from "../kubo-placement.js";
 
 // ==========================================
@@ -61,7 +62,7 @@ export function saveLedgerToLocalStorage(provider, contents) {
     ]);
     localStorage.setItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`, JSON.stringify(tuples));
   } catch (e) {
-    console.warn("saveLedgerToLocalStorage error:", e);
+    safeConsole.warn("saveLedgerToLocalStorage error:", e);
     // If a cache write fails, discard the old projection rather than
     // restoring a pre-delete or pre-policy-change value on the next reload.
     try { localStorage.removeItem(`${STORAGE_LEDGER_KEY_PREFIX}${provider}`); } catch (_) { /* storage unavailable */ }
@@ -138,7 +139,7 @@ export function loadLedgerFromLocalStorage(provider) {
       };
     });
   } catch (e) {
-    console.warn("loadLedgerFromLocalStorage error:", e);
+    safeConsole.warn("loadLedgerFromLocalStorage error:", e);
     return [];
   }
 }

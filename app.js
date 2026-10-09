@@ -1,4 +1,7 @@
 import { createR2Content } from "./storage/r2-content.js";
+import { escapeHtml, safeHttpUrl, safeMediaUrl, renderKuboStatus, quotePosixShell, quotePowerShell } from "./security/presentation.js";
+import { encryptConfiguration, decryptConfiguration, encryptedConfigurationUrl } from "./security/configuration-export.js";
+import { redactSecrets, tokenDigest, safeConsole } from "./security/diagnostics.js";
 import { createManagedController } from "./managed/managed-controller.js";
 import { observeMissingFilebaseCids } from "./managed/filebase-cid-observation.js";
 import { createStorageCapacityExecution } from "./storage/capacity-execution.js";
@@ -384,8 +387,8 @@ async function configureFilebaseCors() {
     await s3.send(corsCommand);
     alert(`✅ Filebaseバケット「${bucketName}」にIPFS CID公開用CORS設定を適用しました！\nこれでブラウザからIPFS CIDが正常に取得できます。`);
   } catch (err) {
-    console.error("CORS設定失敗:", err);
-    alert(`❌ CORS設定の適用に失敗しました:\n${err.message}`);
+    safeConsole.error("CORS設定失敗:", err);
+    alert(`❌ CORS設定の適用に失敗しました:\n${redactSecrets(err.message)}`);
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -463,7 +466,7 @@ async function loadFallbackImageFromS3(imgElement, key, s3Key = null, provider =
       }
     }
   } catch (e) {
-    console.debug("S3 direct thumbnail fallback failed:", e);
+    safeConsole.debug("S3 direct thumbnail fallback failed:", e);
   }
   const ext = (s3Key || key || "").split('.').pop().toLowerCase();
   if (imgElement.parentElement) {
@@ -485,7 +488,7 @@ function getCustomKvWorkerUrl() {
   const rawUrl = (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim().replace(/\/$/, "");
   if (!rawUrl) return "";
   // Workerのホスト名だけが入力されても、fetchがローカル相対パスとして解釈しないようにする。
-  return /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+  return safeHttpUrl(/^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`, { endpoint: true }).replace(/\/$/, "");
 }
 
 function getKvApiEndpoint() {
@@ -542,7 +545,7 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
 
   // 🛡️ KV連携が有効でない（トークンも独自Workerもない）場合、中央KVへの登録はスキップする。
   if (!hasAdminAccess()) {
-    console.log(`[責任分離] 一般ユーザーモードのため、中央KVへの登録をスキップしました: ${key}`);
+    safeConsole.log(`[責任分離] 一般ユーザーモードのため、中央KVへの登録をスキップしました: ${key}`);
     return;
   }
   try {
@@ -611,11 +614,11 @@ async function registerKvCid(key, cid = "", size = 0, mime = "", s3Key = "", pas
       }
       if (errData.code === "RESERVATION_CONFLICT") throw new Error(`このLinkでは別のアップロードが未完了です。保存先の確認・再開が必要です: ${key}`);
       if (errData.code === "LIFECYCLE_CONFLICT") throw new Error(`Object/Placementの状態遷移が進行中です。後で再試行してください: ${key}`);
-      throw new Error(errData.error || `KV登録エラー (${res.status})`);
+      throw new Error(redactSecrets(errData.error || `KV登録エラー (${res.status})`));
     }
     return true;
   } catch (e) {
-    console.warn("Failed to register CID to KV:", e);
+    safeConsole.warn("Failed to register CID to KV:", e);
     throw e;
   }
 }
@@ -715,7 +718,7 @@ async function requestAuthorizedRelease(objectRef, reason, placement = null) {
 async function deleteKvCid(key, expectedGeneration = null) {
   if (!key) return;
   if (!hasAdminAccess()) {
-    console.log(`[責任分離] 一般ユーザーモードのため、KV削除をスキップしました: ${key}`);
+    safeConsole.log(`[責任分離] 一般ユーザーモードのため、KV削除をスキップしました: ${key}`);
     return;
   }
   const token = getAdminApiToken();
@@ -740,7 +743,7 @@ async function deleteKvCid(key, expectedGeneration = null) {
     attempt = await remove(attempt.result.objectRef);
   }
   if (!attempt.response.ok) {
-    throw new Error(attempt.result.error || `KV deletion error (${attempt.response.status})`);
+    throw new Error(redactSecrets(attempt.result.error || `KV deletion error (${attempt.response.status})`));
   }
   removeCommittedLinkFromUi(key);
   return attempt.result;
@@ -749,7 +752,10 @@ async function deleteKvCid(key, expectedGeneration = null) {
 // --- 🏠 自宅 Kubo (IPFSノード) RPC ヘルパー ---
 function getKuboRpcEndpoint() {
   const custom = (localStorage.getItem("kuboRpcUrl") || kuboRpcUrl?.value || "").trim().replace(/\/$/, "");
-  return custom || "http://127.0.0.1:5001";
+  if (!custom) return "http://127.0.0.1:5001";
+  const endpoint = safeHttpUrl(custom, { endpoint: true });
+  if (!endpoint) throw new Error("Kubo RPC URL must be HTTP(S), without credentials, query or hash");
+  return endpoint.replace(/\/$/, "");
 }
 
 const CIVITAI_TEMP_TRANSFER_STORAGE_KEY = "civitaiTemporaryTransfers";
@@ -994,7 +1000,7 @@ async function fetchKvRecord(key) {
     });
     return res.ok ? await res.json() : null;
   } catch (e) {
-    console.warn("Failed to fetch KV record:", e);
+    safeConsole.warn("Failed to fetch KV record:", e);
     return null;
   }
 }
@@ -1027,12 +1033,12 @@ function getR2DomainList(provider = managedController.getActiveProvider()) {
   }
 
   // 重複排除 & 空白除去
-  return [...new Set(list.map(d => d.trim().replace(/\/$/, "")).filter(Boolean))];
+  return [...new Set(list.map(d => normalizeHttpsOrigin(d)).filter(Boolean))];
 }
 
 function saveR2DomainList(list, provider = managedController.getActiveProvider()) {
   const key = normalizeDeliveryProvider(provider) === "filebase" ? "filebaseDomainList" : "r2DomainList";
-  localStorage.setItem(key, JSON.stringify(list));
+  localStorage.setItem(key, JSON.stringify(list.map(normalizeHttpsOrigin).filter(Boolean)));
 }
 
 function getSelectedR2Domain(provider = managedController.getActiveProvider()) {
@@ -1457,7 +1463,7 @@ async function checkAllCivitaiCreatorsUnread() {
 
     renderCivitaiUserSelect(unreadSet);
   } catch (err) {
-    console.debug("Civitai unread check skipped:", err);
+    safeConsole.debug("Civitai unread check skipped:", err);
   } finally {
     isCheckingCivitaiUnread = false;
   }
@@ -1486,7 +1492,7 @@ async function checkCivitaiItemWf(item) {
       return hasWf;
     }
   } catch (err) {
-    console.debug("Civitai WF check skipped:", err);
+    safeConsole.debug("Civitai WF check skipped:", err);
   }
   return false;
 }
@@ -1508,11 +1514,11 @@ async function fetchAndRenderCivitaiGallery({ loadMore = false, refresh = true }
 
 function createCivitaiStatsHtml(stats) {
   if (!stats) return "";
-  const hearts = stats.heartCount || 0;
-  const likes = stats.likeCount || 0;
-  const laughs = stats.laughCount || 0;
-  const cries = stats.cryCount || 0;
-  const comments = stats.commentCount || 0;
+  const hearts = Math.max(0, Number(stats.heartCount) || 0);
+  const likes = Math.max(0, Number(stats.likeCount) || 0);
+  const laughs = Math.max(0, Number(stats.laughCount) || 0);
+  const cries = Math.max(0, Number(stats.cryCount) || 0);
+  const comments = Math.max(0, Number(stats.commentCount) || 0);
   const total = hearts + likes + laughs + cries + comments;
   if (total === 0) return "";
 
@@ -1685,7 +1691,8 @@ function createCivitaiStatsHtml(stats) {
 
     civitaiPaletteFiles = visibleItems.map(item => {
       const isVideo = item.type === "video";
-      const directUrl = item.url;
+      const directUrl = safeHttpUrl(item.url);
+      if (!directUrl) return;
       const previewSrc = isVideo ? directUrl : (directUrl.includes("/original=true/") ? directUrl.replace("/original=true/", "/width=450/") : directUrl);
       return {
         key: `Civitai ID:${item.id}`,
@@ -1716,7 +1723,7 @@ function createCivitaiStatsHtml(stats) {
 
       const isVideo = item.type === "video";
       const directUrl = item.url;
-      const civitaiPostPageUrl = `https://civitai.com/images/${item.id}`;
+      const civitaiPostPageUrl = `https://civitai.com/images/${encodeURIComponent(String(item.id))}`;
 
       let thumbHtml = "";
       if (isVideo) {
@@ -1742,7 +1749,7 @@ function createCivitaiStatsHtml(stats) {
       }
 
       const promptBtnHtml = civitaiPrompt
-        ? `<button type="button" class="ghost-button civitai-prompt-btn" data-id="${item.id}" style="height: 30px; font-size: 11px; padding: 0 8px; color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); display: inline-flex; align-items: center; gap: 3px;" title="生成プロンプトをコピー">📝 ${escapeHtml(dict.civitaiPrompt || "プロンプト")}</button>`
+        ? `<button type="button" class="ghost-button civitai-prompt-btn" data-id="${escapeHtml(String(item.id))}" style="height: 30px; font-size: 11px; padding: 0 8px; color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); display: inline-flex; align-items: center; gap: 3px;" title="生成プロンプトをコピー">📝 ${escapeHtml(dict.civitaiPrompt || "プロンプト")}</button>`
         : "";
 
       article.innerHTML = `
@@ -1755,7 +1762,7 @@ function createCivitaiStatsHtml(stats) {
             <div class="civitai-card-badges-col">
               ${isNewItem ? `<span class="civitai-new-item-badge" style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: rgba(239, 68, 68, 0.9); backdrop-filter: blur(4px); color: #fff; border: 1px solid rgba(239, 68, 68, 0.5); font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">✨ NEW</span>` : ""}
               ${isVideo ? `<span style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: rgba(14, 165, 233, 0.9); backdrop-filter: blur(4px); color: #fff; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🎬 VIDEO</span>` : ""}
-              <span class="civitai-wf-badge-placeholder" data-id="${item.id}"></span>
+              <span class="civitai-wf-badge-placeholder" data-id="${escapeHtml(String(item.id))}"></span>
               ${item.nsfwLevel && item.nsfwLevel !== "None" ? `<span style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: rgba(244, 63, 94, 0.9); backdrop-filter: blur(4px); color: #fff; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">${escapeHtml(item.nsfwLevel)}</span>` : ""}
             </div>
           </div>
@@ -1825,7 +1832,7 @@ function createCivitaiStatsHtml(stats) {
     checkAllCivitaiCreatorsUnread();
 
   } catch (err) {
-    console.error("Civitai gallery fetch error:", err);
+    safeConsole.error("Civitai gallery fetch error:", err);
     civitaiGalleryList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger);">Civitai ギャラリーの取得に失敗しました: ${escapeHtml(err.message)}</span>`;
   }
 }
@@ -1938,73 +1945,6 @@ function loadTemplates(selectedValue = "") {
   }
 }
 
-// --- 🔐 PINコードによる暗号化/復号化 ---
-function encryptPayloadWithPin(payloadObj, pin) {
-  const jsonStr = JSON.stringify(payloadObj);
-  const utf8Bytes = new TextEncoder().encode(jsonStr);
-  const pinBytes = new TextEncoder().encode(pin);
-  const xorBytes = new Uint8Array(utf8Bytes.length);
-  for (let i = 0; i < utf8Bytes.length; i++) {
-    xorBytes[i] = utf8Bytes[i] ^ pinBytes[i % pinBytes.length];
-  }
-  let binStr = "";
-  for (let i = 0; i < xorBytes.length; i++) {
-    binStr += String.fromCharCode(xorBytes[i]);
-  }
-  return btoa(binStr);
-}
-
-function decryptPayloadWithPin(encodedStr, pin) {
-  try {
-    const binStr = atob(encodedStr);
-    const xorBytes = new Uint8Array(binStr.length);
-    for (let i = 0; i < binStr.length; i++) {
-      xorBytes[i] = binStr.charCodeAt(i);
-    }
-    const pinBytes = new TextEncoder().encode(pin);
-    const utf8Bytes = new Uint8Array(xorBytes.length);
-    for (let i = 0; i < xorBytes.length; i++) {
-      utf8Bytes[i] = xorBytes[i] ^ pinBytes[i % pinBytes.length];
-    }
-    const decodedStr = new TextDecoder().decode(utf8Bytes);
-    return JSON.parse(decodedStr);
-  } catch {
-    return null;
-  }
-}
-
-function generateRandom6DigitPin() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
-// --- 🗜️ 同期ペイロード圧縮 & 解凍 (QRコード / 短縮URL用) ---
-function compressPayloadSync(str) {
-  try {
-    const buf = fflate.strToU8(str);
-    const def = fflate.deflateSync(buf, { level: 9 });
-    let bin = "";
-    for (let i = 0; i < def.length; i++) {
-      bin += String.fromCharCode(def[i]);
-    }
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  } catch (err) {
-    console.warn("compressPayloadSync fallback:", err);
-    return btoa(encodeURIComponent(str));
-  }
-}
-
-function decompressPayloadSync(b64url) {
-  let b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
-  while (b64.length % 4) b64 += "=";
-  const bin = atob(b64);
-  const u8 = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) {
-    u8[i] = bin.charCodeAt(i);
-  }
-  const inf = fflate.inflateSync(u8);
-  return fflate.strFromU8(inf);
-}
-
 // --- 📦 アプリ統合データのエクスポート & インポート (R2 / Civitai / 変換設定) ---
 
 function buildAppExportPayload() {
@@ -2073,7 +2013,11 @@ function buildAppExportPayload() {
 }
 
 function applyAppImportPayload(payload) {
-  if (!payload || typeof payload !== "object") return false;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const stringFields = ["sp", "a", "b", "k", "s", "p", "d", "ds", "fds", "fb", "fk", "fs", "ku", "kv", "kt", "cu", "fmt", "pat"];
+  if (stringFields.some(key => payload[key] !== undefined && typeof payload[key] !== "string")) return false;
+  if (["dl", "fdl", "cul"].some(key => payload[key] !== undefined && (!Array.isArray(payload[key]) || payload[key].some(value => typeof value !== "string")))) return false;
+  if (["kv", "ku"].some(key => payload[key] && !safeHttpUrl(payload[key], { endpoint: true }))) return false;
 
   let hasRestoredAny = false;
 
@@ -2148,6 +2092,10 @@ function applyAppImportPayload(payload) {
 
   // 1.4 KV台帳 Worker & トークン
   if (payload.kv) {
+    if (!payload.kt && payload.kv !== localStorage.getItem("kvWorkerUrl")) {
+      localStorage.removeItem("adminApiToken");
+      if (adminApiToken) adminApiToken.value = "";
+    }
     localStorage.setItem("kvWorkerUrl", payload.kv);
     if (kvWorkerUrl) kvWorkerUrl.value = payload.kv;
     hasRestoredAny = true;
@@ -2217,21 +2165,14 @@ async function generatePinBackupUrl() {
     return;
   }
 
-  const autoPin = generateRandom6DigitPin();
-  const encrypted = encryptPayloadWithPin(payload, autoPin);
-  const backupUrl = `${window.location.origin}${window.location.pathname}#enc=${encrypted}`;
-
-  try {
-    await navigator.clipboard.writeText(backupUrl);
-  } catch (err) {
-    console.error("Clipboard copy error:", err);
-  }
+  const { encrypted, restorationKey } = await encryptConfiguration(payload);
+  const backupUrl = encryptedConfigurationUrl(encrypted, window.location.href);
 
   const pinDisplayModal = document.querySelector("#pinDisplayModal");
   const generatedPinText = document.querySelector("#generatedPinText");
   const backupUrlTextarea = document.querySelector("#backupUrlTextarea");
 
-  if (generatedPinText) generatedPinText.textContent = autoPin;
+  if (generatedPinText) generatedPinText.textContent = restorationKey;
   if (backupUrlTextarea) backupUrlTextarea.value = backupUrl;
   if (pinDisplayModal) pinDisplayModal.style.display = "grid";
 }
@@ -2261,54 +2202,10 @@ function checkAndApplyHashSync() {
     }
 
     if (hash.startsWith("#sync=") || hash.startsWith("#cfg=")) {
-      const prefix = hash.startsWith("#sync=") ? "#sync=" : "#cfg=";
-      const rawParam = hash.replace(prefix, "").trim();
-      if (rawParam) {
-        let payload = null;
-
-        // 1. 新方式: 圧縮形式 (プレフィックス "z." または deflate 解凍試行)
-        if (rawParam.startsWith("z.")) {
-          try {
-            const jsonStr = decompressPayloadSync(rawParam.slice(2));
-            payload = JSON.parse(jsonStr);
-          } catch (e) {
-            console.warn("Deflate decompression failed with z. prefix:", e);
-          }
-        }
-
-        // 2. プレフィックスなし、または旧方式フォールバック
-        if (!payload) {
-          // まず deflate 試行
-          try {
-            const jsonStr = decompressPayloadSync(rawParam);
-            payload = JSON.parse(jsonStr);
-          } catch (e1) {
-            // 次に従来の Base64 / URIEncoded 復元を試行
-            const normalized = rawParam.replace(/ /g, "+");
-            try {
-              payload = JSON.parse(decodeURIComponent(atob(normalized)));
-            } catch (e2) {
-              try {
-                payload = JSON.parse(atob(normalized));
-              } catch (e3) {
-                try {
-                  payload = JSON.parse(decodeURIComponent(rawParam));
-                } catch (e4) {}
-              }
-            }
-          }
-        }
-
-        if (payload && applyAppImportPayload(payload)) {
-          history.replaceState(null, "", window.location.pathname + window.location.search);
-          setTimeout(() => {
-            alert("🎉 設定の引き継ぎが完了しました！すべての接続情報・設定が正常に反映されました。");
-          }, 300);
-        }
-      }
+      alert("この形式の設定URLは秘密情報を保護しないため復元できません。設定済みブラウザから新しい暗号化バックアップを発行してください。");
     }
   } catch (err) {
-    console.error("Failed to parse sync hash:", err);
+    safeConsole.error("Failed to parse sync hash:", err);
   }
 }
 
@@ -2327,6 +2224,9 @@ function saveR2SettingsAuto() {
     if (!inputEl) return;
     const value = inputEl.value.trim();
     if (value) {
+      if (key === "kvWorkerUrl" && !safeHttpUrl(/^https?:\/\//i.test(value) ? value : `https://${value}`, { endpoint: true })) {
+        throw new Error("Worker URL must be HTTP(S), without credentials, query or hash");
+      }
       localStorage.setItem(key, value);
     } else if (document.activeElement === inputEl) {
       localStorage.removeItem(key);
@@ -2355,7 +2255,7 @@ function saveR2SettingsAuto() {
   const kUrl = kuboRpcUrl?.value?.trim() || "";
   if (kUrl) {
     localStorage.setItem("kuboRpcUrl", kUrl);
-    if (kuboWebUiLink) kuboWebUiLink.href = `${kUrl.replace(/\/$/, "")}/webui`;
+    if (kuboWebUiLink) kuboWebUiLink.href = safeHttpUrl(`${getKuboRpcEndpoint()}/webui`);
   } else if (document.activeElement === kuboRpcUrl) {
     localStorage.removeItem("kuboRpcUrl");
   }
@@ -2397,12 +2297,12 @@ kuboTestButton?.addEventListener("click", async () => {
 
   if (info.online) {
     if (kuboStatusIndicator) {
-      kuboStatusIndicator.innerHTML = `<span style="color: #4caf50; font-weight: bold;">🟢 オンライン (${info.agentVersion || "Kubo"})</span>`;
+      renderKuboStatus(kuboStatusIndicator, info);
     }
     alert(`✅ 自宅 Kubo ノードへの接続に成功しました！\n\n・Version: ${info.agentVersion}\n・RPC: ${getKuboRpcEndpoint()}`);
   } else {
     if (kuboStatusIndicator) {
-      kuboStatusIndicator.innerHTML = `<span style="color: #f87171;">🔴 オフライン (${info.error})</span>`;
+      renderKuboStatus(kuboStatusIndicator, info);
     }
     alert(`❌ 自宅 Kubo ノードに接続できませんでした。\n\n・エラー: ${info.error}\n・接続先: ${getKuboRpcEndpoint()}\n\n【確認事項】\n1. DockerまたはWSL上で Kubo が起動しているか\n2. CORS許可設定（ipfs config API.HTTPHeaders...）が済んでいるか\n3. ポート5001が解放されているか`);
   }
@@ -2650,7 +2550,7 @@ async function handleAddNewDomain(provider, input, form) {
       return;
     }
   } catch (e) {
-    console.warn("Local ledger check error during domain add:", e);
+    safeConsole.warn("Local ledger check error during domain add:", e);
   }
 
   // 🛡️ ロック2: 【ストレージ排他ガード】他方ストレージにすでに同じドメインがある場合、互換レイヤ検証に合格必須
@@ -2717,7 +2617,7 @@ function bindDomainManager(provider, select, addBtn, deleteBtn, form, input, sav
         return;
       }
     } catch (e) {
-      console.warn("Local ledger check error during domain delete:", e);
+      safeConsole.warn("Local ledger check error during domain delete:", e);
     }
 
     if (!confirm(`選択中の${label}配信ドメイン「${current}」を削除しますか？`)) return;
@@ -2779,7 +2679,7 @@ function bindDomainMirrorCheckbox(provider, mirrorCheck) {
           return;
         }
       } catch (e) {
-        console.warn("Local ledger check error during domain unmirror:", e);
+        safeConsole.warn("Local ledger check error during domain unmirror:", e);
       }
 
       const nextList = otherList.filter(d => d !== currentDomain);
@@ -2874,9 +2774,10 @@ async function openSyncQrModal() {
       if (qrStatus) qrStatus.textContent = messages.qrNoData;
       return;
     }
-    const jsonStr = JSON.stringify(payload);
-    const compressed = compressPayloadSync(jsonStr);
-    lastGeneratedSyncUrl = `${window.location.origin}${window.location.pathname}#sync=z.${compressed}`;
+    const { encrypted, restorationKey } = await encryptConfiguration(payload);
+    lastGeneratedSyncUrl = encryptedConfigurationUrl(encrypted, window.location.href);
+    const keyDisplay = document.querySelector("#qrRestorationKey");
+    if (keyDisplay) keyDisplay.textContent = restorationKey;
     if (copySyncUrlButton) copySyncUrlButton.disabled = false;
 
     if (qrCanvas) {
@@ -2893,7 +2794,7 @@ async function openSyncQrModal() {
     }
     if (qrStatus) qrStatus.textContent = "";
   } catch (err) {
-    console.error("QR Code generation error:", err);
+    safeConsole.error("QR Code generation error:", err);
     if (qrStatus) qrStatus.textContent = /too big to be stored in a QR Code/i.test(err?.message || "")
       ? messages.qrTooLarge
       : messages.qrFailed;
@@ -2910,7 +2811,7 @@ copySyncUrlButton?.addEventListener("click", async () => {
       copySyncUrlButton.textContent = originalText;
     }, 2000);
   } catch (err) {
-    console.error("Clipboard copy failed:", err);
+    safeConsole.error("Clipboard copy failed:", err);
     prompt("以下の引き継ぎURLをコピーしてください:", lastGeneratedSyncUrl);
   }
 });
@@ -2928,11 +2829,15 @@ cfBackupUrlButton?.addEventListener("click", generatePinBackupUrl);
 
 closeQrModalButton?.addEventListener("click", () => {
   if (qrModal) qrModal.style.display = "none";
+  lastGeneratedSyncUrl = "";
+  const keyDisplay = document.querySelector("#qrRestorationKey");
+  if (keyDisplay) keyDisplay.textContent = "";
+  if (qrCanvas) qrCanvas.getContext("2d")?.clearRect(0, 0, qrCanvas.width, qrCanvas.height);
 });
 
 qrModal?.addEventListener("click", (e) => {
   if (e.target === qrModal) {
-    qrModal.style.display = "none";
+    closeQrModalButton?.click();
   }
 });
 
@@ -3027,16 +2932,16 @@ const pinErrorNotice = document.querySelector("#pinErrorNotice");
 const closePinDisplayModalButton = document.querySelector("#closePinDisplayModalButton");
 const pinDisplayModal = document.querySelector("#pinDisplayModal");
 
-submitPinButton?.addEventListener("click", () => {
+submitPinButton?.addEventListener("click", async () => {
   const pin = pinInput?.value?.trim() || "";
-  if (!pin || pin.length < 6) {
-    if (pinErrorNotice) pinErrorNotice.textContent = "6桁のPINコードを入力してください";
+  if (!/^[a-f0-9]{32}$/i.test(pin)) {
+    if (pinErrorNotice) pinErrorNotice.textContent = "32文字の復元キーを入力してください";
     return;
   }
 
-  const payload = decryptPayloadWithPin(pendingEncryptedHash, pin);
+  const payload = await decryptConfiguration(pendingEncryptedHash, pin);
   if (!payload || typeof payload !== "object") {
-    if (pinErrorNotice) pinErrorNotice.textContent = "❌ PINコードが正しくありません";
+    if (pinErrorNotice) pinErrorNotice.textContent = "❌ 復元キーが正しくないか、データが変更されています";
     return;
   }
 
@@ -3048,16 +2953,24 @@ submitPinButton?.addEventListener("click", () => {
 
   if (pinModal) pinModal.style.display = "none";
   history.replaceState(null, "", window.location.pathname + window.location.search);
+  pendingEncryptedHash = "";
+  if (pinInput) pinInput.value = "";
   alert("🎉 設定を正常に復元・保存しました！");
 });
 
 cancelPinButton?.addEventListener("click", () => {
   if (pinModal) pinModal.style.display = "none";
+  pendingEncryptedHash = "";
+  if (pinInput) pinInput.value = "";
   history.replaceState(null, "", window.location.pathname + window.location.search);
 });
 
 closePinDisplayModalButton?.addEventListener("click", () => {
   if (pinDisplayModal) pinDisplayModal.style.display = "none";
+  const keyDisplay = document.querySelector("#generatedPinText");
+  const urlDisplay = document.querySelector("#backupUrlTextarea");
+  if (keyDisplay) keyDisplay.textContent = "";
+  if (urlDisplay) urlDisplay.value = "";
 });
 
 function getConversionMode() {
@@ -3373,7 +3286,7 @@ function createComfyBadgeHtml(file, result) {
     badge = `
       <span class="meta-badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); font-size: 10.5px; padding: 2px 6px; border-radius: 4px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;" title="ComfyUIのワークフロー（ノード接続・配置情報）が完全な形で含まれています。ComfyUI画面にドロップすると完全再現可能です。">
         <span>🧬 ComfyUI ワークフロー完全内包</span>
-        ${meta.nodeCount ? `<span style="font-size: 9.5px; opacity: 0.85;">(${meta.nodeCount}ノード)</span>` : ""}
+        ${meta.nodeCount ? `<span style="font-size: 9.5px; opacity: 0.85;">(${escapeHtml(meta.nodeCount)}ノード)</span>` : ""}
       </span>
     `;
   } else if (meta.hasPrompt) {
@@ -3480,7 +3393,7 @@ function addFiles(files) {
         f.metaStatus = meta;
         render();
       }).catch(err => {
-        console.warn("Meta parse error:", err);
+        safeConsole.warn("Meta parse error:", err);
         f.metaStatus = { hasWorkflow: false, type: "none" };
         render();
       });
@@ -3637,7 +3550,7 @@ function render() {
 
         item.innerHTML = `
           <div class="card-thumb-area">
-            ${previewSrc ? `<img class="thumb" src="${previewSrc}" alt="" loading="lazy">` : `<div class="thumb format-badge">${escapeHtml(originalExt.toUpperCase() || "FILE")}</div>`}
+            ${previewSrc ? `<img class="thumb" src="${escapeHtml(safeMediaUrl(previewSrc))}" alt="" loading="lazy">` : `<div class="thumb format-badge">${escapeHtml(originalExt.toUpperCase() || "FILE")}</div>`}
           </div>
           <div class="card-main-area">
             <div class="card-title-row">
@@ -3657,7 +3570,7 @@ function render() {
         `;
         fileList.append(item);
       } catch (err) {
-        console.error("Card render error:", err);
+        safeConsole.error("Card render error:", err);
       }
     });
 
@@ -3720,13 +3633,13 @@ function createCardActionHtml(file, result, index) {
       : `<span style="font-size: 9.5px; font-weight: 700; color: #fb923c; background: rgba(249, 115, 22, 0.15); border: 1px solid rgba(249, 115, 22, 0.4); padding: 1px 5px; border-radius: 4px;">⚡ R2</span>`;
 
     const pwdBadge = result.hasPassword
-      ? `<span class="password-badge" style="font-size: 9.5px; font-weight: 600; color: #818cf8; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3); padding: 1px 5px; border-radius: 4px;" title="合言葉: ${result.password ? escapeHtml(result.password) : '保護中'}">🔒 保護</span>`
+      ? `<span class="password-badge" style="font-size: 9.5px; font-weight: 600; color: #818cf8; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3); padding: 1px 5px; border-radius: 4px;" title="パスワード保護中">🔒 保護</span>`
       : "";
 
     return `
       ${badgeHtml}
       ${pwdBadge}
-      <input type="text" class="url-output" value="${escapeHtml(deliveryUrl)}" readonly style="width: 140px; font-size: 11px; height: 28px; padding: 0 6px; background: rgba(0,0,0,0.3); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8; border-radius: 4px;" title="クリックで全選択＆コピー" onclick="this.select()">
+      <input type="text" class="url-output" value="${escapeHtml(deliveryUrl)}" readonly style="width: 140px; font-size: 11px; height: 28px; padding: 0 6px; background: rgba(0,0,0,0.3); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8; border-radius: 4px;" title="クリックで全選択＆コピー">
       <button type="button" class="ghost-button copy-button" style="font-size: 11px; padding: 0 8px; height: 28px;">${escapeHtml(dict.copyUrl || "コピー")}</button>
       <button type="button" class="ghost-button download-single-btn" data-index="${index}" style="font-size: 11px; padding: 0 8px; height: 28px;" title="${dlBtnTitle}" ${dlBtnDisabled}>📥 DL</button>
       ${canUseCivitai ? `<button type="button" class="ghost-button civitai-post-btn" data-index="${index}" data-url="${escapeHtml(deliveryUrl)}" data-name="${escapeHtml(result.name)}" style="${civitaiStyle}" title="${civitaiBtnTitle}" ${civitaiOk ? '' : 'disabled'}>🎨 Civitai</button>` : ""}
@@ -3768,6 +3681,7 @@ copyAllPromptsBtn?.addEventListener("click", async () => {
 // ファイルリストイベント委譲
 fileList?.addEventListener("click", async (event) => {
   const target = event.target;
+  if (target.matches("input.url-output")) { target.select(); return; }
   const card = target.closest(".unified-file-card");
   if (!card) return;
 
@@ -3818,7 +3732,7 @@ fileList?.addEventListener("click", async (event) => {
       }
       downloadUrl(result.url, result.name);
     } catch (e) {
-      console.error(e);
+      safeConsole.error(e);
       alert("ダウンロードに失敗しました: " + e.message);
     } finally {
       target.disabled = false;
@@ -3851,7 +3765,7 @@ fileList?.addEventListener("click", async (event) => {
         renderCurrentStoragePage();
       }
     } catch (e) {
-      console.error(e);
+      safeConsole.error(e);
       alert("アップロードに失敗しました: " + e.message);
     } finally {
       render();
@@ -3879,7 +3793,7 @@ fileList?.addEventListener("click", async (event) => {
         renderCurrentStoragePage();
       }
     } catch (e) {
-      console.error(e);
+      safeConsole.error(e);
       alert("R2 アップロードに失敗しました: " + e.message);
     } finally {
       render();
@@ -3907,7 +3821,7 @@ fileList?.addEventListener("click", async (event) => {
         renderCurrentStoragePage();
       }
     } catch (e) {
-      console.error(e);
+      safeConsole.error(e);
       alert("Filebase アップロードに失敗しました: " + e.message);
     } finally {
       render();
@@ -3945,7 +3859,7 @@ fileList?.addEventListener("click", async (event) => {
         `);
       }
     } catch (e) {
-      console.warn("Preload window failed:", e);
+      safeConsole.warn("Preload window failed:", e);
     }
 
     target.disabled = true;
@@ -3970,7 +3884,7 @@ fileList?.addEventListener("click", async (event) => {
         if (preloadWindow && !preloadWindow.closed) preloadWindow.close();
       }
     } catch (e) {
-      console.error(e);
+      safeConsole.error(e);
       if (preloadWindow && !preloadWindow.closed) preloadWindow.close();
       alert("Civitai 転送準備に失敗しました: " + e.message);
     } finally {
@@ -4030,7 +3944,7 @@ fileList?.addEventListener("change", (e) => {
           false,
           null,
           newDomain
-        ).catch(err => console.warn("Failed to update allowedHost on domain change:", err));
+        ).catch(err => safeConsole.warn("Failed to update allowedHost on domain change:", err));
       }
     }
   }
@@ -4105,8 +4019,8 @@ r2FileList?.addEventListener("change", (e) => {
         e.target.style.borderColor = "#22c55e";
         setTimeout(() => { e.target.style.borderColor = ""; }, 600);
       }).catch(err => {
-        console.warn("Failed to update TTL for " + key + ":", err);
-        alert(`❌ 有効期限の更新に失敗しました: ${err.message}`);
+        safeConsole.warn("Failed to update TTL for " + key + ":", err);
+        alert(`❌ 有効期限の更新に失敗しました: ${redactSecrets(err.message)}`);
       });
     }
   }
@@ -4144,7 +4058,7 @@ fileList?.addEventListener("change", (e) => {
           e.target.style.transition = "all 0.2s ease";
           e.target.style.borderColor = "#22c55e";
           setTimeout(() => { e.target.style.borderColor = ""; }, 600);
-        }).catch(err => console.warn("Failed to update result TTL:", err));
+        }).catch(err => safeConsole.warn("Failed to update result TTL:", err));
       }
     }
   }
@@ -4223,7 +4137,7 @@ async function runConversion(force = false) {
     }
     return true;
   } catch (error) {
-    console.error("Conversion error:", error);
+    safeConsole.error("Conversion error:", error);
     uploadState.invalidateConversion();
     if (statusText) {
       statusText.textContent = "変換失敗";
@@ -4265,7 +4179,7 @@ const executeUpload = createUploadOrchestrator({
   setFileStoredDomain, addOrUpdateLocalLedgerItem, markCivitaiTemporaryTransfer,
   storeIpfsCid, storeR2Hash, extractCleanHost, isConversionEnabled,
   onFileState: () => render(),
-  onError: message => alert(message),
+  onError: message => alert(redactSecrets(message)),
   onUploadLimit: size => {
     const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
     return showCustomAlert(dict.uploadLimitError.replace("{size}", size), "⚠️ 容量オーバー");
@@ -4324,9 +4238,9 @@ async function handleBatchUpload(targetProvider) {
       statusText.className = "status-text";
     }
   } catch (error) {
-    console.error("Upload failed:", error);
+    safeConsole.error("Upload failed:", error);
     if (statusText) {
-      statusText.textContent = `アップロード失敗: ${error.message}`;
+      statusText.textContent = `アップロード失敗: ${redactSecrets(error.message)}`;
       statusText.className = "status-text error";
     }
   } finally {
@@ -4364,7 +4278,7 @@ convertDownloadButton?.addEventListener("click", async () => {
       setTimeout(() => URL.revokeObjectURL(zipUrl), 2000);
       if (statusText) statusText.textContent = "ZIP一括ダウンロード完了";
     } catch (err) {
-      console.error("ZIP creation error:", err);
+      safeConsole.error("ZIP creation error:", err);
       alert("ZIP作成に失敗しました。個別ダウンロードに切り替えます。");
       for (const result of validResults) {
         if (result && result.url) {
@@ -4714,7 +4628,7 @@ npx wrangler secret put UPLOAD_TOKEN</code></pre>
           </div>
           <div class="onboarding-input-field">
             <label>${onboarding.adminToken} <span style="color: #ef4444; font-weight: bold;">${onboarding.required}</span></label>
-            <input type="password" id="obAdminToken" placeholder="${isEnglish ? "e.g. your-secret-token" : "例: your-secret-token"}" value="${escapeHtml(adminTokenVal)}">
+            <input type="password" id="obAdminToken" placeholder="${isEnglish ? "e.g. your-secret-token" : "例: your-secret-token"}">
           </div>
           <div class="onboarding-step-action">
             <span id="obKvStatus" class="onboarding-step-status" style="color: ${kvSuccessMessage ? "#4ade80" : "#fcd34d"};">${escapeHtml(kvSuccessMessage)}</span>
@@ -4777,11 +4691,11 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
             </div>
             <div class="onboarding-input-field">
               <label>Filebase API Key (Access Key)</label>
-              <input type="text" id="obFbKey" placeholder="例: E39D98762..." value="${escapeHtml(fbKeyVal)}">
+              <input type="text" id="obFbKey" placeholder="例: E39D98762...">
             </div>
             <div class="onboarding-input-field">
               <label>Filebase Secret Key</label>
-              <input type="password" id="obFbSecret" placeholder="例: WkH18302..." value="${escapeHtml(fbSecretVal)}">
+              <input type="password" id="obFbSecret" placeholder="例: WkH18302...">
             </div>
           </div>
           ` : `
@@ -4801,11 +4715,11 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
             </div>
             <div class="onboarding-input-field">
               <label>Access Key ID</label>
-              <input type="text" id="obR2Key" placeholder="例: c8a1928374..." value="${escapeHtml(r2KeyVal)}">
+              <input type="text" id="obR2Key" placeholder="例: c8a1928374...">
             </div>
             <div class="onboarding-input-field">
               <label>Secret Access Key</label>
-              <input type="password" id="obR2Secret" placeholder="例: 99f87654..." value="${escapeHtml(r2SecretVal)}">
+              <input type="password" id="obR2Secret" placeholder="例: 99f87654...">
             </div>
           </div>
           `}
@@ -4819,6 +4733,12 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
     </div>
   `;
 
+  // Restore secrets as input properties, never as serialized HTML attributes.
+  for (const [id, value] of [["obAdminToken", adminTokenVal], ["obFbKey", fbKeyVal], ["obFbSecret", fbSecretVal],
+    ["obR2Key", r2KeyVal], ["obR2Secret", r2SecretVal]]) {
+    const input = document.querySelector(`#${id}`);
+    if (input) input.value = value;
+  }
   const copyR2CorsButton = document.querySelector("#obCopyR2CorsBtn");
   copyR2CorsButton?.addEventListener("click", async () => {
     await copyToClipboard(r2CorsPolicy, copyR2CorsButton, onboarding.copiedCors);
@@ -4907,7 +4827,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
       sessionStorage.setItem("onboardingKvSuccessMessage", "✅ KV 接続に成功しました。STEP 2 を入力できます。");
       renderStorageOnboardingCard();
     } catch (error) {
-      if (obKvStatus) obKvStatus.textContent = `⚠️ KV 接続に失敗しました: ${error.message}`;
+      if (obKvStatus) obKvStatus.textContent = `⚠️ KV 接続に失敗しました: ${redactSecrets(error.message)}`;
       obKvConnectBtn.disabled = false;
       obKvConnectBtn.textContent = originalText;
     }
@@ -4947,7 +4867,7 @@ npx wrangler pages deploy . --project-name=my-content-cache</code></pre>
         r2FileList.prepend(notice);
       }
     } catch (error) {
-      if (obStorageStatus) obStorageStatus.textContent = `⚠️ ${isFb ? "Filebase" : "R2"} 接続に失敗しました: ${error.message}`;
+      if (obStorageStatus) obStorageStatus.textContent = `⚠️ ${isFb ? "Filebase" : "R2"} 接続に失敗しました: ${redactSecrets(error.message)}`;
       obStorageConnectBtn.disabled = false;
       obStorageConnectBtn.textContent = originalText;
     }
@@ -5004,7 +4924,7 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
   } catch (error) {
     if (!managedController.isCurrentObservation(fetchGeneration)) return;
     managedController.finishObservation(fetchGeneration);
-    console.error("Storage fetch error:", error);
+    safeConsole.error("Storage fetch error:", error);
     renderCurrentStoragePage();
     r2FileList.insertAdjacentHTML("afterbegin", `<span class="item-meta error" role="status" style="padding: 18px; color: var(--danger); display: block; text-align: center;">${escapeHtml(getStorageListLabels().connectionError)} ${escapeHtml(error.message)} — 前回の一覧を表示しています</span>`);
   }
@@ -5493,13 +5413,13 @@ async function cleanupExpiredCivitaiTransferItems(expiredItems, allItems, s3, bu
     try {
       const deleted = await deleteKvCid(key, item.metadata?.g);
       await requestAuthorizedRelease(deleted?.objectRef, "civitai-temporary").catch(error => {
-        console.warn("Civitai lifecycle release deferred:", error);
+        safeConsole.warn("Civitai lifecycle release deferred:", error);
       });
       clearCivitaiTemporaryTransfer(provider, s3Key);
       clearCivitaiTemporaryTransfer(provider, key);
       cleanedKeys.add(key);
     } catch (err) {
-      console.warn("Civitai temporary transfer cleanup failed:", key, err);
+      safeConsole.warn("Civitai temporary transfer cleanup failed:", key, err);
     }
   }
   return cleanedKeys;
@@ -5524,14 +5444,14 @@ async function cleanupExpiredStorageItems(expiredItems, allItems, s3, bucketName
     }
 
     try {
-      console.log(`⏳ 期限切れLinkを回収: ${key}`);
+      safeConsole.log(`⏳ 期限切れLinkを回収: ${key}`);
       const deleted = await deleteKvCid(key, item.metadata?.g);
       await requestAuthorizedRelease(deleted?.objectRef, "expiry").catch(error => {
-        console.warn("Expiry lifecycle release deferred:", error);
+        safeConsole.warn("Expiry lifecycle release deferred:", error);
       });
       cleanedKeys.add(key);
     } catch (err) {
-      console.warn("Expired storage item cleanup failed:", key, err);
+      safeConsole.warn("Expired storage item cleanup failed:", key, err);
     }
   }
   return cleanedKeys;
@@ -5605,9 +5525,8 @@ function renderCurrentStoragePage() {
 
     const hasPassword = Boolean(item.isPasswordProtected || item.password || item.metadata?.passwordHash || item.metadata?.password);
     const canUseCivitai = canUseCivitaiPostIntent({ name: itemDisplayName, mimeType: item.metadata?.mime || item.mime });
-    const plainPwd = item.password || item.metadata?.password;
     const pwdBadgeHtml = hasPassword
-      ? `<span class="password-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;" title="${escapeHtml(labels.protected)}">🔒 ${plainPwd ? `${labels.passphrase} ${escapeHtml(plainPwd)}` : labels.protected}</span>`
+      ? `<span class="password-badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.5); font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;" title="${escapeHtml(labels.protected)}">🔒 ${escapeHtml(labels.protected)}</span>`
       : "";
 
     let ttlBadgeHtml = "";
@@ -5787,7 +5706,7 @@ function renderCurrentStoragePage() {
       `;
     }
 
-    const renameBtnHtml = `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${item.Size || 0}" data-cid="${escapeHtml(itemCid || "")}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15; line-height: 1;">✏️</button>`;
+    const renameBtnHtml = `<button type="button" class="rename-file-btn" data-key="${escapeHtml(itemKey)}" data-displayname="${escapeHtml(itemDisplayName)}" data-s3key="${escapeHtml(item.s3Key || itemDisplayName)}" data-size="${escapeHtml(item.Size || 0)}" data-cid="${escapeHtml(itemCid || "")}" title="${escapeHtml(labels.rename)}" style="background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 14px; opacity: 0.8; transition: opacity 0.15; line-height: 1;">✏️</button>`;
 
     let cidBadgeHtml = "";
     if (itemCid) {
@@ -5977,7 +5896,7 @@ async function auditDriftingFiles(contents) {
       .find(card => card.dataset.provider === item.storageProvider);
     const badge = elem?.querySelector(`.drifting-badge-${CSS.escape(rawKey)}`);
     if (result.shouldRetire) {
-      console.warn(`🌊 漂流ファイルを3回連続の取得失敗により管理一覧から退役: ${rawKey}`);
+      safeConsole.warn(`🌊 漂流ファイルを3回連続の取得失敗により管理一覧から退役: ${rawKey}`);
       removeItemsFromLocalLedger(item.storageProvider, [rawKey]);
       if (elem) {
         elem.style.transition = "opacity 0.4s ease, transform 0.4s ease";
@@ -6217,8 +6136,8 @@ r2FileList?.addEventListener("click", async (e) => {
           renderCurrentStoragePage();
         }
       } catch (err) {
-        console.error("Rename failed:", err);
-        alert(`❌ リネームに失敗しました: ${err.message}`);
+        safeConsole.error("Rename failed:", err);
+        alert(`❌ リネームに失敗しました: ${redactSecrets(err.message)}`);
         row.innerHTML = originalHtml;
       }
     });
@@ -6394,8 +6313,8 @@ r2FileList?.addEventListener("click", async (e) => {
           }
         });
       } catch (err) {
-        console.error("Failed to add domain alias:", err);
-        alert(`❌ ドメイン追加に失敗しました: ${err.message}`);
+        safeConsole.error("Failed to add domain alias:", err);
+        alert(`❌ ドメイン追加に失敗しました: ${redactSecrets(err.message)}`);
       } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = "エイリアス作成";
@@ -6455,7 +6374,7 @@ r2FileList?.addEventListener("click", async (e) => {
         renderCurrentStoragePage();
       }
     } catch (err) {
-      await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
+      await showCustomAlert(`エラー: ${redactSecrets(err.message)}`, "❌ エラー");
       target.disabled = false;
       target.textContent = origText;
     }
@@ -6554,7 +6473,7 @@ r2FileList?.addEventListener("click", async (e) => {
         }
         await showCustomAlert(`✅ 自宅 Kubo ノードへの実体保存と Pin 留めに成功しました！\n\nCID: ${realCid || addRes.cid}`, "🎉 保全完了");
       } catch (err) {
-        await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
+        await showCustomAlert(`エラー: ${redactSecrets(err.message)}`, "❌ エラー");
         target.disabled = false;
         target.textContent = origText;
       }
@@ -6617,7 +6536,7 @@ r2FileList?.addEventListener("click", async (e) => {
       await showCustomAlert(`✅ 自宅 Kubo ノードで Pin を確認しました。\n\nCID: ${cid}`, "🎉 保全完了");
     } catch (err) {
       activeKuboPins.delete(cid);
-      await showCustomAlert(`エラー: ${err.message}`, "❌ エラー");
+      await showCustomAlert(`エラー: ${redactSecrets(err.message)}`, "❌ エラー");
       target.disabled = false;
       target.textContent = "再試行";
       target.title = origText;
@@ -6677,7 +6596,7 @@ r2FileList?.addEventListener("click", async (e) => {
         renderCurrentStoragePage();
       }
     } catch (err) {
-      await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
+      await showCustomAlert(`削除に失敗しました: ${redactSecrets(err.message)}`, "❌ エラー");
     }
     return;
   }
@@ -6718,7 +6637,7 @@ r2FileList?.addEventListener("click", async (e) => {
         "🎉 容量解放完了"
       );
     } catch (err) {
-      await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
+      await showCustomAlert(`削除に失敗しました: ${redactSecrets(err.message)}`, "❌ エラー");
     }
     return;
   }
@@ -6747,11 +6666,11 @@ r2FileList?.addEventListener("click", async (e) => {
       if (!hasAdminAccess()) throw new Error("Link deletion requires the KV Worker admin capability");
       const deleted = await deleteKvCid(key, item.metadata?.g);
       await requestAuthorizedRelease(deleted?.objectRef, "manual-delete").catch(error => {
-        console.warn("Object retained because release is not yet authorized:", error);
+        safeConsole.warn("Object retained because release is not yet authorized:", error);
       });
       removeItemsFromLocalLedger(rowProvider, [key]);
     } catch (err) {
-      await showCustomAlert(`削除に失敗しました: ${err.message}`, "❌ エラー");
+      await showCustomAlert(`削除に失敗しました: ${redactSecrets(err.message)}`, "❌ エラー");
     }
     return;
   }
@@ -6795,13 +6714,13 @@ deleteSelectedR2FilesButton?.addEventListener("click", async () => {
       if (!hasAdminAccess()) throw new Error("Link deletion requires the KV Worker admin capability");
       const deleted = await deleteKvCid(checkbox.dataset.key, item.metadata?.g);
       await requestAuthorizedRelease(deleted?.objectRef, "manual-bulk-delete").catch(error => {
-        console.warn("Bulk release deferred:", error);
+        safeConsole.warn("Bulk release deferred:", error);
       });
       removeItemsFromLocalLedger(provider, [checkbox.dataset.key]);
     }
     updateSelectedR2ActionButtonsState();
   } catch (error) {
-    await showCustomAlert(`一括削除に失敗しました: ${error.message}`, "❌ エラー");
+    await showCustomAlert(`一括削除に失敗しました: ${redactSecrets(error.message)}`, "❌ エラー");
   }
   return;
 
@@ -7007,7 +6926,7 @@ function openCivitaiIntent(mediaUrl, title = "", existingWindow = null) {
       existingWindow.location.href = intentUrl;
       return;
     } catch (e) {
-      console.warn("Failed to redirect existing window:", e);
+      safeConsole.warn("Failed to redirect existing window:", e);
     }
   }
   window.open(intentUrl, "_blank", "noopener,noreferrer");
@@ -7032,7 +6951,7 @@ async function copyToClipboard(text, button = null) {
       copied = true;
     }
   } catch (err) {
-    console.warn("navigator.clipboard failed, trying execCommand fallback:", err);
+    safeConsole.warn("navigator.clipboard failed, trying execCommand fallback:", err);
   }
 
   if (!copied) {
@@ -7048,7 +6967,7 @@ async function copyToClipboard(text, button = null) {
       copied = document.execCommand("copy");
       document.body.removeChild(textArea);
     } catch (fallbackErr) {
-      console.error("execCommand copy failed:", fallbackErr);
+      safeConsole.error("execCommand copy failed:", fallbackErr);
     }
   }
 
@@ -7062,15 +6981,6 @@ async function copyToClipboard(text, button = null) {
     }, 1500);
   }
   return copied;
-}
-
-function escapeHtml(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
 
 /**
@@ -7332,8 +7242,10 @@ function crc32(data) {
 }
 
 function downloadUrl(url, name) {
+  const safeUrl = safeMediaUrl(url);
+  if (!safeUrl) throw new Error("Invalid download URL");
   const link = document.createElement("a");
-  link.href = url;
+  link.href = safeUrl;
   link.download = name;
   document.body.append(link);
   link.click();
@@ -7385,13 +7297,13 @@ civitaiGalleryList?.addEventListener("click", async (event) => {
           }
         }
       } catch (e) {
-        console.warn("Failed to resolve URL via /api/resolve-url:", e);
+        safeConsole.warn("Failed to resolve URL via /api/resolve-url:", e);
       }
 
       copyBtn.dataset.url = finalUrl;
       await copyToClipboard(finalUrl, copyBtn, "📋 URLコピー");
     } catch (err) {
-      console.warn("Failed to copy civitai url:", err);
+      safeConsole.warn("Failed to copy civitai url:", err);
       await copyToClipboard(rawUrl, copyBtn, "📋 URLコピー");
     }
   }
@@ -7470,9 +7382,9 @@ function populateUploadReturnDomainSelect() {
 // 選択された返却配信ドメインを取得
 function getSelectedUploadReturnDomain() {
   if (uploadReturnDomainSelect && uploadReturnDomainSelect.value) {
-    return uploadReturnDomainSelect.value.trim().replace(/\/$/, "");
+    return normalizeHttpsOrigin(uploadReturnDomainSelect.value);
   }
-  return (getSelectedR2Domain(getSelectedUploadStorage()) || "").replace(/\/$/, "");
+  return normalizeHttpsOrigin(getSelectedR2Domain(getSelectedUploadStorage()));
 }
 
 // 外部投稿用 URL。秘密情報はクエリへ含めず Authorization ヘッダーだけで渡す。
@@ -7501,20 +7413,21 @@ const uploadTokenStatusBadge = document.querySelector("#uploadTokenStatusBadge")
 let isUploadTokenVerified = false;
 let uploadTokenVerifyTimer = null;
 
-function getStoredUploadTokenVerification(token, endpoint) {
+async function getStoredUploadTokenVerification(token, endpoint) {
   try {
     const raw = JSON.parse(localStorage.getItem("uploadTokenVerifiedState") || "null");
-    if (raw && raw.token === token && raw.endpoint === endpoint) {
+    if (raw?.token) localStorage.removeItem("uploadTokenVerifiedState");
+    if (raw && raw.tokenDigest === await tokenDigest(token) && raw.endpoint === endpoint) {
       return Boolean(raw.verified);
     }
   } catch (_) {}
   return null;
 }
 
-function setStoredUploadTokenVerification(token, endpoint, verified) {
+async function setStoredUploadTokenVerification(token, endpoint, verified) {
   try {
     if (token && endpoint) {
-      localStorage.setItem("uploadTokenVerifiedState", JSON.stringify({ token, endpoint, verified: Boolean(verified) }));
+      localStorage.setItem("uploadTokenVerifiedState", JSON.stringify({ tokenDigest: await tokenDigest(token), endpoint, verified: Boolean(verified) }));
     } else {
       localStorage.removeItem("uploadTokenVerifiedState");
     }
@@ -7549,7 +7462,8 @@ async function verifyUploadToken({ force = false } = {}) {
 
   // 🚀 [INV-CORE-005] 手元キャッシュがある場合は通信を完全スキップ（0回）
   if (!force) {
-    const cachedStatus = getStoredUploadTokenVerification(token, endpoint);
+    const cachedStatus = await getStoredUploadTokenVerification(token, endpoint);
+    if (token !== getUploadApiToken() || endpoint !== getDedicatedUploadEndpoint()) return;
     if (cachedStatus !== null) {
       isUploadTokenVerified = cachedStatus;
       if (uploadTokenStatusBadge) {
@@ -7576,6 +7490,7 @@ async function verifyUploadToken({ force = false } = {}) {
 
     if (res.ok) {
       const data = await res.json().catch(() => ({}));
+      if (token !== getUploadApiToken() || endpoint !== getDedicatedUploadEndpoint()) return;
       if (data.valid || data.success) {
         if (uploadTokenStatusBadge) {
           uploadTokenStatusBadge.innerHTML = `<span style="color: #22c55e; font-weight: 600;">${dict.uploadTokenStatusValid}</span>`;
@@ -7721,8 +7636,8 @@ copyCurlCmdBtn?.addEventListener("click", async () => {
     url.searchParams.set("naming", namingRule);
   }
 
-  let curlCmd = `curl -X POST "${url.toString()}"`;
-  curlCmd += ` \\\n  -H "Authorization: Bearer ${token}"`;
+  let curlCmd = `curl -X POST ${quotePosixShell(url.toString())}`;
+  curlCmd += ` \\\n  -H ${quotePosixShell(`Authorization: Bearer ${token}`)}`;
   curlCmd += ` \\\n  -H "X-Upload-Filename: image.webp"`;
   curlCmd += ` \\\n  -H "Content-Type: application/octet-stream"`;
   curlCmd += ` \\\n  --data-binary "@/path/to/image.webp"`;
@@ -7767,7 +7682,7 @@ downloadSendToBatBtn?.addEventListener("click", async () => {
   }
 
   const endpointUrlStr = url.toString();
-  const escapedToken = token.replace(/"/g, '`"');
+  const escapedToken = quotePowerShell(token);
 
   // ファイル名を「(選んだアドレス)にアップロード.bat」に命名
   let domainHost = "";
@@ -7795,8 +7710,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$s=[
 exit /b
 #>
 
-$endpoint = "${endpointUrlStr}"
-$token = "${escapedToken}"
+$endpoint = ${quotePowerShell(endpointUrlStr)}
+$token = ${escapedToken}
 $batPath = $env:BAT_PATH
 $rawArgs = $env:BAT_ARGS
 

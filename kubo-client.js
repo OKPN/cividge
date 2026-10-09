@@ -1,3 +1,4 @@
+import { safeConsole } from "./security/diagnostics.js";
 // Kubo RPC client. UI code supplies the configured endpoint and decides how to
 // display status; this module only performs IPFS pin operations.
 
@@ -39,9 +40,9 @@ export function createKuboClient(getEndpoint) {
       fetch(`${getEndpoint()}/api/v0/pin/add?arg=${encodeURIComponent(cid)}&recursive=true`, { method: "POST" })
         .then(async (res) => res.ok ? { success: true } : { success: false, error: await res.text() })
         .then((result) => {
-          if (!result.success) console.warn(`Kubo pin failed: ${cid}`, result.error);
+          if (!result.success) safeConsole.warn(`Kubo pin failed: ${cid}`, result.error);
         })
-        .catch((err) => console.warn(`Kubo pin request failed: ${cid}`, err));
+        .catch((err) => safeConsole.warn(`Kubo pin request failed: ${cid}`, err));
 
       if (await checkKuboPinned(cid, 800)) return { success: true, alreadyPinned: true };
       return { success: true, inProgress: true };

@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 import { ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3";
 
 export function createR2Content({ getStoredIpfsCid, getManagedContents }) {
@@ -9,7 +10,7 @@ export function createR2Content({ getStoredIpfsCid, getManagedContents }) {
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
     } catch (e) {
-      console.warn("Content hash calculation failed:", e);
+      safeConsole.warn("Content hash calculation failed:", e);
       return null;
     }
   }

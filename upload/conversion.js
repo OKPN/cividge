@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 import encodeJxl, { init as initJxl } from "@jsquash/jxl/encode.js";
 import jxlWasmUrl from "@jsquash/jxl/codec/enc/jxl_enc.wasm?url";
 import { conversionModeToMime, requireConvertedBlob } from "../view-policy.js";
@@ -14,7 +15,7 @@ async function ensureJxl() {
       await initJxl(wasmModule);
       jxlInitialized = true;
     } catch (e) {
-      console.error("Failed to init JXL encoder:", e);
+      safeConsole.error("Failed to init JXL encoder:", e);
       throw e;
     }
   }
@@ -96,7 +97,7 @@ export function createImageConverter({ getConversionMode, isConversionEnabled, q
       }
       requireConvertedBlob(finalBlob, options.mimeType);
     } catch (err) {
-      console.error("Image conversion error:", err);
+      safeConsole.error("Image conversion error:", err);
       throw new Error(`画像変換エラー (${options.name}): ${err.message}`, { cause: err });
     }
 

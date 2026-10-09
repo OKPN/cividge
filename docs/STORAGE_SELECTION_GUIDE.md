@@ -1,78 +1,39 @@
-# 📦 Cividge ストレージ選択基準・運用ガイド
+# Cividge ストレージ選択・運用ガイド
 
-Cividge は **Cloudflare R2** と **Filebase（IPFS）** の2系統のストレージをサポートしています。  
-それぞれの特性、コストリスク、帯域制限、および **自宅 Kubo ノード連携** を理解することで、完全無料かつ事故のない安全なメディア配信が可能になります。
+このガイドは **Cividge の現在の保存・配信モデル**について説明します。料金・無料枠・アカウント要件は変わるため、数値をアプリの保証として固定しません。利用前に [Cloudflare R2 pricing](https://developers.cloudflare.com/r2/pricing/) と [Filebase pricing](https://filebase.com/pricing/) を確認してください。
 
----
+## 1. まず区別するもの
 
-## 1. 比較サマリー（一目でわかる特徴）
+| 概念 | Cividgeでの意味 |
+| --- | --- |
+| Object | 最終アップロードbytesの不変内容。`sha256:<digest>` がidentity |
+| Link | `host:filename` の公開名。同じObjectへのLinkはすべてpeer |
+| Placement | R2、Filebase、Kuboなどにある物理的な保持状態 |
+| Public IPFS Gateway | CIDをHTTPで取得する経路。Placementでも保存保証でもない |
 
-| 項目 | ⚡ Cloudflare R2 | 🪐 Filebase（IPFS） | 🏠 自宅 Kubo（連携時） |
-| :--- | :--- | :--- | :--- |
-| **得意な用途** | **大容量動画・大量バズ・人気ファイル** | **日常の画像・短尺メディア・永久分散保存** | **大容量動画の保全・Filebase帯域の完全防護** |
-| **ダウンロード帯域 (Egress)** | **完全無料・無制限（$0）** | **月 10 GB まで（実質 5 GB 目安）** | **自宅回線（上り）※初回のみ** |
-| **無料ストレージ容量** | **10 GB** | **5 GB** | **自宅 HDD/SSD の容量次第（数TB無制限）** |
-| **クレジットカード** | **必須** | **不要（メールアドレスのみ）** | **不要** |
-| **超過時の挙動** | **⚠️ 自動従量課金（キャップ不可）** | **アクセス停止（追加課金なしで安全）** | 自宅回線の上り帯域のみ消費 |
-| **配信開始速度** | **最速（Cloudflare 同一網内）** | 高速（Cloudflare CDN 経由） | 高速（初回のみ数秒のDHT伝播待ち） |
+同じbytesがR2とFilebaseにあっても、Objectは一つでPlacementが複数あります。別名を作っても物理bytesを毎回複製するわけではありません。物理削除は一覧表示やKVの欠落から判断せず、ObjectLifecycleのrelease authorizationに従います。
 
----
+## 2. R2 / Filebase / Kuboの選び方
 
-## 2. 各ストレージの詳細と運用上の注意点
+| 選択 | 向いている場面 | 運用上の確認 |
+| --- | --- | --- |
+| Cloudflare R2 | S3型の直接uploadとWorkerからの配信を使う | bucket、S3 credential、browser CORS、WorkerのR2 bindingと同じbucket名を確認する。保存容量と操作回数の料金を監視する |
+| Filebase IPFS bucket | CIDを持つIPFS Placementを利用する | IPFS保存と配信帯域を別々に監視する。CIDがあるだけではPin継続や永久配信の保証にならない |
+| 自宅Kubo（任意） | 同じCIDの追加保全先を自分で持つ | ノード・ディスク・回線が稼働していることを監視する。Kubo RPCを公開インターネットへ露出しない |
 
-### ⚡ Cloudflare R2（重量級・バズ本命）
-* **選ぶべき理由**:
-  - ダウンロード転送量（Egress）が **完全無料（$0・無制限）**。
-  - 数十万〜数百万PVの大量閲覧（バズ）や、大きな動画（20MB〜80MB）の配信に最適。
-  - Cloudflare のエッジネットワークと直結しているため、動画のシーク再生や読み出しが極限まで高速。
-* **⚠️ 運用上の重要な注意点（Gotchas）**:
-  1. **クレジットカードの登録が必須**。
-  2. 無料枠は **10 GB** まで。**10 GB を超えると自動的に従量課金（$0.015/GB/月）が始まる**。
-  3. **Cloudflare には「10GB を超えたら書き込みを止める」という利用枠キャップ機能がない**ため、放置すると課金が進行します。
-  4. **対策**: 不要になったファイルや時限ファイルは定期的に削除し、常に 10 GB 以内に収まるよう管理してください。
+Cloudflare R2はインターネット向けegress料金を設けていませんが、保存・操作などの課金条件があります。[公式料金表](https://developers.cloudflare.com/r2/pricing/)で現在の条件を確認してください。Filebaseでは**IPFS帯域は別の課金・制限対象**です。S3互換の非IPFS object storageのegress条件と混同しないでください。[Filebaseの帯域説明](https://filebase.com/docs/ipfs/bandwidth-usage)を確認してください。
 
----
+KuboへPinしたからといって、公共Gatewayが必ずそのノードから取得し、Filebaseの転送量がゼロになるわけではありません。Gatewayは取得経路であり、Kubo Pinは保存状態です。重要な元ファイルにはCividgeの外にも独立したバックアップを残してください。
 
-### 🪐 Filebase / IPFS（軽量・長期分散・クレカ不要）
-* **選ぶべき理由**:
-  - **クレジットカード不要**で利用でき、勝手にお金が請求されるリスクがゼロ。
-  - CID（暗号学的コンテンツハッシュ）により、同一内容のファイルが完全に重複排除（Dedup）される。
-  - 軽量な画像（1〜2MB）を、一定の閲覧がある場所で長く安全に配信するのに最適。
-* **⚠️ 運用上の重要な注意点（Gotchas）**:
-  1. 無料枠の保存容量は **5 GB**、IPFS ダウンロード転送枠は **月 10 GB（安全のため実質 5 GB 程度を目安に運用）**。
-  2. 50MB 超の重量級動画や、急激に拡散される人気ファイルを Filebase 単体で配信すると、数回のキャッシュ更新で月間転送枠を使い切るリスクがあります。
-  3. **対策**: 20MB を超える動画や人気ファイルは **Cloudflare R2** を使うか、次に説明する **自宅 Kubo 連携** を併用してください。
+## 3. 容量解放と一覧
 
----
+- **80 MB上限：** 1ファイルのglobal upload limitは80,000,000 bytesです。元ファイルと最終bytesの両方を検査します。大きな動画用アップローダとしては扱わないでください。
+- **FIFO・手動削除：** いずれもObjectLifecycleへreleaseを要求する操作です。あるLinkを消してもpeer Linkが残れば、共有ObjectのPlacementをそれだけで解放しません。
+- **Filebase RPC：** Worker経由のRPC Placementを物理unpinする場合は、Worker専用bucket/tokenと明示的な `FILEBASE_DEDICATED_BUCKET=true` が必要です。browser S3 Placementや外部Pinを同じownershipとして扱いません。
+- **管理一覧：** All / R2 / Filebaseは同じbrowser-managed snapshotのfilterです。reload後は前回観測した一覧を表示しますが、現在の正本ではありません。明示Refreshで観測し直します。
 
-### 🏠 自宅 Kubo（IPFSノード）連携のコツ
-Cividge は、自宅 PC やサーバーで起動している Kubo ノード（IPFS Desktop / CLI）とシームレスに連携できます。
+## 4. 公開URLとキャッシュ
 
-* **大きなファイル・人気ファイルの必勝法**:
-  - 大きな動画（20MB〜80MB）や人気が出そうなファイルは、**SNS や外部に URL を貼る前に Cividge 画面から「Kubo にピン留め（Pin）」** しておきます。
-  - Kubo にピン留めされたファイルは、Worker の動的ルーティング（`[INV-DELIVERY-003]`）により、公共ゲートウェイ（`dweb.link`, `ipfs.io`）が自宅 Kubo から直接ブロックを取り寄せるようになります。
-  - **結果として、Filebase の月間 10 GB 枠を 1 バイトも消費しません**。
-  - さらに、Filebase の 5 GB 容量が逼迫した際は、Cividge のストレージ一覧から「Filebase 解放（アンピン）」を押すことで、**配信リンクを生かしたまま Filebase の空き容量をいつでも 100% 回復**できます。
-* **⚠️ 自宅回線の注意点**:
-  - 初回アクセス時（Cloudflare エッジがデータを取りに来る瞬間）に自宅から上り通信が発生します。**自宅回線のアップロード帯域（光回線の上り速度や夜間の混雑）に少しだけ注意**してください。
-  - ただし、一度 Cloudflare エッジに載ってしまえば、以降は何万回再生されても自宅回線にはアクセスされません（Cloudflare CDN がすべて肩代わりします）。
+URLは `https://delivery-host/filename` です。`BOARD` は削除反応性、`PUBLISHED` は長めの公開edge cacheを明示的に選ぶ用途policyです。Placementが増えても `BOARD` が自動で `PUBLISHED` には変わりません。Link期限はどちらのcache TTLよりも優先します。
 
----
-
-## 3. 🎯 迷ったときの判断チャート
-
-```
-アップロードしたいファイルは？
-│
-├─【50MB〜80MBの重い動画 / 一気にバズらせたい動画】
-│   └─► ⚡ Cloudflare R2 を推奨
-│       （※転送量無制限。ただし容量10GB以内をキープ）
-│
-├─【日常の画像 (1〜2MB) / クレジットカードを使いたくない】
-│   └─► 🪐 Filebase を推奨
-│       （※何百回バズっても月間枠の数％程度で余裕）
-│
-└─【Filebase で重い動画を配信したい / データを永久保全したい】
-    └─► 🪐 Filebase に保存 ＋ 直後に 🏠 自宅 Kubo へ Pin
-        （※Filebase の帯域消費ゼロ ＆ 容量が満杯になったら安全にアンピン可能）
-```
+動画の `?preview=1` は親Linkのpreview表現であり、別Linkや別の公開ファイルではありません。配信ルールを設定する場合は、このqueryを元動画と同一のcache entryへ潰さないでください。詳しくは[セキュリティ・キャッシュ運用ガイド](SECURITY_AND_CACHE_RUNBOOK.md)を参照してください。

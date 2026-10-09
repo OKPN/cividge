@@ -10,51 +10,55 @@ even if it appears to work in the UI.
 
 | Term | Meaning |
 | --- | --- |
-| **Object** | An R2 object, or the byte content addressed by an IPFS CID. |
-| **Link** | A user-facing delivery name, normally `delivery-domain/file-name`, registered in the KV control plane. |
+| **Object** | Immutable final content bytes identified by `sha256:<digest>`, independent of storage provider, key, or CID. |
+| **Link** | A user-facing canonical `host:filename` binding owned by LinkBinding and projected into delivery KV. |
+| **Placement** | Physical presence of the Object at an R2, Filebase, or Kubo locator. |
 | **Active link** | A link which has not been manually deleted and has not expired. A password gate may restrict access without making the link inactive. |
 | **Peer Link** | Any additional canonical `host:filename` Link to the same Object. Peer Links have no original/alias hierarchy. |
 | **Preservation pin** | A Kubo pin retained for an IPFS CID to preserve an origin independently of Filebase capacity release. |
-| **Physical cleanup** | Deleting an R2 object, removing a Filebase object, or unpinning a Kubo CID. |
+| **Physical cleanup** | Deleting an authorized R2 Placement, removing/unpinning an authorized Filebase Placement, or unpinning an authorized Kubo Placement. |
 
-An Object and a Link are deliberately different resources. A rename, domain
-selection, retention change, or password change operates on a Link unless this
-specification explicitly says otherwise.
+Object, Link, and Placement are deliberately different. A rename-style UI
+action creates a peer Link; it does not mutate or remove the old Link. A
+retention or password change applies only to its selected Link.
 
 ## Safety invariants
 
 1. **Resolvable active links** — Every active Link resolves to exactly one
-   registered Object or CID. A Link must never silently resolve to a different
+   registered ObjectId. A Link must never silently resolve to a different
    object after creation.
-2. **Shared-object protection** — An Object or CID with one or more active
+2. **Shared-object protection** — An Object with one or more active
    Links must not undergo physical cleanup.
 3. **Last-reference cleanup** — Physical cleanup is eligible only after the
-   final active Link to that Object or CID has been removed or expired.
-4. **Link-local controls** — Retention, expiry, password gates, aliases, and
+   final active Link to that Object has been removed or expired.
+4. **Link-local controls** — Retention, expiry, password gates, peer Links, and
    delivery domains belong to a Link. Changing one Link must not change the
-   policy of another Link to the same Object or CID.
+   policy of another Link to the same Object.
 5. **No pre-auth origin disclosure** — A password-protected Link must not
    return its resolved storage URL, object key, CID gateway URL, or response
    body before successful authorization.
 6. **Idempotent lifecycle requests** — Retrying a successful upload,
-   registration, alias, pin, or cleanup request must not create duplicate Links,
+   registration, peer Link creation, pin, or cleanup request must not create duplicate Links,
    duplicate preservation pins, or contradictory metadata.
-7. **Recoverable failure** — A failure between storage upload, KV registration,
-   alias creation, expiry processing, or pinning must leave enough state to
+7. **Recoverable failure** — A failure between storage upload, authoritative Link binding,
+   KV projection, peer Link creation, expiry processing, or pinning must leave enough state to
    retry or repair the operation without violating invariants 1–6.
-8. **Expiry is link invalidation** — Cividge uses access-time expiry rather than
-   a mandatory cron sweep. Once an expired Link is accessed, it must no longer
-   serve the Object. Its physical cleanup remains subject to the last-reference
-   rule.
-9. **Lifecycle authority** — The SQLite-backed Durable Object named from the
-   canonical ObjectId (`sha256:<digest>` of exact final bytes) owns the authoritative
-   Link relation and lifecycle state. Delivery KV is a projection and
-   localStorage is neither an Object authority nor a last-reference oracle.
-10. **Actuator separation** — R2 cleanup is executed by the Worker. Filebase
-   and Kubo capability holders may be browser-local, but can execute only an
-   authorized Placement task and must report `released` or `retryable`; their
-   report never authorizes release. Browser-held storage credentials are an
-   explicit out-of-band trust boundary.
+8. **Expiry is a Link-level delivery decision** — Cividge uses access-time
+   expiry rather than a mandatory cron sweep. Public GET returns 404 for an
+   expired Link; that GET does not delete KV, R2, Filebase, or Kubo data.
+   Physical cleanup is a separate authorized operation subject to the
+   last-reference rule.
+9. **Authority by fact** — LinkBinding's SQLite-backed Durable Object owns
+   canonical Link uniqueness, binding, generation, and Link-level policy.
+   The ObjectLifecycle Durable Object named from canonical ObjectId owns Object
+   membership, Placement state, and release authorization. Delivery KV is a
+   projection; localStorage is neither authority nor a last-reference oracle.
+10. **Actuator separation** — R2 cleanup is executed by the Worker. A
+   Worker-managed Filebase RPC Placement may be unpinned by the Worker only
+   after ObjectLifecycle authorization and only inside an explicitly dedicated
+   Cividge bucket. Browser S3 Filebase and Kubo capability holders execute
+   only their authorized Placement tasks. Reports never authorize release;
+   browser-held credentials remain an out-of-band trust boundary.
 11. **Immutable Object bytes** — Conversion, metadata policy, EXIF processing,
    and MP4 FastStart complete before Object creation. Different bytes require
    a new ObjectId and must never overwrite an existing locator before conflict
@@ -78,29 +82,32 @@ case-sensitive; a CID field never carries a backend marker.
 
 | Operation | Required result |
 | --- | --- |
-| New upload | Store or identify an Object, then register its Link. A successful response must not advertise a Link before its registry entry is usable. |
-| Duplicate Filebase content | Reuse the matching CID and register a new Alias/Link; do not re-upload identical bytes solely to obtain a different filename. |
-| Re-upload after release | The same canonical Link and content CID are accepted idempotently after the upload confirms a PRESENT Placement. The lifecycle authority advances the Placement generation, republishes the Link projection, and purges the stale 404; alias-only Link creation cannot resurrect released storage. |
-| Rename or new delivery domain | Create a new peer Link while retaining the source Link and the same Object/CID. A duplicate canonical Link key is a conflict, not an update. |
+| New upload | Determine final-byte ObjectId and authoritative Link/Object preflight before physical PUT. Acquire or identify the needed Placement, then complete the Link. A successful response must not advertise a Link before its delivery projection is usable. |
+| Duplicate Filebase content | Reuse the matching final-byte Object and CID, then register a peer Link; do not re-upload identical bytes solely to obtain a different filename. |
+| Re-upload after release | The same canonical Link and ObjectId are accepted idempotently after the upload confirms a PRESENT Placement. The lifecycle authority advances the Placement generation, republishes the Link projection, and purges the stale 404; Link creation alone cannot resurrect released storage. |
+| Rename or new delivery domain | Create a new peer Link while retaining the source Link and the same Object. A duplicate canonical Link key is a conflict, not an update. |
 | Change TTL or password | Modify only the selected Link's policy. |
-| Delete one of several links | Begin authoritative removal, delete that Link's delivery projection, then complete authoritative removal; retain the shared Object/CID and preservation pin. Every partial failure is retryable with the same ObjectRef and Link key. |
-| Expiry on access | Invalidate the expired Link and return the configured not-found response; do not clean up a shared Object/CID. |
+| Delete one of several links | Begin authoritative removal, delete that Link's delivery projection, then complete authoritative removal; retain the shared Object and preservation pin. Every partial failure is retryable with the same ObjectRef and Link key. |
+| Expiry on access | Return the configured not-found response without deleting a Link, KV record, or physical Placement in the GET path. |
 | Delete or expire the final link | Make the Object release-eligible only after the authoritative Link set and pending-removal set are empty. Physical cleanup still requires a valid Placement claim. |
 | Filebase capacity release | Before releasing a Filebase copy that still needs preservation, transition Kubo through `PIN_REQUESTED → PINNING → PRESENT`. `pinning` is not preservation. A failed attempt becomes retryable and must not release the source. |
 | Abandoned actuator | Revoke only the expired claim, return acquisition to `PIN_REQUESTED` (or release to `RETRYABLE`), and reject reports from the expired generation. |
 
 ## Authoritative mutation and actuator protocol
 
-- Every lifecycle mutation requires the admin capability. An upload-only or
-  test-upload token is not a lifecycle capability.
+- Direct lifecycle management requires the admin capability. An upload-only or
+  test-upload token authorizes only the Worker's constrained upload workflow;
+  it is not a general lifecycle-management capability.
 - A Placement executor receives a task containing canonical ObjectRef,
   Placement kind, operation, claim ID, and generation. Only the matching
   current claim may advance state.
 - Duplicate reports for the same completed claim are idempotent. A report for
   an older generation or a contradictory outcome is rejected.
-- R2 deletion may be executed by the Worker. Filebase deletion and Kubo unpin
-  may be executed by browser/local capability holders, but the capability
-  holder never decides whether release is allowed.
+- R2 deletion may be executed by the Worker. Worker-managed Filebase RPC
+  unpin requires an ObjectLifecycle release claim, durable Worker-managed
+  provenance, and `FILEBASE_DEDICATED_BUCKET=true`. Browser S3 Filebase and
+  Kubo actuation remain with their respective capability holders. No actuator
+  decides for itself whether release is allowed.
 - Delivery KV is updated from authoritative Placement state after a successful
   mutation/report. It projects `PIN_REQUESTED`, `PINNING`, `PRESENT`, and
   `RETRYABLE` without collapsing them. Client-supplied `kuboStatus` is not authority.
@@ -176,17 +183,17 @@ state and request construction that feed those API tests.
 | --- | --- |
 | 1 | Register a Link and resolve it; verify that it identifies the registered object/CID only. |
 | 2–3 | Create two Links for one CID; delete or expire one; verify that the pin/object remains. Remove the final Link; verify cleanup becomes eligible. |
-| 4 | Give two aliases different TTLs and passwords; modify one and verify the other remains unchanged. |
+| 4 | Give two peer Links different TTLs and passwords; modify one and verify the other remains unchanged. |
 | 5 | Request a password-protected Link without credentials; assert that no origin URL, CID gateway URL, or file bytes appear in the response. |
-| 6 | Replay upload/register/alias/pin requests; assert one logical Link per requested name and no additional pin count. |
+| 6 | Replay upload/register/peer-Link/pin requests; assert one logical Link per requested name and no additional pin count. |
 | 7 | Simulate a failure after storage upload and before KV registration, then retry; assert a usable single Link and no accidental cleanup. |
-| 8 | Access an expired Link; assert a not-found response, then confirm that another active alias to the same Object remains usable. |
+| 8 | Access an expired Link; assert a not-found response, then confirm that another active peer Link to the same Object remains usable. |
 | 9–10 | Fail KV deletion and authority completion separately; retry the same Link removal and assert no early release. Replay, stale, and contradictory Placement reports and assert deterministic acceptance/rejection. |
 | Observation | Record three HEAD failures and assert local UI retirement only; record success and assert the counter resets. |
 
 ## Change rule
 
-Any pull request that changes upload, aliasing, expiry, password, FIFO, storage
+Any pull request that changes upload, peer Link creation, expiry, password, FIFO, storage
 cleanup, Filebase, or Kubo behavior must identify the affected invariant(s) and
 add or update the corresponding test. If a new storage backend is introduced,
 it must implement the same lifecycle contract before it is presented as a

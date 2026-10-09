@@ -1,8 +1,8 @@
 # This project must contain only static assets: do not add a functions/ directory.
 # Replace __FILEBASE_COMPATIBILITY_ORIGIN__ with the actual Filebase delivery
 # Worker/domain (the domain that resolves Cividge aliases and then fetches IPFS).
-# The internal `r/` path marker survives a query-stripping rule on the
-# backend domain. Configure that backend rule to discard arbitrary queries.
+# The internal /r/<relay-id>/ namespace identifies the public entry.
+# Do not strip the parent's ?preview=1 query or merge it with the video cache.
 # Example: /* https://relay.example.com/r/your-relay/:splat 307
 /* https://relay.k7m.f5.si/r/__FILEBASE_PUBLIC_HOST__/:splat 307
 

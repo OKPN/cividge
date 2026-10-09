@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 import { exceedsUploadLimit } from "../upload-limit.js";
 import { applyFastStartToMp4 } from "../media/mp4-faststart.js";
 import { getContentTypeFromFilename, getImageDimensions } from "../media-utils.js";
@@ -12,7 +13,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
   storeIpfsCid, storeR2Hash, extractCleanHost, isConversionEnabled,
   onFileState, onError, onUploadLimit, onPublicUrl, recordWorkflow, queueVideoThumbnail,
   readImageDimensions = getImageDimensions,
-  onDiagnostic = error => console.error("Upload failed:", error) }) {
+  onDiagnostic = error => safeConsole.error("Upload failed:", error) }) {
   async function uploadImage(result, targetProvider = "r2", customPassword = null, uploadOptions = {}) {
     if (!result || !result.blob) return false;
   
@@ -74,7 +75,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
             uploadBytes = new Uint8Array(await uploadBlob.arrayBuffer());
           }
         } catch (fastStartErr) {
-          console.warn("FastStart optimization error:", fastStartErr);
+          safeConsole.warn("FastStart optimization error:", fastStartErr);
         }
       }
   
@@ -255,7 +256,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
             onPublicUrl(result.name, result.proxyUrl);
             queueVideoThumbnail(uploadBlob, result.name, objectId);
   
-            console.log(`⚡ R2 重複排除（UnixFS CID照合: ${calculatedCid}）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
+            safeConsole.log(`⚡ R2 重複排除（UnixFS CID照合: ${calculatedCid}）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
             return true;
           }
         }
@@ -322,7 +323,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
           storeIpfsCid(result.name, ipfsCid);
         }
         if (calculatedCid && ipfsCid && calculatedCid !== ipfsCid) {
-          console.warn("Filebase returned a CID different from the local UnixFS calculation; duplicate detection will be retried with Filebase's CID on future uploads.", { calculatedCid, ipfsCid });
+          safeConsole.warn("Filebase returned a CID different from the local UnixFS calculation; duplicate detection will be retried with Filebase's CID on future uploads.", { calculatedCid, ipfsCid });
         }
         // CID の有無に関わらず、KV にメタデータ（パスワード含む）を登録（※一般ユーザー時は自動スキップ）
         // [INV-CORE-006] 🌐 選択されている配信ドメインのみを allowedHost として渡し、host:filename 均一キーで登録
@@ -353,11 +354,11 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
         if (hasAdminAccess()) {
           const deliveryBase = getKvDeliveryBaseDomain();
           result.proxyUrl = `${deliveryBase}/${encodeURIComponent(result.name)}`;
-          console.log(`🪐 cividge-kv-worker URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
+          safeConsole.log(`🪐 cividge-kv-worker URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
         } else {
           // 一般ユーザーモードでも共有URLは配信ドメイン + ファイル名に統一する。
           result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-          console.log(`🪐 Filebase URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
+          safeConsole.log(`🪐 Filebase URL 生成完了: CID=${ipfsCid} -> ${result.proxyUrl}`);
         }
         result.proxyUrl = getSelectedDeliveryUrl(result) || result.proxyUrl;
   

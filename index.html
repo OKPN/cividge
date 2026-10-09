@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; script-src-attr 'none'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; media-src 'self' blob: https: http:; connect-src 'self' https: http:; form-action 'self'">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Civitai Bridge (Cividge)</title>
     <meta name="description" content="Civitai Bridge（Cividge）は、ブラウザでメディアを変換し、自分の Cloudflare R2 または Filebase (IPFS) へ直接保存・配信する個人用アップローダです。">
@@ -520,7 +521,7 @@
                   </span>
                   <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                     <button class="primary-button" id="cfShareQrButton" type="button" style="flex: 1.2; min-height: 36px; font-size: 12px; margin: 0; background: #0284c7; border-color: #38bdf8;" title="スマホのカメラでスキャンして全設定を引き継ぐ" data-i18n="btnShareQr">📱 スマホ共有 (QR)</button>
-                    <button class="ghost-button" id="cfBackupUrlButton" type="button" style="flex: 1.2; min-height: 36px; font-size: 11px; margin: 0;" title="PINコードで暗号化したバックアップURLを生成" data-i18n="btnPinBackup">🔗 PINバックアップ</button>
+                    <button class="ghost-button" id="cfBackupUrlButton" type="button" style="flex: 1.2; min-height: 36px; font-size: 11px; margin: 0;" title="復元キーで保護したバックアップURLを生成" data-i18n="btnPinBackup">🔗 暗号化バックアップ</button>
                     <button class="ghost-button danger-button" id="globalClearButton" type="button" style="min-height: 36px; font-size: 11px; padding: 0 10px;" title="アプリに保存された全設定をクリア" data-i18n="btnClearAllData">🗑️ 全クリア</button>
                   </div>
                 </div>
@@ -758,6 +759,7 @@
           <canvas id="qrCanvas" style="display: block; margin: 0 auto;"></canvas>
         </div>
         <p id="qrStatus" role="status" style="font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0 0 16px;"></p>
+        <p style="font-size: 12px;">復元キー（URLとは別に保管してください）<br><code id="qrRestorationKey" style="user-select: all; overflow-wrap: anywhere;"></code></p>
         <div style="display: flex; gap: 8px; flex-direction: column;">
           <button class="primary-button" id="copySyncUrlButton" type="button" style="width: 100%; min-height: 36px; font-size: 13px; background: #0284c7; border-color: #38bdf8;" data-i18n="btnCopySyncUrl">📋 引き継ぎURLをコピー</button>
           <button class="ghost-button" id="closeQrModalButton" type="button" style="width: 100%; min-height: 36px;" data-i18n="btnClose">閉じる</button>
@@ -770,10 +772,10 @@
       <div class="modal-content" style="max-width: 380px; text-align: center; padding: 24px;">
         <h3 style="margin-top: 0; font-size: 16px; color: var(--accent);">🔑 暗号化バックアップデータを検出</h3>
         <p style="font-size: 12px; color: var(--muted); margin-bottom: 16px; line-height: 1.5;">
-          発行時に生成された 6桁のパスコード (PINコード) を入力してください。
+          発行時に別表示された32文字の復元キーを入力してください。
         </p>
         <div style="margin-bottom: 16px;">
-          <input type="text" id="pinInput" placeholder="6桁のPINコード" maxlength="8" style="width: 100%; height: 42px; text-align: center; font-size: 20px; font-weight: bold; letter-spacing: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); outline: none;">
+          <input type="password" id="pinInput" placeholder="32文字の復元キー" maxlength="32" autocomplete="off" style="width: 100%; height: 42px; text-align: center; font-size: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); outline: none;">
           <div id="pinErrorNotice" style="font-size: 12px; color: var(--danger); margin-top: 6px; min-height: 16px;"></div>
         </div>
         <div style="display: flex; gap: 8px;">
@@ -783,17 +785,17 @@
       </div>
     </div>
 
-    <!-- 生成された6桁PIN表示モーダル -->
+    <!-- 復元キー表示モーダル -->
     <div id="pinDisplayModal" class="modal-backdrop" style="display: none;">
       <div class="modal-content" style="max-width: 400px; text-align: center; padding: 24px;">
         <h3 style="margin-top: 0; font-size: 16px; color: #4caf50;">✅ バックアップURLを発行しました</h3>
         <p style="font-size: 12px; color: var(--muted); margin-bottom: 12px; line-height: 1.5;">
-          暗号化された復元用URLをクリップボードにコピーしました！
+          下のURLを選択してコピーし、復元キーとは別に保管してください。
         </p>
         <div style="background: rgba(99, 102, 241, 0.12); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 16px; margin-bottom: 16px;">
-          <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">【 自動生成された復元用 6桁 PIN 】</div>
-          <div id="generatedPinText" style="font-size: 34px; font-weight: bold; font-family: monospace; letter-spacing: 8px; color: var(--accent);">849201</div>
-          <div style="font-size: 11px; color: #f43f5e; margin-top: 6px; font-weight: 600;">※ この6桁のPIN数字をメモ帳等に控えておいてください</div>
+          <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">【 復元キー（URLとは別に保管） 】</div>
+          <div id="generatedPinText" style="font-size: 16px; word-break: break-all; font-family: monospace; color: var(--accent);"></div>
+          <div style="font-size: 11px; color: #f43f5e; margin-top: 6px;">※ 復元キーがないと設定を復元できません。</div>
         </div>
         <div style="margin-bottom: 16px; text-align: left;">
           <label style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">復元用URL (クリップボードコピー済み):</label>

@@ -1,10 +1,11 @@
+import { safeConsole } from "../security/diagnostics.js";
 import { captureVideoFirstFrame } from "../media/video-preview.js";
 import { isVideoThumbnailParentKey } from "../media-utils.js";
 
 // Preview creation is intentionally best-effort after the main Link commits.
 export function createVideoThumbnailRegistration({ hasAdminAccess, getCustomKvWorkerUrl, getAdminApiToken,
   captureFrame = captureVideoFirstFrame, cachePreview = async () => {}, onPreviewCached = () => {},
-  onFailure = error => console.warn("Video preview is unavailable; main video remains published:", error) }) {
+  onFailure = error => safeConsole.warn("Video preview is unavailable; main video remains published:", error) }) {
   return function queueVideoThumbnail(videoBlob, filename, objectId) {
     if (!videoBlob || !objectId || !isVideoThumbnailParentKey(filename) || !hasAdminAccess()) return;
     (async () => {

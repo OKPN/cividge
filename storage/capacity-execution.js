@@ -1,3 +1,4 @@
+import { safeConsole } from "../security/diagnostics.js";
 import { ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
 import { selectFilebaseFifoCandidates, selectR2FifoCandidates } from "./fifo-policy.js";
 
@@ -50,7 +51,7 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
         const kuboCheck = await checkKuboOnline(1500);
         isKuboAvailable = kuboCheck.online;
         if (!isKuboAvailable) {
-          console.warn("⚠️ 自宅 Kubo がオフラインのため、Filebase FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
+          safeConsole.warn("⚠️ 自宅 Kubo がオフラインのため、Filebase FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
           if (requiredBytes > 0) {
             const isEn = getAppLanguage() === "en";
             const errMsg = isEn
@@ -60,20 +61,20 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
           }
           return;
         }
-        console.log("🏠 自宅 Kubo ノード検出: アンピン対象ファイルをローカルKuboへ救出Pin開始");
+        safeConsole.log("🏠 自宅 Kubo ノード検出: アンピン対象ファイルをローカルKuboへ救出Pin開始");
         if (isKuboPrioritizePinned) {
           try {
             kuboPinnedSet = await getKuboPinnedCids(1500);
             if (kuboPinnedSet && kuboPinnedSet.size > 0) {
-              console.log(`🏠 Kubo 保管済みCIDリスト取得成功 (${kuboPinnedSet.size} 件)。保管済みファイルを優先してFilebase容量解放します。`);
+              safeConsole.log(`🏠 Kubo 保管済みCIDリスト取得成功 (${kuboPinnedSet.size} 件)。保管済みファイルを優先してFilebase容量解放します。`);
             }
           } catch (e) {
-            console.warn("Kubo Pin済みリスト取得失敗（通常ソートにフォールバック）:", e);
+            safeConsole.warn("Kubo Pin済みリスト取得失敗（通常ソートにフォールバック）:", e);
           }
         }
       }
   
-      console.log(`🪐 Filebase FIFO 発動: 現在容量 ${formatBytes(currentTotalBytes)} + 新規 ${formatBytes(requiredBytes)} > 上限 ${formatBytes(limitBytes)} (85%)`);
+      safeConsole.log(`🪐 Filebase FIFO 発動: 現在容量 ${formatBytes(currentTotalBytes)} + 新規 ${formatBytes(requiredBytes)} > 上限 ${formatBytes(limitBytes)} (85%)`);
   
       // 保護対象（pinned_ で始まるもの）を除外し、ソート
       // isKuboPrioritizePinned が有効かつ kuboPinnedSet がある場合は、Kubo保管済みを最優先にし、それぞれ古い順（LastModified 昇順）にする
@@ -115,9 +116,9 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
           try {
             await ensureAuthoritativeKuboPin(objectRef, cid);
             kuboStatus = "pinned";
-            console.log(`🏠 Kubo 事前救出Pin成功: ${targetKey} (${cid})`);
+            safeConsole.log(`🏠 Kubo 事前救出Pin成功: ${targetKey} (${cid})`);
           } catch (pErr) {
-            console.warn(`🏠 Kubo Pin通信エラー:`, pErr);
+            safeConsole.warn(`🏠 Kubo Pin通信エラー:`, pErr);
             if (requiredBytes > 0) {
               throw new Error(`自宅KuboへのPin通信エラーのためアンピンを中断しました: ${targetKey} (${pErr.message})`);
             }
@@ -129,9 +130,9 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
           try {
             await ensureAuthoritativeKuboPin(objectRef, cid, { requestPin: false });
             kuboStatus = "pinned";
-            console.log(`🏠 Kubo 保管済み確認（Pinスキップ）: ${targetKey} (${cid})`);
+            safeConsole.log(`🏠 Kubo 保管済み確認（Pinスキップ）: ${targetKey} (${cid})`);
           } catch (error) {
-            console.warn(`Kubo authority confirmation failed for ${targetKey}:`, error);
+            safeConsole.warn(`Kubo authority confirmation failed for ${targetKey}:`, error);
             continue;
           }
         }
@@ -143,18 +144,18 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       }
   
       if (filesToUnpin.length > 0) {
-        console.log(`🪐 Filebase FIFO 自動アンピン実行: ${filesToUnpin.join(", ")} (${formatBytes(freedBytes)} 解放)`);
+        safeConsole.log(`🪐 Filebase FIFO 自動アンピン実行: ${filesToUnpin.join(", ")} (${formatBytes(freedBytes)} 解放)`);
         for (const update of kvUpdates) {
           try {
             const objectRef = await getObjectRefForUi("filebase", update.meta?.s3Key || update.key, update.cid);
             await requestAuthorizedRelease(objectRef, "fifo", "filebase");
           } catch (kvErr) {
-            console.warn(`Failed to update unpinned status in KV for ${update.key}:`, kvErr);
+            safeConsole.warn(`Failed to update unpinned status in KV for ${update.key}:`, kvErr);
           }
         }
       }
     } catch (err) {
-      console.warn("Filebase FIFO ensureStorageCapacity error:", err);
+      safeConsole.warn("Filebase FIFO ensureStorageCapacity error:", err);
       if (requiredBytes > 0) {
         throw err;
       }
@@ -190,7 +191,7 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       if (isKuboAutoPinR2) {
         const kuboStatus = await checkKuboOnline(1500);
         if (!kuboStatus.online) {
-          console.warn("⚠️ 自宅 Kubo がオフラインのため、R2 FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
+          safeConsole.warn("⚠️ 自宅 Kubo がオフラインのため、R2 FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
           return;
         }
       }
@@ -222,7 +223,7 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
             storeR2Hash(item.Key, expectedCid);
             preservedInKuboKeys.add(item.Key);
           } catch (pinErr) {
-            console.warn(`Kubo auto-pin for R2 FIFO failed on ${item.Key}:`, pinErr);
+            safeConsole.warn(`Kubo auto-pin for R2 FIFO failed on ${item.Key}:`, pinErr);
           }
         }
       }
@@ -236,9 +237,9 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
         deleteR2Hash(item.Key);
         releasedCount += 1;
       }
-      console.log(`⚡ R2 FIFO authority release: ${releasedCount}件 (Kubo保全確認: ${preservedInKuboKeys.size}件)`);
+      safeConsole.log(`⚡ R2 FIFO authority release: ${releasedCount}件 (Kubo保全確認: ${preservedInKuboKeys.size}件)`);
     } catch (err) {
-      console.warn("R2 FIFO ensureStorageCapacity error:", err);
+      safeConsole.warn("R2 FIFO ensureStorageCapacity error:", err);
     }
   }
 
