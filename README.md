@@ -62,7 +62,8 @@ Kubo is a preservation layer. Its RPC endpoint is used for pin operations; confi
 
 ## Prerequisites
 
-- Node.js 18 or later
+- For normal use, open the hosted frontend at [cividge.pages.dev](https://cividge.pages.dev/). A separate frontend deployment is optional.
+- For deploying your own Worker or frontend: Git and Node.js 22.12+ (22.x) or 24.x. The current Vite build does not support Node.js 18.
 - A Cloudflare account
 - Wrangler (`npx wrangler` is sufficient)
 - A Cloudflare R2 bucket and/or a Filebase IPFS bucket
@@ -73,8 +74,8 @@ The frontend repository (`cividge`) and the delivery/registry Worker repository 
 
 1. Create one Cloudflare Workers KV namespace for the **Worker** and configure its `CIVIDGE_KV` binding, Durable Object bindings/migrations, and any R2 binding required by your deployment.
 2. Deploy `cividge-kv-worker` with a private admin token. Wrangler applies its declared Durable Object migrations; do not treat KV as their replacement.
-3. Deploy `cividge` to Cloudflare Pages. Pages does **not** bind that KV namespace; its `/api/upload` Function forwards to the canonical Worker via `CIVIDGE_KV_WORKER_URL`.
-4. In Cividge, connect the KV Worker first, then connect R2 and/or Filebase.
+3. Open the existing [Cividge frontend](https://cividge.pages.dev/). Deploy a separate frontend only if you want to manage its code and origin yourself.
+4. In Cividge, explicitly connect **your own** KV Worker URL and admin token first, then connect R2 and/or Filebase. Shared UI does not mean shared storage or lifecycle authority.
 5. Register separate delivery domains for R2 and Filebase.
 6. Configure R2 CORS when using browser-to-R2 uploads.
 
@@ -132,7 +133,9 @@ Worker-managed Filebase RPC acquisition and physical `pin/rm` additionally requi
 
 Do not reuse `ADMIN_API_TOKEN` in batch files or external upload clients.
 
-## 2. Deploy Cividge to Cloudflare Pages
+## 2. Optional: deploy your own Cividge frontend
+
+Skip this section when using [cividge.pages.dev](https://cividge.pages.dev/). For browser uploads, allow that origin in your provider CORS. External upload clients should use your own Worker's upload API; the hosted Pages `/api/upload` proxy is configured for its maintainer's Worker, not automatically for every user's Worker.
 
 ```bash
 git clone https://github.com/OKPN/cividge.git
@@ -167,13 +170,13 @@ npm run preview
 
 ## 3. Connect services in Cividge
 
-Open your Pages deployment and configure services in this order:
+Open [cividge.pages.dev](https://cividge.pages.dev/) or your own Pages deployment and configure services in this order:
 
 1. **KV Delivery & Management Worker** — enter its URL and `ADMIN_API_TOKEN`, then connect.
 2. **Cloudflare R2** and/or **Filebase (IPFS)** — enter each storage provider's credentials and connect.
 3. Register one or more dedicated delivery domains for each provider.
 
-The Worker URL works as the first delivery domain. You can later add a dedicated Pages URL or custom domain.
+The Worker's `workers.dev` URL can be used for the management API. Current delivery code rejects public media GET on `workers.dev`; use a Worker custom domain for delivery, optionally fronted by a static Pages relay. The selected public hostname must match the relay identity and allowlist entry.
 
 ### Everyday use
 
