@@ -189,6 +189,8 @@ The **IPFS Public Gateway** controls are an administrator UI for the delivery Wo
 
 Automatic selection uses the public viewer's country/continent, not the administrator's location or measured latency. Mexico, Central America, the Caribbean, and South America prefer LATAM; other North American viewers prefer NA. APAC and EU retain their continent-based ordering. Matching-region candidates precede Global and then other enabled candidates; manual mode tries the selected endpoint first and retains fallback candidates. Region labels are editable routing metadata, not verified Gateway locations. The built-in LATAM endpoint is classified as LATAM; existing saved configurations are never automatically rewritten. Load the Worker settings, edit the endpoint's region, and save to apply a change.
 
+JXL previews in upload cards, the managed list, and the URL palette first use native image decoding. If unsupported, a bundled, lazily loaded WebAssembly decoder renders a small presentation-only image. Original JXL bytes, public URLs, and Object identity are unchanged; no server thumbnail or persisted preview is created. Decoder/retrieval failure leaves a format placeholder and does not remove the managed row. Raw JXL direct-link display still requires browser support.
+
 ## Cloudflare R2
 
 Create an R2 bucket and an S3 API token, then enter:

@@ -13,6 +13,7 @@ import { createUploadOrchestrator } from "./upload/upload-orchestrator.js";
 import { createVideoThumbnailRegistration } from "./upload/video-thumbnail.js";
 import { createVideoPreviewCache } from "./media/video-preview-cache.js";
 import { showManagedVideoPreview } from "./media/managed-video-preview.js";
+import { attachJxlPreviewFallback } from "./media/jxl-preview.js";
 import { recordUploadedWorkflow } from "./upload/workflow-cache.js";
 import { localEntryIdentity, getRetiredLocalEntries, setLocalEntryRetired, saveLedgerToLocalStorage, loadLedgerFromLocalStorage, loadDisplayCache } from "./managed/managed-cache.js";
 import { createWorkerClient } from "./api/worker-client.js";
@@ -3528,7 +3529,7 @@ function render() {
         let previewSrc = "";
         if (result && result.previewUrl) {
           previewSrc = result.previewUrl;
-        } else if (file.type && file.type.startsWith("image/")) {
+        } else if ((file.type && file.type.startsWith("image/")) || originalExt === "jxl") {
           previewSrc = URL.createObjectURL(file);
         }
 
@@ -3584,6 +3585,16 @@ function render() {
           </div>
         `;
         fileList.append(item);
+        const previewImage = item.querySelector("img.thumb");
+        const previewExt = displayName.split(".").pop().toLowerCase();
+        if (previewImage && previewExt === "jxl") {
+          attachJxlPreviewFallback(previewImage, { onFailure: image => {
+            const placeholder = document.createElement("div");
+            placeholder.className = "thumb format-badge";
+            placeholder.textContent = "JXL";
+            image.replaceWith(placeholder);
+          } });
+        }
       } catch (err) {
         safeConsole.error("Card render error:", err);
       }
@@ -5511,7 +5522,7 @@ function renderCurrentStoragePage() {
     article.className = "result-item";
     const ext = item.Key ? item.Key.split('.').pop().toLowerCase() : "";
     const isVideo = ["mp4", "webm", "ogv", "mov", "m4v"].includes(ext);
-    const isImage = ["jpg", "jpeg", "png", "webp", "gif", "avif"].includes(ext);
+    const isImage = ["jpg", "jpeg", "png", "webp", "gif", "avif", "jxl"].includes(ext);
     
     const rawCid = isFilebase
       ? (item.cid || getStoredIpfsCid(item.Key) || (item.s3Key ? getStoredIpfsCid(item.s3Key) : null))
@@ -5776,12 +5787,15 @@ function renderCurrentStoragePage() {
     r2FileList.append(article);
 
     if (isImage && !hasPassword) {
-      article.querySelector(".thumb-link img.thumb")?.addEventListener("error", event => {
+      const image = article.querySelector(".thumb-link img.thumb");
+      const showPlaceholder = failedImage => {
         const fallback = document.createElement("div");
         fallback.className = "thumb format-badge";
         fallback.textContent = ext.toUpperCase() || "IMAGE";
-        event.currentTarget.replaceWith(fallback);
-      }, { once: true });
+        failedImage.replaceWith(fallback);
+      };
+      if (image && ext === "jxl") attachJxlPreviewFallback(image, { onFailure: showPlaceholder });
+      else image?.addEventListener("error", event => showPlaceholder(event.currentTarget), { once: true });
     }
 
     if (isVideo && !hasPassword) {
@@ -6775,7 +6789,7 @@ function renderUrlPalette() {
 
     const ext = file.key ? file.key.split('.').pop().toLowerCase() : "";
     const isVideo = file.isVideo || ["mp4", "webm", "ogv", "mov", "m4v"].includes(ext);
-    const isImage = !isVideo && (file.previewUrl || ["jpg", "jpeg", "png", "webp", "gif", "avif"].includes(ext) || file.isCivitai);
+    const isImage = !isVideo && (file.previewUrl || ["jpg", "jpeg", "png", "webp", "gif", "avif", "jxl"].includes(ext) || file.isCivitai);
 
     if (isVideo) {
       const video = document.createElement("video");
@@ -6813,6 +6827,13 @@ function renderUrlPalette() {
     });
 
     paletteList.append(btn);
+    if (isImage && ext === "jxl") {
+      attachJxlPreviewFallback(btn.querySelector("img"), { onFailure: image => {
+        image.remove();
+        btn.classList.add("format-badge");
+        btn.textContent = "JXL";
+      } });
+    }
   });
 }
 

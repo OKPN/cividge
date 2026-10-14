@@ -17,7 +17,8 @@ test("cached image rows use the original public URL without a managed refresh", 
   assert.doesNotMatch(renderer, /item\.isCached\s*&&\s*isImage/);
   assert.match(renderer, /else if \(isImage\)\s*\{[\s\S]*?src="\$\{escapeHtml\(publicUrl\)\}"/);
   assert.match(renderer, /if \(isImage && !hasPassword\)[\s\S]*?addEventListener\("error"/);
-  assert.match(renderer, /event\.currentTarget\.replaceWith\(fallback\)/);
+  assert.match(renderer, /failedImage\.replaceWith\(fallback\)/);
+  assert.match(renderer, /event => showPlaceholder\(event\.currentTarget\)/);
 });
 
 test("tab and page projection paths do not start a network observation", () => {
