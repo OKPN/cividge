@@ -447,13 +447,13 @@
                           <label class="field"><span data-i18n="gatewayModeLabel">選択方式</span>
                             <select id="publicGatewayMode"><option value="auto" data-i18n="gatewayAuto">自動</option><option value="manual" data-i18n="gatewayManual">手動</option></select>
                           </label>
+                          <span style="font-size: 10.5px; color: var(--muted);" data-i18n="gatewayAutoExplanation">自動：閲覧者の国・地域に応じたGatewayを優先します。速度を測定して選ぶ方式ではありません。</span>
                           <label class="field"><span data-i18n="gatewayEndpointLabel">Gateway</span>
                             <select id="publicGatewaySelected"></select>
                           </label>
                           <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                             <input id="publicGatewayUrl" type="url" placeholder="https://example.org/ipfs" autocomplete="off" spellcheck="false" style="flex: 2 1 180px; min-width: 0;">
                             <select id="publicGatewayRegion" aria-label="Gateway region" style="flex: 1 1 95px;">
-                              <option value="global">Global</option><option value="apac">APAC</option><option value="eu">EU</option><option value="na">NA</option>
                             </select>
                             <button type="button" class="ghost-button" id="publicGatewayAdd" data-i18n="gatewayAdd">＋ Gatewayを追加</button>
                           </div>

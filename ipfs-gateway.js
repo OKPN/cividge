@@ -1,13 +1,24 @@
 // Frontend bootstrap catalog and editor validation. The Worker KV config is
 // the runtime source of truth; this module never retrieves a CID.
-const REGIONS = new Set(["global", "apac", "eu", "na"]);
+export const GATEWAY_REGION_LABELS = Object.freeze({
+  global: ["地域共通 (Global)", "Global"],
+  apac: ["アジア・太平洋 (APAC)", "Asia-Pacific (APAC)"],
+  eu: ["欧州 (EU)", "Europe (EU)"],
+  na: ["北米 (NA)", "North America (NA)"],
+  latam: ["中南米・カリブ (LATAM)", "Latin America & Caribbean (LATAM)"],
+});
+const REGIONS = new Set(Object.keys(GATEWAY_REGION_LABELS));
+
+export function gatewayRegionLabel(region, language = "ja") {
+  return GATEWAY_REGION_LABELS[region]?.[language === "en" ? 1 : 0] || region;
+}
 
 export const DEFAULT_PUBLIC_GATEWAYS = Object.freeze([
   { url: "https://apac.orbitor.dev/ipfs", region: "apac", enabled: true },
   { url: "https://dget.top/ipfs", region: "global", enabled: true },
   { url: "https://ipfs.orbitor.dev/ipfs", region: "na", enabled: true },
   { url: "https://eu.orbitor.dev/ipfs", region: "eu", enabled: true },
-  { url: "https://latam.orbitor.dev/ipfs", region: "global", enabled: true },
+  { url: "https://latam.orbitor.dev/ipfs", region: "latam", enabled: true },
 ]);
 
 export function normalizeGatewayEndpoint(value, region = "global") {

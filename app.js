@@ -30,7 +30,7 @@ import {
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
 import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "./kubo-placement.js";
-import { normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gateway.js";
+import { GATEWAY_REGION_LABELS, gatewayRegionLabel, normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gateway.js";
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
 import { matchesSelectedRelayProbe } from "./relay-compat.js";
@@ -813,9 +813,13 @@ function renderGatewaySettings() {
     ? (isEn ? "Worker setting loaded/saved. Changes may take time to reach all regions." : "Worker設定を読込・保存済み。全地域への反映には時間がかかる場合があります。")
     : (isEn ? "Draft only. Save to apply to delivery." : "編集中。配信へ反映するには保存してください。");
   publicGatewayMode.value = settings.mode;
+  const addingRegion = publicGatewayRegion.value || "global";
+  publicGatewayRegion.replaceChildren(...Object.keys(GATEWAY_REGION_LABELS).map(region =>
+    new Option(gatewayRegionLabel(region, getAppLanguage()), region)));
+  publicGatewayRegion.value = addingRegion;
   publicGatewaySelected.replaceChildren();
   for (const endpoint of settings.endpoints) {
-    const option = new Option(`${endpoint.region.toUpperCase()} · ${endpoint.url}${endpoint.enabled ? "" : " (off)"}`, endpoint.url);
+    const option = new Option(`${gatewayRegionLabel(endpoint.region, getAppLanguage())} · ${endpoint.url}${endpoint.enabled ? "" : " (off)"}`, endpoint.url);
     option.disabled = !endpoint.enabled;
     publicGatewaySelected.add(option);
   }
@@ -845,8 +849,19 @@ function renderGatewaySettings() {
       updateGatewayDraft(current);
     });
     const label = document.createElement("span");
-    label.textContent = `${endpoint.region.toUpperCase()} · ${endpoint.url}`;
+    label.textContent = endpoint.url;
     label.style.cssText = "overflow-wrap:anywhere;flex:1";
+    const regionSelect = document.createElement("select");
+    regionSelect.setAttribute("aria-label", `${endpoint.url} region`);
+    for (const region of Object.keys(GATEWAY_REGION_LABELS)) {
+      regionSelect.add(new Option(gatewayRegionLabel(region, getAppLanguage()), region));
+    }
+    regionSelect.value = endpoint.region;
+    regionSelect.addEventListener("change", () => {
+      const current = structuredClone(gatewayDraft);
+      current.endpoints.find(item => item.url === endpoint.url).region = regionSelect.value;
+      updateGatewayDraft(current);
+    });
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "ghost-button";
@@ -857,7 +872,7 @@ function renderGatewaySettings() {
       if (current.selectedUrl === endpoint.url) current.selectedUrl = current.endpoints.find(item => item.enabled)?.url || "";
       updateGatewayDraft(current);
     });
-    row.append(toggle, label, remove);
+    row.append(toggle, label, regionSelect, remove);
     publicGatewayList.append(row);
   }
 }

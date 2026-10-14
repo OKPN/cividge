@@ -187,6 +187,8 @@ The Worker's `workers.dev` URL can be used for the management API. Current deliv
 
 The **IPFS Public Gateway** controls are an administrator UI for the delivery Worker's GatewayConfig, not a browser-only CID viewer. Saving them calls the authenticated Worker API and stores `config:ipfs_gateways` in the Worker's KV. Gateway failure changes only retrieval routing, not Object or Placement lifecycle.
 
+Automatic selection uses the public viewer's country/continent, not the administrator's location or measured latency. Mexico, Central America, the Caribbean, and South America prefer LATAM; other North American viewers prefer NA. APAC and EU retain their continent-based ordering. Matching-region candidates precede Global and then other enabled candidates; manual mode tries the selected endpoint first and retains fallback candidates. Region labels are editable routing metadata, not verified Gateway locations. The built-in LATAM endpoint is classified as LATAM; existing saved configurations are never automatically rewritten. Load the Worker settings, edit the endpoint's region, and save to apply a change.
+
 ## Cloudflare R2
 
 Create an R2 bucket and an S3 API token, then enter:
