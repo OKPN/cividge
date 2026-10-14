@@ -1,7 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { canUseCivitaiPostIntent, projectedFinalUploadMedia } from "../ui/civitai-capability.js";
+import { POST_INTENT_FORMAT_CAPABILITIES, canUseCivitaiPostIntent, projectedFinalUploadMedia } from "../ui/civitai-capability.js";
+import { runInNewContext } from "node:vm";
+
+test("JXL integration is prepared but off; enabling the single capability uses the normal path", () => {
+  assert.deepEqual(POST_INTENT_FORMAT_CAPABILITIES.jxl, { mime: "image/jxl", enabled: false });
+  assert.equal(canUseCivitaiPostIntent({ name: "image.jxl", mimeType: "image/jxl" }), false);
+  // Exercise the future switch without exposing a runtime or persisted override.
+  const source = readFileSync(new URL("../ui/civitai-capability.js", import.meta.url), "utf8")
+    .replace(/^import[^\n]*\n/gm, "")
+    .replace(/export /g, "")
+    .replace('jxl: Object.freeze({ mime: "image/jxl", enabled: false })',
+      'jxl: Object.freeze({ mime: "image/jxl", enabled: true })');
+  const enabled = runInNewContext(`${source}\ncanUseCivitaiPostIntent`);
+  assert.equal(enabled({ name: "image.JXL", mimeType: "image/jxl" }), true);
+  assert.equal(enabled({ name: "image.jxl", mimeType: "image/jpeg" }), false);
+  assert.equal(enabled({ name: "image.webp", mimeType: "image/webp" }), true);
+});
 
 test("Post Intent format capability is derived from final media properties", () => {
   for (const name of ["a.jpg", "a.jpeg", "a.png", "a.webp", "a.mp4", "a.webm"]) {
