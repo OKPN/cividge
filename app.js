@@ -31,7 +31,7 @@ import {
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
 import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "./kubo-placement.js";
-import { GATEWAY_REGION_LABELS, gatewayRegionLabel, normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gateway.js";
+import { GATEWAY_REGION_LABELS, gatewayRegionLabel, gatewayEditorSummary, normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gateway.js";
 import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
 import { matchesSelectedRelayProbe } from "./relay-compat.js";
@@ -810,6 +810,8 @@ function renderGatewaySettings() {
   if (!publicGatewayMode || !publicGatewaySelected || !publicGatewayList) return;
   const settings = gatewayDraft;
   const isEn = getAppLanguage() === "en";
+  const summary = document.querySelector("#publicGatewaySummary");
+  if (summary) summary.textContent = gatewayEditorSummary(settings, gatewayDraftSaved, getAppLanguage());
   if (publicGatewayStatus) publicGatewayStatus.textContent = gatewayDraftSaved
     ? (isEn ? "Worker setting loaded/saved. Changes may take time to reach all regions." : "Worker設定を読込・保存済み。全地域への反映には時間がかかる場合があります。")
     : (isEn ? "Draft only. Save to apply to delivery." : "編集中。配信へ反映するには保存してください。");

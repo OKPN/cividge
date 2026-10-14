@@ -13,6 +13,14 @@ export function gatewayRegionLabel(region, language = "ja") {
   return GATEWAY_REGION_LABELS[region]?.[language === "en" ? 1 : 0] || region;
 }
 
+// Derived presentation only. Closing the editor does not save its draft.
+export function gatewayEditorSummary(settings, saved, language = "ja") {
+  const count = settings.endpoints.filter(endpoint => endpoint.enabled).length;
+  const manual = settings.mode === "manual";
+  if (language === "en") return `— ${manual ? "Manual" : "Automatic"} · ${count} enabled${saved ? "" : " · Unsaved"}`;
+  return `— ${manual ? "手動" : "自動"}・有効${count}件${saved ? "" : "・未保存"}`;
+}
+
 export const DEFAULT_PUBLIC_GATEWAYS = Object.freeze([
   { url: "https://apac.orbitor.dev/ipfs", region: "apac", enabled: true },
   { url: "https://dget.top/ipfs", region: "global", enabled: true },

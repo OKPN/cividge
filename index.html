@@ -441,8 +441,12 @@
                             <span data-i18n="kuboPrioritizePinnedLabel">Kubo保管済みのファイルを優先して容量解放</span>
                           </label>
                         </div>
-                        <div style="padding: 9px; border: 1px solid rgba(56, 189, 248, 0.28); border-radius: 6px; display: flex; flex-direction: column; gap: 7px;">
-                          <strong style="color: #7dd3fc; font-size: 12px;" data-i18n="publicGatewayTitle">🌐 IPFS Public Gateway</strong>
+                        <details id="publicGatewayAccordion" style="padding: 9px; border: 1px solid rgba(56, 189, 248, 0.28); border-radius: 6px;">
+                          <summary style="cursor: pointer; color: #7dd3fc; font-size: 12px; font-weight: 700;">
+                            <span data-i18n="publicGatewayTitle">🌐 公開配信用 IPFS Gateway</span>
+                            <span id="publicGatewaySummary" style="font-size: 10.5px; font-weight: 400; color: var(--muted);"></span>
+                          </summary>
+                          <div style="display: flex; flex-direction: column; gap: 7px; margin-top: 9px;">
                           <span style="font-size: 10.5px; color: var(--muted);" data-i18n="publicGatewayScope">Cividgeの公開URLから配信するとき、Delivery WorkerがCIDを取得するために使用します。</span>
                           <label class="field"><span data-i18n="gatewayModeLabel">選択方式</span>
                             <select id="publicGatewayMode"><option value="auto" data-i18n="gatewayAuto">自動</option><option value="manual" data-i18n="gatewayManual">手動</option></select>
@@ -463,7 +467,8 @@
                             <button type="button" class="ghost-button" id="publicGatewaySave" data-i18n="gatewaySave">Worker設定へ保存</button>
                             <span id="publicGatewayStatus" style="font-size:10.5px;color:var(--muted);"></span>
                           </div>
-                        </div>
+                          </div>
+                        </details>
                         <details style="margin-top: 4px; padding: 8px 9px; border: 1px solid rgba(167, 139, 250, 0.25); border-radius: 6px; color: var(--muted); font-size: 10.5px; line-height: 1.55;">
                           <summary style="cursor: pointer; color: #c4b5fd; font-weight: 600;" data-i18n="kuboGuideSummary">推奨運用・外出先から接続する場合（任意）</summary>
                           <div data-i18n="kuboGuideBody" data-i18n-html="true">
