@@ -11,6 +11,8 @@
 
 ## 2. Cloudflare cache ruleを設定する場合
 
+Password/cache hardening後は、Worker ingressの `/r/` 等について、認証や期限チェックより前に返す外側のshared cacheをbypassしてください。本文はWorker内Cache APIで現在のKV observationを確認した後に再利用します。運用上の確認項目、POST Rate Limit条件、即時失効を保証できない範囲は [Password/cache audit](PASSWORD_CACHE_BOUNDARY_AUDIT.md) にまとめています。Dashboard設定の適用はソースだけでは確認できません。
+
 旧手順の「**全メディアURLでクエリ文字列を一律無視し、すべてをcache対象にする**」設定は使わないでください。`/video.mp4` と `/video.mp4?preview=1` を同じcache entryへ潰すと、動画の代わりにWebPが返るか、その逆が起こり得ます。Cloudflareの[cache key設定](https://developers.cloudflare.com/cache/how-to/cache-keys/)ではqueryの扱いを選べますが、CividgeではまずWorker応答のcache headerを尊重し、previewを元メディアの共有cacheへ混ぜないことが先です。
 
 1. ルールの対象hostとpathを限定します。`/api/`、管理、認証、`?preview=1`、エラー応答を無条件の「Cache Everything」に含めないでください。

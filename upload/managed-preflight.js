@@ -18,7 +18,7 @@ export function createManagedPreflight({ lifecycleRequest, linkBindingRequest, g
   // Link-key reservation is authoritative. A pending attempt records the exact
   // physical locator before PUT, so a later authorized browser can inspect and
   // adopt an interrupted upload instead of guessing from localStorage.
-  async function prepareManagedUpload(result, provider, s3, bucket, contentCid, objectId) {
+  async function prepareManagedUpload(result, provider, s3, bucket, contentCid, objectId, deliveryDomain) {
     if (!contentCid || !/^sha256:[0-9a-f]{64}$/.test(objectId || "")) throw new Error("最終バイト列のidentityを計算できませんでした");
     const kind = provider === "filebase" ? "filebase" : "r2";
     const canonicalStorageKey = `objects/${contentCid}`;
@@ -33,7 +33,7 @@ export function createManagedPreflight({ lifecycleRequest, linkBindingRequest, g
     if (kind === "filebase" && ownedPlacement?.locator?.cid !== undefined &&
         ownedPlacement.locator.cid !== contentCid) throw new Error("Filebase Placement CIDが現在の最終bytesと一致しません");
     const storageKey = typeof ownedKey === "string" && ownedKey ? ownedKey : canonicalStorageKey;
-    const baseDomain = (getSelectedR2Domain(provider) || getCurrentOrigin()).replace(/\/$/, "");
+    const baseDomain = (deliveryDomain || getSelectedR2Domain(provider) || getCurrentOrigin()).replace(/\/$/, "");
     const linkKey = buildKvKey(baseDomain, result.name);
     const placement = {
       kind, executor: kind === "r2" ? "worker" : "browser",

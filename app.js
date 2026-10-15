@@ -18,6 +18,7 @@ import { recordUploadedWorkflow } from "./upload/workflow-cache.js";
 import { localEntryIdentity, getRetiredLocalEntries, setLocalEntryRetired, saveLedgerToLocalStorage, loadLedgerFromLocalStorage, loadDisplayCache } from "./managed/managed-cache.js";
 import { createWorkerClient } from "./api/worker-client.js";
 import { createFilenameTools } from "./upload/filename-policy.js";
+import { createUploadDestinationGuard } from "./ui/upload-destination.js";
 import { createStorageConnections } from "./storage/connections.js";
 import { i18nDict } from "./ui/i18n.js";
 import { insertFilenamePatternToken } from "./ui/filename-pattern-input.js";
@@ -93,10 +94,11 @@ const { convertImage } = createImageConverter({ getConversionMode, isConversionE
 
 // アクションボタン
 const convertDownloadButton = document.querySelector("#convertDownloadButton");
-const convertUploadR2Button = document.querySelector("#convertUploadR2Button");
-const convertUploadFilebaseButton = document.querySelector("#convertUploadFilebaseButton");
+const uploadButton = document.querySelector("#uploadButton");
+const uploadProviderSelect = document.querySelector("#uploadProviderSelect");
+let uploadUiLocked = false;
+let uploadDestinationBusy = false; // transient interaction guard, never persisted
 const quickDomainSelect = document.querySelector("#quickDomainSelect");
-const quickFilebaseDomainSelect = document.querySelector("#quickFilebaseDomainSelect");
 const clearButton = document.querySelector("#clearButton");
 
 // ☁️ Cloudflare R2 接続設定フォーム要素
@@ -1261,8 +1263,10 @@ function renderR2DomainSelect() {
   const isEnglish = getAppLanguage() === "en";
   populateSelect(r2DomainSelect, r2Domains, selectedR2Domain, isEnglish ? "-- No R2 delivery domain (add with ＋) --" : "-- R2 配信ドメインが未登録です (＋から追加) --");
   populateSelect(filebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, isEnglish ? "-- No Filebase delivery domain (add with ＋) --" : "-- Filebase 配信ドメインが未登録です (＋から追加) --");
-  populateSelect(quickDomainSelect, r2Domains, selectedR2Domain, isEnglish ? "-- Select R2 domain --" : "-- R2 ドメインを選択 --");
-  populateSelect(quickFilebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, isEnglish ? "-- Select Filebase domain --" : "-- Filebase ドメインを選択 --");
+  const uploadProvider = uploadProviderSelect?.value || "r2";
+  populateSelect(quickDomainSelect, uploadProvider === "filebase" ? filebaseDomains : r2Domains,
+    uploadProvider === "filebase" ? selectedFilebaseDomain : selectedR2Domain,
+    isEnglish ? "-- Configure a delivery domain --" : "-- 配信ドメインを設定してください --");
 
   if (r2DomainDeleteBtn) {
     r2DomainDeleteBtn.disabled = r2Domains.length === 0;
@@ -1326,12 +1330,7 @@ function updateR2Status() {
     cfStatus.innerHTML = statusParts.join(" &nbsp;|&nbsp; ");
   }
 
-  if (convertUploadR2Button) {
-    convertUploadR2Button.disabled = !r2Ok || (uploadState.getFiles().length === 0);
-  }
-  if (convertUploadFilebaseButton) {
-    convertUploadFilebaseButton.disabled = !fbOk || (uploadState.getFiles().length === 0);
-  }
+  if (uploadButton) uploadButton.disabled = uploadUiLocked || !uploadState.getFiles().length;
 
   return r2Ok || fbOk;
 }
@@ -2368,14 +2367,12 @@ adminApiToken?.addEventListener("input", saveR2SettingsAuto);
 const handleDomainSelectionChange = (newDomain, provider = managedController.getActiveProvider()) => {
   const storageProvider = normalizeDeliveryProvider(provider);
   setSelectedR2Domain(newDomain, storageProvider);
-  if (storageProvider === normalizeDeliveryProvider(managedController.getActiveProvider()) && r2DomainSelect && r2DomainSelect.value !== newDomain) {
-    r2DomainSelect.value = newDomain;
+  const settingsDomainSelect = storageProvider === "filebase" ? filebaseDomainSelect : r2DomainSelect;
+  if (settingsDomainSelect && settingsDomainSelect.value !== newDomain) {
+    settingsDomainSelect.value = newDomain;
   }
-  if (storageProvider === "r2" && quickDomainSelect && quickDomainSelect.value !== newDomain) {
+  if (storageProvider === (uploadProviderSelect?.value || "r2") && quickDomainSelect && quickDomainSelect.value !== newDomain) {
     quickDomainSelect.value = newDomain;
-  }
-  if (storageProvider === "filebase" && quickFilebaseDomainSelect && quickFilebaseDomainSelect.value !== newDomain) {
-    quickFilebaseDomainSelect.value = newDomain;
   }
   if (storageProvider === "r2") updateR2CompatibilityUi();
   if (storageProvider === "filebase") updateFilebaseCompatibilityUi();
@@ -2399,11 +2396,14 @@ filebaseDomainSelect?.addEventListener("change", (e) => {
 });
 
 quickDomainSelect?.addEventListener("change", (e) => {
-  handleDomainSelectionChange(e.target.value, "r2");
+  const provider = uploadProviderSelect?.value || "r2";
+  setSelectedR2Domain(e.target.value, provider);
+  renderR2DomainSelect();
 });
 
-quickFilebaseDomainSelect?.addEventListener("change", (e) => {
-  handleDomainSelectionChange(e.target.value, "filebase");
+uploadProviderSelect?.addEventListener("change", () => {
+  renderR2DomainSelect();
+  render();
 });
 
 function showDomainAddForm(form, input) {
@@ -3422,8 +3422,8 @@ function addFiles(files) {
 }
 
 function setUiLock(locked) {
-  const r2Ok = isR2Configured();
-  const fbOk = isFilebaseConfigured();
+  locked = locked || uploadDestinationBusy;
+  uploadUiLocked = locked;
   const hasFiles = uploadState.getFiles().length > 0;
   const isConvertOn = isConversionEnabled();
   const isRenameOn = isFilenameChanged();
@@ -3439,8 +3439,9 @@ function setUiLock(locked) {
       ? "画像変換・リネーム・ZIPまとめ保存がすべてオフのためダウンロード無効"
       : "";
   }
-  if (convertUploadR2Button) convertUploadR2Button.disabled = locked || !hasFiles || !r2Ok;
-  if (convertUploadFilebaseButton) convertUploadFilebaseButton.disabled = locked || !hasFiles || !fbOk;
+  if (uploadButton) uploadButton.disabled = locked || !hasFiles;
+  if (uploadProviderSelect) uploadProviderSelect.disabled = locked;
+  if (quickDomainSelect) quickDomainSelect.disabled = locked;
 }
 
 function updateRenamePreview() {
@@ -3505,8 +3506,7 @@ function render() {
       ? "画像変換・リネーム・ZIPまとめ保存がすべてオフのためダウンロード無効"
       : "";
   }
-  if (convertUploadR2Button) convertUploadR2Button.disabled = !hasFiles || !r2Ok;
-  if (convertUploadFilebaseButton) convertUploadFilebaseButton.disabled = !hasFiles || !fbOk;
+  if (uploadButton) uploadButton.disabled = uploadUiLocked || !hasFiles;
 
   if (dropzone) {
     dropzone.classList.toggle("has-files", hasFiles);
@@ -3635,14 +3635,6 @@ function createCardActionHtml(file, result, index) {
     return `<span class="status-text saving" style="font-size: 11px;">${pName} UP中...</span>`;
   }
 
-  const currentProviderName = (managedController.getActiveProvider() === "filebase" && fbOk) ? "Filebase (IPFS)" : (r2Ok ? "Cloudflare R2" : (fbOk ? "Filebase (IPFS)" : "ストレージ"));
-  const upBtnTitle = upOk
-    ? `このファイルだけ変換して${currentProviderName}へアップロード`
-    : "ストレージ未設定のためアップロード不可";
-  const upBtnStyle = upOk
-    ? "font-size: 11px; padding: 0 8px; height: 28px;"
-    : "opacity: 0.35; font-size: 11px; padding: 0 8px; height: 28px; cursor: not-allowed;";
-
   const canUseCivitai = canUseCivitaiPostIntent(projectedFinalUploadMedia(file, result, getConversionMode()));
   const isProtected = Boolean(file.hasPassword || result?.hasPassword);
   const civitaiOk = upOk && canUseCivitai && !isProtected;
@@ -3674,18 +3666,10 @@ function createCardActionHtml(file, result, index) {
     `;
   }
 
-  // 待機中または変換完了時: [📥 DL] [⚡ R2] [🪐 IPFS] [🎨 Civitai]
-  const r2Style = r2Ok
-    ? "font-size: 11px; padding: 0 8px; height: 28px; color: #fb923c; border-color: rgba(249, 115, 22, 0.4);"
-    : "opacity: 0.35; font-size: 11px; padding: 0 8px; height: 28px; cursor: not-allowed;";
-  const fbStyle = fbOk
-    ? "font-size: 11px; padding: 0 8px; height: 28px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);"
-    : "opacity: 0.35; font-size: 11px; padding: 0 8px; height: 28px; cursor: not-allowed;";
-
+  // The single upload action uses the explicit destination selector.
   return `
     <button type="button" class="ghost-button download-single-btn" data-index="${index}" style="font-size: 11px; padding: 0 8px; height: 28px;" title="${dlBtnTitle}" ${dlBtnDisabled}>📥 DL</button>
-    <button type="button" class="ghost-button upload-r2-btn" data-index="${index}" style="${r2Style}" title="${r2Ok ? 'このファイルをCloudflare R2へアップロード' : 'R2接続設定が未完了'}" ${r2Ok ? '' : 'disabled'}>⚡ R2</button>
-    <button type="button" class="ghost-button upload-filebase-btn" data-index="${index}" style="${fbStyle}" title="${fbOk ? 'このファイルをFilebase (IPFS)へアップロード' : 'Filebase接続設定が未完了'}" ${fbOk ? '' : 'disabled'}>🪐 IPFS</button>
+    <button type="button" class="ghost-button upload-single-btn" data-index="${index}" style="font-size: 11px; padding: 0 8px; height: 28px;" title="${escapeHtml(dict.uploadAction)}" ${uploadUiLocked ? 'disabled' : ''}>${escapeHtml(dict.uploadAction)}</button>
     ${canUseCivitai ? `<button type="button" class="ghost-button civitai-post-btn" data-index="${index}" style="${civitaiStyle}" title="${civitaiBtnTitle}" ${civitaiOk ? '' : 'disabled'}>🎨 Civitai</button>` : ""}
   `;
 }
@@ -3773,22 +3757,25 @@ fileList?.addEventListener("click", async (event) => {
   // 3. 単体アップロード (☁️ UP: BYOC準拠・選択中ストレージへ自動アップロード)
   if (target.classList.contains("upload-single-btn")) {
     if (isNaN(index) || index < 0 || index >= uploadState.getFiles().length) return;
+    if (uploadDestinationBusy) return;
+    uploadDestinationBusy = true;
     const file = uploadState.getFiles()[index];
     let result = uploadState.getResults()[index];
 
     target.disabled = true;
     target.textContent = "UP中...";
     try {
+      setUiLock(true);
+      const destination = await requestUploadDestination(uploadProviderSelect?.value || "r2");
+      if (!destination) return;
+      setUiLock(true);
       if (!result || !isConversionCacheValid()) {
         if (result && result.url) URL.revokeObjectURL(result.url);
         if (result && result.previewUrl) URL.revokeObjectURL(result.previewUrl);
         result = await convertImage(file, index);
         uploadState.setResult(index, result);
       }
-      const r2Ok = isR2Configured();
-      const fbOk = isFilebaseConfigured();
-      const targetProvider = (managedController.getActiveProvider() === "filebase" && fbOk) ? "filebase" : (r2Ok ? "r2" : (fbOk ? "filebase" : "r2"));
-      const success = await uploadImage(result, targetProvider);
+      const success = await uploadImage(result, destination.provider, null, { deliveryDomain: destination.domain });
       if (success) {
         renderCurrentStoragePage();
       }
@@ -3796,62 +3783,8 @@ fileList?.addEventListener("click", async (event) => {
       safeConsole.error(e);
       alert("アップロードに失敗しました: " + e.message);
     } finally {
-      render();
-    }
-    return;
-  }
-
-  // 3.1 単体アップロード (⚡ R2)
-  if (target.classList.contains("upload-r2-btn")) {
-    if (isNaN(index) || index < 0 || index >= uploadState.getFiles().length) return;
-    const file = uploadState.getFiles()[index];
-    let result = uploadState.getResults()[index];
-
-    target.disabled = true;
-    target.textContent = "UP中...";
-    try {
-      if (!result || !isConversionCacheValid()) {
-        if (result && result.url) URL.revokeObjectURL(result.url);
-        if (result && result.previewUrl) URL.revokeObjectURL(result.previewUrl);
-        result = await convertImage(file, index);
-        uploadState.setResult(index, result);
-      }
-      const success = await uploadImage(result, "r2");
-      if (success) {
-        renderCurrentStoragePage();
-      }
-    } catch (e) {
-      safeConsole.error(e);
-      alert("R2 アップロードに失敗しました: " + e.message);
-    } finally {
-      render();
-    }
-    return;
-  }
-
-  // 3.1 単体アップロード (🪐 Filebase)
-  if (target.classList.contains("upload-filebase-btn")) {
-    if (isNaN(index) || index < 0 || index >= uploadState.getFiles().length) return;
-    const file = uploadState.getFiles()[index];
-    let result = uploadState.getResults()[index];
-
-    target.disabled = true;
-    target.textContent = "UP中...";
-    try {
-      if (!result || !isConversionCacheValid()) {
-        if (result && result.url) URL.revokeObjectURL(result.url);
-        if (result && result.previewUrl) URL.revokeObjectURL(result.previewUrl);
-        result = await convertImage(file, index);
-        uploadState.setResult(index, result);
-      }
-      const success = await uploadImage(result, "filebase");
-      if (success) {
-        renderCurrentStoragePage();
-      }
-    } catch (e) {
-      safeConsole.error(e);
-      alert("Filebase アップロードに失敗しました: " + e.message);
-    } finally {
+      uploadDestinationBusy = false;
+      setUiLock(false);
       render();
     }
     return;
@@ -4226,43 +4159,86 @@ async function uploadImage(result, targetProvider = "r2", customPassword = null,
   const dict = i18nDict[getAppLanguage()] || i18nDict.ja;
   return executeUpload(result, targetProvider, customPassword, {
     ...uploadOptions,
-    password: document.querySelector("#tempPasswordInput")?.value.trim() || "",
-    requestedTtl: Number(document.querySelector("#tempTtlSelect")?.value || 0),
-    cachePolicy: document.querySelector("#uploadCachePolicySelect")?.value === "PUBLISHED" ? "PUBLISHED" : "BOARD",
+    password: uploadOptions.password ?? (document.querySelector("#tempPasswordInput")?.value.trim() || ""),
+    requestedTtl: uploadOptions.requestedTtl ?? Number(document.querySelector("#tempTtlSelect")?.value || 0),
+    cachePolicy: uploadOptions.cachePolicy ?? (document.querySelector("#uploadCachePolicySelect")?.value === "PUBLISHED" ? "PUBLISHED" : "BOARD"),
     origin: window.location.origin,
     formatLimitError: size => dict.uploadLimitError.replace("{size}", size),
   });
 }
 
 // --- 一括アップロード共通処理 ---
+const requestUploadDestination = createUploadDestinationGuard({
+  getDomain: getSelectedR2Domain, getDomains: getR2DomainList,
+  isConfigured: provider => {
+    try { return (provider === "filebase" ? isFilebaseConfigured() : isR2Configured()) && Boolean(getS3Client(provider)); }
+    catch (_) { return false; }
+  },
+  // Existing standalone/direct-origin operation remains valid. Managed Pages
+  // relays must prove their own canonical relay identity before any upload.
+  requiresRelay: domain => hasAdminAccess() && new URL(domain).hostname.endsWith(".pages.dev"),
+  verifyRelay: verifyDomainCompatLayer,
+  onIssue: async (provider, issue) => {
+    const english = getAppLanguage() === "en";
+    const name = provider === "filebase" ? "Filebase" : "R2";
+    const messages = english ? {
+      storage: `Complete the ${name} connection settings before uploading.`,
+      domain: `Select or register a valid ${name} delivery domain before uploading.`,
+      relay: "The selected delivery domain could not be verified. Check its redirect and Worker allowlist, then run the connection test.",
+    } : {
+      storage: `${name}の接続設定を先に完了してください。`,
+      domain: `${name}の配信ドメインを選択・登録してください。`,
+      relay: "選択した配信ドメインへの接続を確認できませんでした。リダイレクトとWorkerの許可設定を確認し、接続テストを行ってください。",
+    };
+    const open = await showCustomConfirm(messages[issue], english ? "Upload settings required" : "アップロード設定が必要です",
+      english ? "Open settings" : "設定を開く", english ? "Cancel" : "キャンセル");
+    if (!open) return;
+    const accordion = document.getElementById(provider === "filebase" ? "filebaseSettingsAccordion" : "r2SettingsAccordion");
+    if (!accordion) return;
+    for (let node = accordion; node; node = node.parentElement) if (node.tagName === "DETAILS") node.open = true;
+    accordion.scrollIntoView({ behavior: "smooth", block: "center" });
+    const field = document.getElementById(issue === "storage"
+      ? (provider === "filebase" ? "filebaseBucket" : "r2AccountId")
+      : (provider === "filebase" ? "filebaseDomainSelect" : "r2DomainSelect"));
+    field?.focus({ preventScroll: true });
+    // Opening settings never resumes the upload automatically.
+  },
+});
+
 async function handleBatchUpload(targetProvider) {
-  if (!uploadState.getFiles().length) return;
-  const success = await runConversion();
-  if (!success) return;
-
-  const targets = uploadState.getResults().filter(r => r && !r.isUploaded && !r.isUploading);
-  if (targets.length === 0) return;
-
-  setUiLock(true);
+  if (!uploadState.getFiles().length || uploadDestinationBusy) return;
+  uploadDestinationBusy = true;
   const providerLabel = targetProvider === "filebase" ? "Filebase" : "R2";
-  if (statusText) {
-    statusText.className = "status-text saving";
-    statusText.textContent = `${providerLabel} アップロード中 (0/${targets.length})`;
-  }
-  if (progressBar) progressBar.value = 0;
-
   try {
+    setUiLock(true);
+    const destination = await requestUploadDestination(targetProvider);
+    if (!destination) return;
+    const options = {
+      deliveryDomain: destination.domain,
+      password: document.querySelector("#tempPasswordInput")?.value.trim() || "",
+      requestedTtl: Number(document.querySelector("#tempTtlSelect")?.value || 0),
+      cachePolicy: document.querySelector("#uploadCachePolicySelect")?.value === "PUBLISHED" ? "PUBLISHED" : "BOARD",
+    };
+    const success = await runConversion();
+    if (!success) return;
+    const targets = uploadState.getResults().filter(r => r && !r.isUploaded && !r.isUploading);
+    if (!targets.length) return;
+    setUiLock(true);
+    if (statusText) statusText.className = "status-text saving";
+    if (progressBar) progressBar.value = 0;
+    let completed = 0;
     for (let i = 0; i < targets.length; i++) {
       const result = targets[i];
       if (statusText) statusText.textContent = `${providerLabel} アップロード中 (${i + 1}/${targets.length})`;
-      const uploadSuccess = await uploadImage(result, targetProvider);
+      const uploadSuccess = await uploadImage(result, targetProvider, null, options);
       if (!uploadSuccess) {
         break;
       }
+      completed++;
       if (progressBar) progressBar.value = Math.round(((i + 1) / targets.length) * 100);
     }
     if (statusText) {
-      statusText.textContent = `${providerLabel} 一括アップロード完了`;
+      statusText.textContent = completed === targets.length ? `${providerLabel} 一括アップロード完了` : `${providerLabel} アップロードを中止 (${completed}/${targets.length})`;
       statusText.className = "status-text";
     }
   } catch (error) {
@@ -4272,6 +4248,7 @@ async function handleBatchUpload(targetProvider) {
       statusText.className = "status-text error";
     }
   } finally {
+    uploadDestinationBusy = false;
     setUiLock(false);
     // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳が既にオプティミスティック更新されているため、
     // サーバーへの再フェッチ通信は不要。手元台帳から再描画するだけで完了！
@@ -4279,8 +4256,7 @@ async function handleBatchUpload(targetProvider) {
   }
 }
 
-convertUploadR2Button?.addEventListener("click", () => handleBatchUpload("r2"));
-convertUploadFilebaseButton?.addEventListener("click", () => handleBatchUpload("filebase"));
+uploadButton?.addEventListener("click", () => handleBatchUpload(uploadProviderSelect?.value || "r2"));
 
 convertDownloadButton?.addEventListener("click", async () => {
   const success = await runConversion();

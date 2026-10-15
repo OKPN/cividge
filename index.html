@@ -199,22 +199,14 @@
                 <div style="margin-top: 5px;" data-i18n="passwordIpfsNotice">※ パスワードは Cividge の配信 URL を保護します。IPFS の CID を知る人は、IPFS Gateway 経由で直接取得できる場合があります。秘匿が必要なファイルは投稿しないでください。</div>
               </details>
 
-              <!-- 保存先ごとに配信ドメインと実行ボタンを固定で対応付ける -->
-              <div class="upload-destination-grid" style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 8px;">
-                <div style="min-width: 0; padding: 8px; background: rgba(234, 88, 12, 0.07); border: 1px solid rgba(249, 115, 22, 0.28); border-radius: 7px;">
-                  <label for="quickDomainSelect" style="display: block; margin: 0 0 5px; font-size: 11px; color: #fdba74;" data-i18n="quickR2DomainLabel">🌐 R2 配信ドメイン</label>
-                  <select id="quickDomainSelect" style="width: 100%; min-width: 0; height: 30px; font-size: 11.5px; background-color: #121316; color: #fdba74; border: 1px solid rgba(249, 115, 22, 0.4); border-radius: 4px; padding: 0 6px; outline: none; cursor: pointer;">
-                    <option value="" data-i18n="r2DomainPlaceholder">-- R2 ドメインを選択 --</option>
-                  </select>
-                  <button class="primary-button upload-primary-cta" id="convertUploadR2Button" type="button" disabled data-i18n="btnUploadR2" style="width: 100%; height: 34px; margin: 7px 0 0; background: linear-gradient(135deg, #ea580c, #c2410c); border-color: #f97316;" title="変換した画像をCloudflare R2へ一括保存">⚡ R2へ保存</button>
-                </div>
-                <div style="min-width: 0; padding: 8px; background: rgba(2, 132, 199, 0.07); border: 1px solid rgba(56, 189, 248, 0.28); border-radius: 7px;">
-                  <label for="quickFilebaseDomainSelect" style="display: block; margin: 0 0 5px; font-size: 11px; color: #7dd3fc;" data-i18n="quickFilebaseDomainLabel">🌐 Filebase 配信ドメイン</label>
-                  <select id="quickFilebaseDomainSelect" style="width: 100%; min-width: 0; height: 30px; font-size: 11.5px; background-color: #121316; color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 4px; padding: 0 6px; outline: none; cursor: pointer;">
-                    <option value="" data-i18n="filebaseDomainPlaceholder">-- Filebase ドメインを選択 --</option>
-                  </select>
-                  <button class="primary-button upload-primary-cta" id="convertUploadFilebaseButton" type="button" disabled data-i18n="btnUploadFilebase" style="width: 100%; height: 34px; margin: 7px 0 0; background: linear-gradient(135deg, #0284c7, #0369a1); border-color: #38bdf8;" title="変換した画像をFilebase (IPFS)へ一括保存">🪐 Filebaseへ保存</button>
-                </div>
+              <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 8px;">
+                <label class="field"><span data-i18n="uploadStorageLabel">保存先</span>
+                  <select id="uploadProviderSelect"><option value="r2">Cloudflare R2</option><option value="filebase">Filebase (IPFS)</option></select>
+                </label>
+                <label class="field"><span data-i18n="uploadDomainLabel">配信ドメイン</span>
+                  <select id="quickDomainSelect"></select>
+                </label>
+                <button class="primary-button upload-primary-cta" id="uploadButton" type="button" disabled data-i18n="uploadAction">☁️ アップロード</button>
               </div>
             </div>
 

@@ -191,6 +191,8 @@ Automatic selection uses the public viewer's country/continent, not the administ
 
 JXL previews in upload cards, the managed list, and the URL palette first use native image decoding. If unsupported, a bundled, lazily loaded WebAssembly decoder renders a small presentation-only image. Original JXL bytes, public URLs, and Object identity are unchanged; no server thumbnail or persisted preview is created. Decoder/retrieval failure leaves a format placeholder and does not remove the managed row. Raw JXL direct-link display still requires browser support.
 
+The uploader uses one **Upload** action with explicit **Storage destination** and **Delivery domain** selectors. Each provider retains its existing domain selection; switching the upload destination does not change the managed-list view or fetch that list. Missing configuration opens guidance with an **Open settings** action before conversion/upload. Managed Pages relay identity is probed before upload; standalone/direct-origin operation retains its existing behavior. Local completeness checks do not prove credentials or remote service availability. Server preflight remains authoritative. Opening settings never automatically resumes an upload, and the chosen provider/domain are captured for the running batch.
+
 ## Cloudflare R2
 
 Create an R2 bucket and an S3 API token, then enter:

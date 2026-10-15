@@ -10,7 +10,7 @@ function setup({ placement = null, reservation = "reserved", conflict = false } 
   const prepare = createManagedPreflight({
     getSelectedR2Domain: () => "https://test.pages.dev",
     getCurrentOrigin: () => "https://fallback.pages.dev",
-    buildKvKey: (_, filename) => `test.pages.dev:${filename}`,
+    buildKvKey: (domain, filename) => `${new URL(domain).hostname}:${filename}`,
     getIpfsCidFromS3Response: response => response.Metadata?.cid || null,
     linkBindingRequest: async request => {
       events.push(request.action);
@@ -48,4 +48,11 @@ test("a missing Placement is claimed only after Link reservation", async () => {
   const plan = await prepare({ name: "new.webp" }, "r2", null, "bucket", "QmCid", objectId);
   assert.equal(plan.noPut, false);
   assert.deepEqual(events, ["inspect", "reserve", "inspect", "requestPlacementAcquire", "inspect", "claimPlacement"]);
+});
+
+test("the captured upload domain selects the canonical preflight Link, not later UI settings", async () => {
+  const { prepare } = setup();
+  const plan = await prepare({ name: "new.webp" }, "r2", null, "bucket", "QmCid", objectId, "https://captured.pages.dev");
+  assert.equal(plan.baseDomain, "https://captured.pages.dev");
+  assert.equal(plan.linkKey, "captured.pages.dev:new.webp");
 });

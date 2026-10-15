@@ -1,5 +1,15 @@
 # システム不変条件 (System Invariants) - Cividge Frontend
 
+## Password gate / cache boundary
+
+- **[INV-PASSWORD-GATE-CANNOT-BE-BYPASSED-BY-PRESENTATION]** 公開本文・Range・preview・OGPは同じLinkのパスワード／期限の境界に従う。認証成功応答と保護本文はno-storeとする。
+- **[INV-CACHE-DOES-NOT-BECOME-AUTHORITY]** キャッシュ応答でLinkの存在・公開権限を確定しない。Worker内部の本文cache hitでも現在のKV projectionを確認する。KVの観測遅延とブラウザ／Worker前段の古いcacheは別の制限であり、purge成功を即時失効保証としない。
+- **[INV-INVALID-ADDRESS-DOES-NOT-REACH-ORIGIN]** 現行配信仕様に反するアドレスは物理探索前に拒否する。
+- **[INV-NOT-FOUND-IS-AUTHORITATIVE]** 配信のNOT_FOUNDは正常なcanonical照会で不存在／失効を確認した場合のみ。KVは配信projectionであり、Lifecycle authorityを代替せず、観測の最新性も保証しない。
+- **[INV-UNAVAILABLE-IS-NOT-NOT-FOUND]** KV／originの一時障害は503等・no-storeとし、404負キャッシュへ変換しない。
+
+監査結果・失効の限界・Dashboard確認は [Password/cache audit](docs/PASSWORD_CACHE_BOUNDARY_AUDIT.md) を参照。
+
 ## Browser secret boundary
 
 ### [THREAT-MODEL-BROWSER-CREDENTIALS]
@@ -377,7 +387,7 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 * **満たすべき性質 (Required Behavior)**:  
   1. 静的リレー（Pages 等）からバックエンド Worker への中継は、クエリパラメータではなく **フォルダ構造（`/r/<relay-identifier>/<filename>`）** を最優先で使用すること。これにより、キャッシュバスター防御（`INV-INFRA-001`）によるクエリ除去（Ignore Query String）やブラウザの Referrer-Policy による情報欠落に一切影響されず、単一ホストを一発で確定できる。
   2. 照会は「特定されたホスト:ファイル名」の 1 回のみで完結させること（404 空振り時の KV 消費は最大 1 回）。
-  3. 404 レスポンスは Cache API（`caches.default`）によりエッジでキャッシュ（最低 300 秒）し、同一パスへの反復攻撃に対する KV 消費を完全ゼロ（0 回）に抑え込むこと。
+  3. 正常なKV missの404はbrowser max-age=0・shared TTL最大60秒とする。Worker内部の負キャッシュを現在のLink照会の代替とせず、反復到達数の制限はZone側で行う。キャッシュだけでKV消費ゼロを保証しない。
 
 ---
 

@@ -20,6 +20,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
     const isFilebase = targetProvider === "filebase";
     const s3 = getS3Client(targetProvider);
     const bucketName = getBucketName(targetProvider);
+    const deliveryDomain = uploadOptions.deliveryDomain || getSelectedR2Domain(targetProvider) || uploadOptions.origin;
   
     if (!s3 || !bucketName) {
       onError(`⚠️ ${isFilebase ? "Filebase" : "R2"} 接続設定を完了してください`);
@@ -102,7 +103,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
   
       if (hasAdminAccess()) {
         calculatedCid = await calculateFilebaseCid(uploadBytes);
-        managedPlan = await prepareManagedUpload(result, targetProvider, s3, bucketName, calculatedCid, objectId);
+        managedPlan = await prepareManagedUpload(result, targetProvider, s3, bucketName, calculatedCid, objectId, deliveryDomain);
         if (managedPlan.noPut) {
           if (managedPlan.claim) {
             await linkBindingRequest({ action: "markPhysical", linkKey: managedPlan.linkKey, attemptId: managedPlan.attemptId,
@@ -147,7 +148,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
               throw new Error("同一CIDのファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
             }
   
-            const baseDomain = (getSelectedR2Domain("filebase") || uploadOptions.origin).replace(/\/$/, "");
+            const baseDomain = deliveryDomain.replace(/\/$/, "");
             result.isUploaded = true;
             result.uploadedProvider = "filebase";
             result.storageKey = duplicate.key;
@@ -207,7 +208,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
               throw new Error("同一内容のファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
             }
   
-            const baseDomain = (getSelectedR2Domain("r2") || uploadOptions.origin).replace(/\/$/, "");
+            const baseDomain = deliveryDomain.replace(/\/$/, "");
             result.isUploaded = true;
             result.uploadedProvider = "r2";
             result.storageKey = duplicate.key;
@@ -315,7 +316,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
       result.expiresAt = expiresAt;
       result.civitaiTemporary = civitaiTemporary;
   
-      const baseDomain = (getSelectedR2Domain(targetProvider) || uploadOptions.origin).replace(/\/$/, "");
+      const baseDomain = deliveryDomain.replace(/\/$/, "");
   
       if (isFilebase) {
         if (ipfsCid && isValidIpfsCid(ipfsCid)) {
