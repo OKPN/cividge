@@ -5,6 +5,13 @@ import { runInNewContext } from "node:vm";
 import { createUploadDestinationGuard } from "../ui/upload-destination.js";
 
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+
+test("destination fields share a wrapping row while upload stays below", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /class="upload-destination-fields">[\s\S]*?id="uploadProviderSelect"[\s\S]*?id="quickDomainSelect"[\s\S]*?<\/div>\s*<button[^>]*id="uploadButton"/);
+  const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+  assert.match(css, /\.upload-destination-fields\s*\{[^}]*display: flex;[^}]*flex-wrap: wrap;/);
+});
 function guardFixture({ domain = "https://selected.pages.dev", configured = true, relay = true } = {}) {
   const events = [];
   const guard = createUploadDestinationGuard({

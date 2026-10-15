@@ -200,12 +200,14 @@
               </details>
 
               <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 8px;">
+                <div class="upload-destination-fields">
                 <label class="field"><span data-i18n="uploadStorageLabel">保存先</span>
                   <select id="uploadProviderSelect"><option value="r2">Cloudflare R2</option><option value="filebase">Filebase (IPFS)</option></select>
                 </label>
                 <label class="field"><span data-i18n="uploadDomainLabel">配信ドメイン</span>
                   <select id="quickDomainSelect"></select>
                 </label>
+                </div>
                 <button class="primary-button upload-primary-cta" id="uploadButton" type="button" disabled data-i18n="uploadAction">☁️ アップロード</button>
               </div>
             </div>

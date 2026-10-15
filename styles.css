@@ -1503,9 +1503,24 @@ input[type="range"] {
   padding-top: 16px;
 }
 
-@media (max-width: 640px) {
-  .upload-destination-grid {
-    grid-template-columns: 1fr !important;
-  }
+.upload-destination-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.upload-destination-fields > .field {
+  flex: 1 1 130px;
+  min-width: 0;
+}
+
+.upload-destination-fields > .field:last-child {
+  flex: 1.6 1 190px;
+}
+
+.upload-destination-fields select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
 }
 
