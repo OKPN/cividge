@@ -16,6 +16,12 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
   onDiagnostic = error => safeConsole.error("Upload failed:", error) }) {
   async function uploadImage(result, targetProvider = "r2", customPassword = null, uploadOptions = {}) {
     if (!result || !result.blob) return false;
+
+    const recordWorkflowForResult = () => {
+      try {
+        recordWorkflow(result, isConversionEnabled());
+      } catch (wfSaveErr) {}
+    };
   
     const isFilebase = targetProvider === "filebase";
     const s3 = getS3Client(targetProvider);
@@ -135,6 +141,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
           });
           onPublicUrl(result.name, result.proxyUrl);
           queueVideoThumbnail(uploadBlob, result.name, objectId);
+          recordWorkflowForResult();
           return true;
         }
       }
@@ -193,6 +200,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
             setFileStoredDomain(kvKey, baseDomain);
             onPublicUrl(result.name, result.proxyUrl);
             queueVideoThumbnail(uploadBlob, result.name, objectId);
+            recordWorkflowForResult();
   
             return true;
           }
@@ -256,6 +264,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
             setFileStoredDomain(kvKey, baseDomain);
             onPublicUrl(result.name, result.proxyUrl);
             queueVideoThumbnail(uploadBlob, result.name, objectId);
+            recordWorkflowForResult();
   
             safeConsole.log(`⚡ R2 重複排除（UnixFS CID照合: ${calculatedCid}）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
             return true;
@@ -419,9 +428,7 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
   
       // 🧬 アップロードされたファイルのワークフロー有無をローカルストレージに記録
       // （※画像変換ONの画像はCanvasでExif/WFが削除されるため、非変換時または動画のみ保持）
-      try {
-        recordWorkflow(result, isConversionEnabled());
-      } catch (wfSaveErr) {}
+      recordWorkflowForResult();
   
       onPublicUrl(result.name, result.proxyUrl);
   

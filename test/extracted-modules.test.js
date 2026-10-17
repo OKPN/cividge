@@ -8,6 +8,7 @@ import { detectComfyMetadata } from "../media/metadata.js";
 import { applyFastStartToMp4 } from "../media/mp4-faststart.js";
 import { createR2Content } from "../storage/r2-content.js";
 import { createFilebaseContent } from "../storage/filebase-content.js";
+import { recordUploadedWorkflow } from "../upload/workflow-cache.js";
 
 test("extracted filename policy keeps passthrough and conversion names", () => {
   const original = createFilenameTools({ isConversionEnabled: () => false, getFilenamePolicy: () => "{original}" });
@@ -84,6 +85,28 @@ test("extracted media operations retain empty metadata and non-MP4 passthrough",
   assert.equal((await detectComfyMetadata(file)).type, "none");
   const blob = new Blob(["plain bytes"], { type: "video/mp4" });
   assert.equal(await applyFastStartToMp4(blob), blob);
+});
+
+test("passthrough upload carries detected workflow metadata into the managed-list badge cache", () => {
+  const previousStorage = globalThis.localStorage;
+  const values = new Map();
+  globalThis.localStorage = {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  try {
+    const converterSource = readFileSync(new URL("../upload/conversion.js", import.meta.url), "utf8");
+    assert.match(converterSource, /isNonImage: !isImage,\s*metaStatus: file\.metaStatus,/);
+    const result = {
+      name: "2qoubh.png",
+      metaStatus: { hasWorkflow: true, hasPrompt: true, type: "comfy_workflow" },
+    };
+    recordUploadedWorkflow(result, false);
+
+    assert.deepEqual(JSON.parse(values.get("comfyWfMap")), { "2qoubh.png": true });
+  } finally {
+    globalThis.localStorage = previousStorage;
+  }
 });
 
 test("provider-specific content lookup keeps the managed cache fast path", async () => {

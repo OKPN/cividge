@@ -61,6 +61,7 @@ export function createImageConverter({ getConversionMode, isConversionEnabled, q
         size: file.size,
         originalSize: file.size,
         isNonImage: !isImage,
+        metaStatus: file.metaStatus,
       };
     }
 
