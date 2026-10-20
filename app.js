@@ -2170,7 +2170,8 @@ function applyAppImportPayload(payload) {
   return hasRestoredAny;
 }
 
-// PINコード付き暗号化バックアップURLの発行
+// 暗号化バックアップURLの発行
+let currentBackupRestorationKey = "";
 async function generatePinBackupUrl() {
   // 💾 バックアップ発行前に最新の入力状態を自動で一回保存
   saveR2SettingsAuto();
@@ -2188,9 +2189,18 @@ async function generatePinBackupUrl() {
   const pinDisplayModal = document.querySelector("#pinDisplayModal");
   const generatedPinText = document.querySelector("#generatedPinText");
   const backupUrlTextarea = document.querySelector("#backupUrlTextarea");
+  const backupUrlStage = document.querySelector("#backupUrlStage");
+  const backupKeyStage = document.querySelector("#backupKeyStage");
+  const copyBackupUrlButton = document.querySelector("#copyBackupUrlButton");
+  const copyBackupKeyButton = document.querySelector("#copyBackupKeyButton");
 
-  if (generatedPinText) generatedPinText.textContent = restorationKey;
+  currentBackupRestorationKey = restorationKey;
+  if (generatedPinText) generatedPinText.textContent = "";
   if (backupUrlTextarea) backupUrlTextarea.value = backupUrl;
+  if (backupUrlStage) backupUrlStage.style.display = "block";
+  if (backupKeyStage) backupKeyStage.style.display = "none";
+  if (copyBackupUrlButton) copyBackupUrlButton.textContent = "📋 URLをコピー";
+  if (copyBackupKeyButton) copyBackupKeyButton.textContent = "📋 復元キーをコピー";
   if (pinDisplayModal) pinDisplayModal.style.display = "grid";
 }
 
@@ -2775,14 +2785,55 @@ cfClearButton?.addEventListener("click", () => {
 
 // --- 📱 可視光スキャン（QRコード）同期ハンドラ ---
 let lastGeneratedSyncUrl = "";
+let currentSyncRestorationKey = "";
+let syncQrStage = "url";
 const copySyncUrlButton = document.querySelector("#copySyncUrlButton");
+const toggleQrPayloadButton = document.querySelector("#toggleQrPayloadButton");
+const copyRestorationKeyButton = document.querySelector("#copyRestorationKeyButton");
+
+async function renderSyncQrStage(stage) {
+  if (!qrCanvas || !currentSyncRestorationKey || !lastGeneratedSyncUrl) return;
+  syncQrStage = stage === "key" ? "key" : "url";
+  const value = syncQrStage === "key" ? currentSyncRestorationKey : lastGeneratedSyncUrl;
+  const stageDescription = document.querySelector("#qrStageDescription");
+  const messages = i18nDict[getAppLanguage()] || i18nDict.ja;
+  const qrMatrix = QRCode.create(value, { errorCorrectionLevel: "L" });
+  const quietZoneModules = 4;
+  const pixelsPerModule = syncQrStage === "key" ? 8 : 4;
+  const qrWidth = (qrMatrix.modules.size + quietZoneModules * 2) * pixelsPerModule;
+  await QRCode.toCanvas(qrCanvas, value, {
+    width: qrWidth,
+    margin: quietZoneModules,
+    errorCorrectionLevel: "L",
+    color: { dark: "#0f172a", light: "#ffffff" },
+  });
+  if (stageDescription) stageDescription.textContent = syncQrStage === "key" ? messages.qrKeyStage : messages.qrUrlStage;
+  const keyWrap = document.querySelector("#qrRestorationKeyWrap");
+  const keyDisplay = document.querySelector("#qrRestorationKey");
+  if (keyDisplay) keyDisplay.textContent = syncQrStage === "key" ? currentSyncRestorationKey : "";
+  if (keyWrap) keyWrap.style.display = syncQrStage === "key" ? "block" : "none";
+  if (copySyncUrlButton) copySyncUrlButton.style.display = syncQrStage === "url" ? "block" : "none";
+  if (copyRestorationKeyButton) copyRestorationKeyButton.style.display = syncQrStage === "key" ? "block" : "none";
+  if (toggleQrPayloadButton) toggleQrPayloadButton.textContent = syncQrStage === "key"
+    ? messages.btnShowUrlQr
+    : messages.btnShowKeyQr;
+}
 
 async function openSyncQrModal() {
   const messages = i18nDict[getAppLanguage()] || i18nDict.ja;
   lastGeneratedSyncUrl = "";
+  currentSyncRestorationKey = "";
+  syncQrStage = "url";
   if (qrContainer) qrContainer.style.display = "none";
   if (qrStatus) qrStatus.textContent = messages.qrGenerating;
   if (copySyncUrlButton) copySyncUrlButton.disabled = true;
+  if (toggleQrPayloadButton) toggleQrPayloadButton.disabled = true;
+  if (toggleQrPayloadButton) toggleQrPayloadButton.textContent = messages.btnShowKeyQr;
+  if (copyRestorationKeyButton) copyRestorationKeyButton.textContent = messages.btnCopyRestorationKey;
+  if (copySyncUrlButton) copySyncUrlButton.style.display = "block";
+  if (copyRestorationKeyButton) copyRestorationKeyButton.style.display = "none";
+  const keyWrap = document.querySelector("#qrRestorationKeyWrap");
+  if (keyWrap) keyWrap.style.display = "none";
   if (qrModal) qrModal.style.display = "grid";
   try {
     saveR2SettingsAuto();
@@ -2794,20 +2845,12 @@ async function openSyncQrModal() {
     }
     const { encrypted, restorationKey } = await encryptConfiguration(payload);
     lastGeneratedSyncUrl = encryptedConfigurationUrl(encrypted, window.location.href);
-    const keyDisplay = document.querySelector("#qrRestorationKey");
-    if (keyDisplay) keyDisplay.textContent = restorationKey;
+    currentSyncRestorationKey = restorationKey;
     if (copySyncUrlButton) copySyncUrlButton.disabled = false;
+    if (toggleQrPayloadButton) toggleQrPayloadButton.disabled = false;
 
     if (qrCanvas) {
-      await QRCode.toCanvas(qrCanvas, lastGeneratedSyncUrl, {
-        width: 280,
-        margin: 2,
-        errorCorrectionLevel: "L", // 画面読み取りに最も適した大型ドット（超高認識率・低密度）
-        color: {
-          dark: "#0f172a",
-          light: "#ffffff",
-        },
-      });
+      await renderSyncQrStage("url");
       if (qrContainer) qrContainer.style.display = "inline-block";
     }
     if (qrStatus) qrStatus.textContent = "";
@@ -2834,6 +2877,28 @@ copySyncUrlButton?.addEventListener("click", async () => {
   }
 });
 
+toggleQrPayloadButton?.addEventListener("click", async () => {
+  try {
+    await renderSyncQrStage(syncQrStage === "url" ? "key" : "url");
+  } catch (err) {
+    safeConsole.error("QR Code generation error:", err);
+    if (qrStatus) qrStatus.textContent = "QRコードを表示できませんでした。復元キーをコピーして利用してください。";
+  }
+});
+
+copyRestorationKeyButton?.addEventListener("click", async () => {
+  if (!currentSyncRestorationKey) return;
+  try {
+    await navigator.clipboard.writeText(currentSyncRestorationKey);
+    const originalText = copyRestorationKeyButton.textContent;
+    copyRestorationKeyButton.textContent = "✅ 復元キーをコピーしました";
+    setTimeout(() => { copyRestorationKeyButton.textContent = originalText; }, 2000);
+  } catch (err) {
+    safeConsole.error("Restoration key clipboard copy failed:", err);
+    prompt("復元キーだけをコピーしてください（引き継ぎURLとは別に保管）:", currentSyncRestorationKey);
+  }
+});
+
 cfShareQrButton?.addEventListener("click", openSyncQrModal);
 topbarSyncButton?.addEventListener("click", openSyncQrModal);
 
@@ -2848,8 +2913,14 @@ cfBackupUrlButton?.addEventListener("click", generatePinBackupUrl);
 closeQrModalButton?.addEventListener("click", () => {
   if (qrModal) qrModal.style.display = "none";
   lastGeneratedSyncUrl = "";
+  currentSyncRestorationKey = "";
+  syncQrStage = "url";
   const keyDisplay = document.querySelector("#qrRestorationKey");
   if (keyDisplay) keyDisplay.textContent = "";
+  const keyWrap = document.querySelector("#qrRestorationKeyWrap");
+  if (keyWrap) keyWrap.style.display = "none";
+  const messages = i18nDict[getAppLanguage()] || i18nDict.ja;
+  if (toggleQrPayloadButton) toggleQrPayloadButton.textContent = messages.btnShowKeyQr;
   if (qrCanvas) qrCanvas.getContext("2d")?.clearRect(0, 0, qrCanvas.width, qrCanvas.height);
 });
 
@@ -2985,10 +3056,56 @@ cancelPinButton?.addEventListener("click", () => {
 
 closePinDisplayModalButton?.addEventListener("click", () => {
   if (pinDisplayModal) pinDisplayModal.style.display = "none";
+  currentBackupRestorationKey = "";
   const keyDisplay = document.querySelector("#generatedPinText");
   const urlDisplay = document.querySelector("#backupUrlTextarea");
+  const backupUrlStage = document.querySelector("#backupUrlStage");
+  const backupKeyStage = document.querySelector("#backupKeyStage");
   if (keyDisplay) keyDisplay.textContent = "";
   if (urlDisplay) urlDisplay.value = "";
+  if (backupUrlStage) backupUrlStage.style.display = "block";
+  if (backupKeyStage) backupKeyStage.style.display = "none";
+});
+
+document.querySelector("#showBackupKeyButton")?.addEventListener("click", () => {
+  const backupUrlStage = document.querySelector("#backupUrlStage");
+  const backupKeyStage = document.querySelector("#backupKeyStage");
+  const keyDisplay = document.querySelector("#generatedPinText");
+  if (keyDisplay) keyDisplay.textContent = currentBackupRestorationKey;
+  if (backupUrlStage) backupUrlStage.style.display = "none";
+  if (backupKeyStage) backupKeyStage.style.display = "block";
+});
+
+document.querySelector("#showBackupUrlButton")?.addEventListener("click", () => {
+  const backupUrlStage = document.querySelector("#backupUrlStage");
+  const backupKeyStage = document.querySelector("#backupKeyStage");
+  const keyDisplay = document.querySelector("#generatedPinText");
+  if (keyDisplay) keyDisplay.textContent = "";
+  if (backupKeyStage) backupKeyStage.style.display = "none";
+  if (backupUrlStage) backupUrlStage.style.display = "block";
+});
+
+document.querySelector("#copyBackupUrlButton")?.addEventListener("click", async () => {
+  const value = document.querySelector("#backupUrlTextarea")?.value || "";
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    document.querySelector("#copyBackupUrlButton").textContent = "✅ URLをコピーしました";
+  } catch (err) {
+    safeConsole.error("Backup URL clipboard copy failed:", err);
+    prompt("復元用URLをコピーしてください:", value);
+  }
+});
+
+document.querySelector("#copyBackupKeyButton")?.addEventListener("click", async () => {
+  if (!currentBackupRestorationKey) return;
+  try {
+    await navigator.clipboard.writeText(currentBackupRestorationKey);
+    document.querySelector("#copyBackupKeyButton").textContent = "✅ 復元キーをコピーしました";
+  } catch (err) {
+    safeConsole.error("Backup restoration key clipboard copy failed:", err);
+    prompt("復元キーだけをコピーしてください:", currentBackupRestorationKey);
+  }
 });
 
 function getConversionMode() {

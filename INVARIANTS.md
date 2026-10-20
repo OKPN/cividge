@@ -27,6 +27,10 @@
 ### [INV-CONFIGURATION-IS-PORTABLE]
 * 永続設定は必要なprovider credentialを含め、明示的なportable backupから別browserへ復元できる構造を維持する。browser-local storageの方式変更自体を安全性の目標にしない。
 
+### [INV-QR-IS-READABLE-AND-SEMANTIC] QR は読取可能で意図した情報を運ぶ
+* QR は単に符号化に成功すればよいものではない。想定する表示環境でスマートフォンのカメラから読み取れる大きさ・鮮明さ・quiet zoneで描画し、デコード結果がそのQRの説明どおりの値でなければならない。URL QRはCividgeの復元画面を開き、復元キーQRはキー文字列だけを渡す。用途の異なるQRを同じものとして案内しない。
+* QR生成時は容量超過を明示し、現実的な設定payloadを用いた自動デコード／round-trip確認を行う。リリース前に実端末でURL QRの遷移と、復元キーQRを使った設定復元を手動確認する。読み取れないQRや、説明と異なる値へ遷移するQRは未完成として扱う。
+
 ## Lifecycle authority boundary
 
 > **Lifecycle authority supersession.** Browser peer scans, tombstones,

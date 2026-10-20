@@ -742,26 +742,29 @@
 
     <!-- QRコード同期モーダル (最外郭・全画面オーバーレイ) -->
     <div id="qrModal" class="modal-backdrop" style="display: none;">
-      <div class="modal-content" style="max-width: 360px; text-align: center; padding: 24px;">
+      <div class="modal-content" style="max-width: 840px; text-align: center; padding: 24px;">
         <h3 style="margin-top: 0; font-size: 16px; color: var(--text);" data-i18n="qrModalTitle">📱 スマホ/別端末でスキャン</h3>
         <p style="font-size: 12px; color: var(--muted); margin-bottom: 16px; line-height: 1.5;" data-i18n="qrModalSub">
-          スマホのカメラ等で下記QRコードを読み取ると、Civitaiウォッチリストや接続情報、変換設定が安全に直接引き継がれます。
+          まずURL QRを読み取り、開いた復元画面でキーQRを読み取って復元キーを貼り付けます。
         </p>
         <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; text-align: left;">
           <div style="font-size: 12px; font-weight: bold; color: #ef4444; display: flex; align-items: center; gap: 4px; margin-bottom: 4px;" data-i18n="qrModalWarnTitle">
             🚨 第三者への共有・公開厳禁
           </div>
           <div style="font-size: 11px; color: #f87171; line-height: 1.45;" data-i18n="qrModalWarnDesc">
-            このQRコードやURLにはストレージの<strong>【秘密鍵・認証情報】</strong>が含まれています。配信・SNS・第三者へ絶対に公開しないでください（不正アクセス・データ削除の危険があります）。
+            URLと復元キーの両方が揃うと設定を復元できます。別々に扱い、どちらも第三者へ公開しないでください。
           </div>
         </div>
-        <div id="qrContainer" style="background: #ffffff; padding: 16px; border-radius: 12px; display: inline-block; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
-          <canvas id="qrCanvas" style="display: block; margin: 0 auto;"></canvas>
+        <p id="qrStageDescription" role="status" style="font-size: 12px; color: var(--muted); margin: 0 0 10px; line-height: 1.5;" data-i18n="qrUrlStage">手順1/2: URL QRを読み取るとCividgeの復元画面が開きます。</p>
+        <div id="qrContainer" style="max-width: 100%; background: #ffffff; padding: 16px; border-radius: 12px; display: inline-block; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+          <canvas id="qrCanvas" style="display: block; width: auto; max-width: 100%; height: auto; margin: 0 auto; image-rendering: pixelated;"></canvas>
         </div>
         <p id="qrStatus" role="status" style="font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0 0 16px;"></p>
-        <p style="font-size: 12px;">復元キー（URLとは別に保管してください）<br><code id="qrRestorationKey" style="user-select: all; overflow-wrap: anywhere;"></code></p>
+        <p id="qrRestorationKeyWrap" style="display: none; font-size: 12px;">このQRは復元キーのみです。カメラで読み取り、移行先の復元欄へ貼り付けてください。<br><code id="qrRestorationKey" style="user-select: all; overflow-wrap: anywhere;"></code></p>
         <div style="display: flex; gap: 8px; flex-direction: column;">
           <button class="primary-button" id="copySyncUrlButton" type="button" style="width: 100%; min-height: 36px; font-size: 13px; background: #0284c7; border-color: #38bdf8;" data-i18n="btnCopySyncUrl">📋 引き継ぎURLをコピー</button>
+          <button class="ghost-button" id="toggleQrPayloadButton" type="button" style="width: 100%; min-height: 36px;" disabled data-i18n="btnShowKeyQr">🔑 復元キーQRを表示</button>
+          <button class="ghost-button" id="copyRestorationKeyButton" type="button" style="display: none; width: 100%; min-height: 36px;" data-i18n="btnCopyRestorationKey">📋 復元キーをコピー</button>
           <button class="ghost-button" id="closeQrModalButton" type="button" style="width: 100%; min-height: 36px;" data-i18n="btnClose">閉じる</button>
         </div>
       </div>
@@ -772,7 +775,7 @@
       <div class="modal-content" style="max-width: 380px; text-align: center; padding: 24px;">
         <h3 style="margin-top: 0; font-size: 16px; color: var(--accent);">🔑 暗号化バックアップデータを検出</h3>
         <p style="font-size: 12px; color: var(--muted); margin-bottom: 16px; line-height: 1.5;">
-          発行時に別表示された32文字の復元キーを入力してください。
+          発行時に別途保管した32文字の復元キーを入力してください。キーQRを読み取った場合は、表示された文字列を貼り付けられます。
         </p>
         <div style="margin-bottom: 16px;">
           <input type="password" id="pinInput" placeholder="32文字の復元キー" maxlength="32" autocomplete="off" style="width: 100%; height: 42px; text-align: center; font-size: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); outline: none;">
@@ -790,18 +793,23 @@
       <div class="modal-content" style="max-width: 400px; text-align: center; padding: 24px;">
         <h3 style="margin-top: 0; font-size: 16px; color: #4caf50;">✅ バックアップURLを発行しました</h3>
         <p style="font-size: 12px; color: var(--muted); margin-bottom: 12px; line-height: 1.5;">
-          下のURLを選択してコピーし、復元キーとは別に保管してください。
+          URLと復元キーは別々に保管してください。両方が揃うと設定を復元できます。
         </p>
-        <div style="background: rgba(99, 102, 241, 0.12); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 16px; margin-bottom: 16px;">
-          <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">【 復元キー（URLとは別に保管） 】</div>
-          <div id="generatedPinText" style="font-size: 16px; word-break: break-all; font-family: monospace; color: var(--accent);"></div>
-          <div style="font-size: 11px; color: #f43f5e; margin-top: 6px;">※ 復元キーがないと設定を復元できません。</div>
-        </div>
-        <div style="margin-bottom: 16px; text-align: left;">
-          <label style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">復元用URL (クリップボードコピー済み):</label>
+        <div id="backupUrlStage" style="margin-bottom: 16px; text-align: left;">
+          <label style="font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px;">復元用URL（暗号化データ）:</label>
           <textarea id="backupUrlTextarea" readonly style="width: 100%; height: 52px; font-size: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px; resize: none; word-break: break-all; outline: none;"></textarea>
-          <div style="font-size: 11px; color: #f87171; margin-top: 4px; line-height: 1.4;">⚠️ URLとPINコードの両方が揃うとストレージの秘密鍵が復元されます。第三者へ絶対に渡さないでください。</div>
+          <button class="primary-button" id="copyBackupUrlButton" type="button" style="width: 100%; margin: 8px 0 0;">📋 URLをコピー</button>
+          <button class="ghost-button" id="showBackupKeyButton" type="button" style="width: 100%; margin-top: 8px;">🔑 次へ：復元キーを表示</button>
         </div>
+        <div id="backupKeyStage" style="display: none; margin-bottom: 16px;">
+          <div style="background: rgba(99, 102, 241, 0.12); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 16px; margin-bottom: 8px;">
+            <div style="font-size: 11px; color: var(--muted); margin-bottom: 4px;">【 復元キー（URLとは別に保管） 】</div>
+            <div id="generatedPinText" style="font-size: 16px; word-break: break-all; font-family: monospace; color: var(--accent);"></div>
+          </div>
+          <button class="primary-button" id="copyBackupKeyButton" type="button" style="width: 100%; margin: 0;">📋 復元キーをコピー</button>
+          <button class="ghost-button" id="showBackupUrlButton" type="button" style="width: 100%; margin-top: 8px;">復元用URLへ戻る</button>
+        </div>
+        <div style="font-size: 11px; color: #f87171; margin: 0 0 12px; line-height: 1.4;">⚠️ URLと復元キーの両方が第三者に渡ると、保存設定を復元される可能性があります。</div>
         <div>
           <button class="primary-button" id="closePinDisplayModalButton" type="button" style="width: 100%; margin: 0;">完了</button>
         </div>
