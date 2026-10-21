@@ -22,7 +22,7 @@ import { createUploadDestinationGuard } from "./ui/upload-destination.js";
 import { createStorageConnections } from "./storage/connections.js";
 import { i18nDict } from "./ui/i18n.js";
 import { insertFilenamePatternToken } from "./ui/filename-pattern-input.js";
-import { canUseCivitaiPostIntent, projectedFinalUploadMedia } from "./ui/civitai-capability.js";
+import { canUseCivitaiPostIntent, projectedFinalUploadMedia, detectCivitaiMediaExtension, projectCivitaiDirectUrl } from "./ui/civitai-capability.js";
 import { detectComfyMetadata } from "./media/metadata.js";
 import QRCode from "qrcode";
 import * as fflate from "fflate";
@@ -1486,32 +1486,86 @@ async function checkAllCivitaiCreatorsUnread() {
   }
 }
 
+function getCachedCivitaiInspection(itemId) {
+  try {
+    const store = JSON.parse(localStorage.getItem("civitaiWfMap") || "{}");
+    const entry = store[itemId];
+    if (entry && typeof entry === "object" && typeof entry.ext === "string" && entry.ext) {
+      return { wf: Boolean(entry.wf), ext: entry.ext };
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function readCivitaiPrefixBytes(res, maxBytes = 131072) {
+  if (!res.body?.getReader) {
+    const buf = await res.arrayBuffer();
+    return new Uint8Array(buf, 0, Math.min(buf.byteLength, maxBytes));
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      const needed = maxBytes - total;
+      const slice = value.byteLength > needed ? value.subarray(0, needed) : value;
+      chunks.push(slice);
+      total += slice.byteLength;
+      if (total >= maxBytes) break;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined;
+}
+
 async function checkCivitaiItemWf(item) {
-  if (!item || !item.url) return false;
+  if (!item || !item.url) return { wf: false, ext: "", url: "" };
 
-  let store = {};
+  const cached = getCachedCivitaiInspection(item.id);
+  if (cached) {
+    return {
+      wf: cached.wf,
+      ext: cached.ext,
+      url: projectCivitaiDirectUrl(item.url, cached.ext),
+    };
+  }
+
   try {
-    store = JSON.parse(localStorage.getItem("civitaiWfMap") || "{}");
-  } catch (e) {}
-
-  if (store[item.id] !== undefined) return store[item.id];
-
-  try {
-    const res = await fetch(item.url, { headers: { Range: "bytes=0-131072" } });
+    // Simple GET without a custom Range header avoids the CORS OPTIONS preflight
+    // that image.civitai.com rejects with 301, while streaming only the prefix.
+    const res = await fetch(item.url);
     if (res.ok || res.status === 206) {
-      const buf = await res.arrayBuffer();
-      const text = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buf));
+      const bytes = await readCivitaiPrefixBytes(res, 131072);
+      const ext = detectCivitaiMediaExtension(bytes, res.headers.get("content-type") || "");
+      const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
       const hasWf = (text.includes('"nodes"') && text.includes('"links"')) ||
                     (text.includes('"inputs"') && text.includes('"class_type"')) ||
                     text.includes('"workflow"');
-      store[item.id] = hasWf;
+      let store = {};
+      try {
+        store = JSON.parse(localStorage.getItem("civitaiWfMap") || "{}");
+      } catch (_) {}
+      store[item.id] = { wf: hasWf, ext };
       localStorage.setItem("civitaiWfMap", JSON.stringify(store));
-      return hasWf;
+      return {
+        wf: hasWf,
+        ext,
+        url: projectCivitaiDirectUrl(item.url, ext),
+      };
     }
   } catch (err) {
     safeConsole.debug("Civitai WF check skipped:", err);
   }
-  return false;
+  return { wf: false, ext: "", url: item.url };
 }
 
 function civitaiRequestUrl(url) {
@@ -1708,9 +1762,11 @@ function createCivitaiStatsHtml(stats) {
 
     civitaiPaletteFiles = visibleItems.map(item => {
       const isVideo = item.type === "video";
-      const directUrl = safeHttpUrl(item.url);
+      const cachedInspection = getCachedCivitaiInspection(item.id);
+      const directUrl = safeHttpUrl(projectCivitaiDirectUrl(item.url, cachedInspection?.ext || ""));
       if (!directUrl) return;
-      const previewSrc = isVideo ? directUrl : (directUrl.includes("/original=true/") ? directUrl.replace("/original=true/", "/width=450/") : directUrl);
+      const rawPreviewBase = safeHttpUrl(item.url) || directUrl;
+      const previewSrc = isVideo ? directUrl : (rawPreviewBase.includes("/original=true/") ? rawPreviewBase.replace("/original=true/", "/width=450/") : directUrl);
       return {
         key: `Civitai ID:${item.id}`,
         url: directUrl,
@@ -1739,7 +1795,8 @@ function createCivitaiStatsHtml(stats) {
       article.className = "civitai-card";
 
       const isVideo = item.type === "video";
-      const directUrl = item.url;
+      const cachedInspection = getCachedCivitaiInspection(item.id);
+      const directUrl = projectCivitaiDirectUrl(item.url, cachedInspection?.ext || "");
       const civitaiPostPageUrl = `https://civitai.com/images/${encodeURIComponent(String(item.id))}`;
 
       let thumbHtml = "";
@@ -1749,7 +1806,7 @@ function createCivitaiStatsHtml(stats) {
           <div class="civitai-video-play-indicator">▶</div>
         `;
       } else {
-        const previewSrc = directUrl.includes("/original=true/") ? directUrl.replace("/original=true/", "/width=450/") : directUrl;
+        const previewSrc = item.url.includes("/original=true/") ? item.url.replace("/original=true/", "/width=450/") : directUrl;
         thumbHtml = `<img alt="" src="${escapeHtml(previewSrc)}" loading="lazy">`;
       }
 
@@ -1814,11 +1871,23 @@ function createCivitaiStatsHtml(stats) {
 
       civitaiGalleryList.append(article);
 
-      checkCivitaiItemWf(item).then(hasWf => {
-        if (hasWf) {
+      checkCivitaiItemWf(item).then(inspection => {
+        if (inspection?.wf) {
           const badgePlaceholder = article.querySelector('.civitai-wf-badge-placeholder');
           if (badgePlaceholder) {
             badgePlaceholder.innerHTML = '<span class="meta-badge" style="background: rgba(16, 185, 129, 0.9); backdrop-filter: blur(4px); color: #fff; border: 1px solid rgba(16, 185, 129, 0.6); font-size: 9.5px; padding: 2px 6px; border-radius: 4px; font-weight: 600; box-shadow: 0 2px 4px rgba(0,0,0,0.3);" title="ComfyUIワークフローが完全な形で含まれています。">🧬 WF</span>';
+          }
+        }
+        const canonicalUrl = safeHttpUrl(inspection?.url || "");
+        if (canonicalUrl && canonicalUrl !== directUrl) {
+          const copyBtnEl = article.querySelector(".civitai-copy-btn");
+          if (copyBtnEl) copyBtnEl.dataset.url = canonicalUrl;
+          const mediaLinkEl = article.querySelector(".civitai-card-media");
+          if (mediaLinkEl) mediaLinkEl.href = canonicalUrl;
+          const paletteEntry = civitaiPaletteFiles.find(entry => entry && entry.key === `Civitai ID:${item.id}`);
+          if (paletteEntry) {
+            paletteEntry.url = canonicalUrl;
+            renderUrlPalette();
           }
         }
       });
