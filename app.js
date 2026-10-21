@@ -7414,28 +7414,12 @@ civitaiGalleryList?.addEventListener("click", async (event) => {
     if (!rawUrl) return;
 
     try {
-      copyBtn.textContent = "解決中...";
-      let finalUrl = rawUrl;
-
-      // サーバーサイドの /api/resolve-url を経由してリダイレクト先（blobs-b2.civitai.com 等）の短縮URLを取得
-      try {
-        const resolveApi = `/api/resolve-url?url=${encodeURIComponent(rawUrl)}`;
-        const res = await fetch(resolveApi);
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.resolvedUrl) {
-            finalUrl = data.resolvedUrl;
-          }
-        }
-      } catch (e) {
-        safeConsole.warn("Failed to resolve URL via /api/resolve-url:", e);
-      }
-
-      copyBtn.dataset.url = finalUrl;
-      await copyToClipboard(finalUrl, copyBtn, "📋 URLコピー");
+      // 拡張子（.jpeg / .mp4 等）が保持された直リンURLをそのままコピー
+      // （blobs-b2 への解決を行うと拡張子が欠落して掲示板等でインライン表示できなくなるため）
+      await copyToClipboard(rawUrl, copyBtn);
     } catch (err) {
       safeConsole.warn("Failed to copy civitai url:", err);
-      await copyToClipboard(rawUrl, copyBtn, "📋 URLコピー");
+      prompt("以下の直リンURLをコピーしてください:", rawUrl);
     }
   }
 });
