@@ -1491,7 +1491,11 @@ function getCachedCivitaiInspection(itemId) {
     const store = JSON.parse(localStorage.getItem("civitaiWfMap") || "{}");
     const entry = store[itemId];
     if (entry && typeof entry === "object" && typeof entry.ext === "string" && entry.ext) {
-      return { wf: Boolean(entry.wf), ext: entry.ext };
+      return {
+        wf: Boolean(entry.wf),
+        ext: entry.ext,
+        url: typeof entry.url === "string" ? entry.url : "",
+      };
     }
   } catch (_) {}
   return null;
@@ -1531,11 +1535,11 @@ async function checkCivitaiItemWf(item) {
   if (!item || !item.url) return { wf: false, ext: "", url: "" };
 
   const cached = getCachedCivitaiInspection(item.id);
-  if (cached) {
+  if (cached && cached.url) {
     return {
       wf: cached.wf,
       ext: cached.ext,
-      url: projectCivitaiDirectUrl(item.url, cached.ext),
+      url: cached.url,
     };
   }
 
@@ -1550,22 +1554,27 @@ async function checkCivitaiItemWf(item) {
       const hasWf = (text.includes('"nodes"') && text.includes('"links"')) ||
                     (text.includes('"inputs"') && text.includes('"class_type"')) ||
                     text.includes('"workflow"');
+      const canonicalUrl = projectCivitaiDirectUrl(res.url || item.url, ext);
       let store = {};
       try {
         store = JSON.parse(localStorage.getItem("civitaiWfMap") || "{}");
       } catch (_) {}
-      store[item.id] = { wf: hasWf, ext };
+      store[item.id] = { wf: hasWf, ext, url: canonicalUrl };
       localStorage.setItem("civitaiWfMap", JSON.stringify(store));
       return {
         wf: hasWf,
         ext,
-        url: projectCivitaiDirectUrl(item.url, ext),
+        url: canonicalUrl,
       };
     }
   } catch (err) {
     safeConsole.debug("Civitai WF check skipped:", err);
   }
-  return { wf: false, ext: "", url: item.url };
+  return {
+    wf: cached?.wf || false,
+    ext: cached?.ext || "",
+    url: cached ? projectCivitaiDirectUrl(item.url, cached.ext) : item.url,
+  };
 }
 
 function civitaiRequestUrl(url) {
@@ -1763,7 +1772,7 @@ function createCivitaiStatsHtml(stats) {
     civitaiPaletteFiles = visibleItems.map(item => {
       const isVideo = item.type === "video";
       const cachedInspection = getCachedCivitaiInspection(item.id);
-      const directUrl = safeHttpUrl(projectCivitaiDirectUrl(item.url, cachedInspection?.ext || ""));
+      const directUrl = safeHttpUrl(cachedInspection?.url || projectCivitaiDirectUrl(item.url, cachedInspection?.ext || ""));
       if (!directUrl) return;
       const rawPreviewBase = safeHttpUrl(item.url) || directUrl;
       const previewSrc = isVideo ? directUrl : (rawPreviewBase.includes("/original=true/") ? rawPreviewBase.replace("/original=true/", "/width=450/") : directUrl);
@@ -1796,7 +1805,7 @@ function createCivitaiStatsHtml(stats) {
 
       const isVideo = item.type === "video";
       const cachedInspection = getCachedCivitaiInspection(item.id);
-      const directUrl = projectCivitaiDirectUrl(item.url, cachedInspection?.ext || "");
+      const directUrl = cachedInspection?.url || projectCivitaiDirectUrl(item.url, cachedInspection?.ext || "");
       const civitaiPostPageUrl = `https://civitai.com/images/${encodeURIComponent(String(item.id))}`;
 
       let thumbHtml = "";

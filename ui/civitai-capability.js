@@ -99,6 +99,14 @@ export function projectCivitaiDirectUrl(rawUrl, extension = "") {
   const ext = String(extension || "").trim().toLowerCase().replace(/^\./, "");
   if (!url || !ALLOWED_CIVITAI_EXTENSIONS.has(ext)) return url;
   if (!/^https:\/\/(?:[a-z0-9-]+\.)*civitai\.com\//i.test(url)) return url;
+
+  // blobs-b2 等の Backblaze / オブジェクトストレージ直リンの場合:
+  // パスを変更すると404になるため、クエリパラメータで `?.<ext>` を付与する (INV-CIVITAI-CANONICAL-DIRECT-URL)
+  if (/^https:\/\/blobs(?:-[a-z0-9-]+)?\.civitai\.com\//i.test(url)) {
+    const cleanUrl = url.split("?")[0].split("#")[0];
+    return `${cleanUrl}?.${ext}`;
+  }
+
   const [withoutHash, hash = ""] = url.split("#");
   const [pathnameAndOrigin, query = ""] = withoutHash.split("?");
   const lastSlash = pathnameAndOrigin.lastIndexOf("/");

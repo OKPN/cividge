@@ -515,3 +515,12 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
 
 ### [INV-RENDER-DOES-NOT-OBSERVE] 観測の採用境界
 * 描画は採用済み観測を利用するが、authoritativeな観測を生成しない。FilebaseのCIDがprojection/cacheにない場合の物理照会は明示的なrefresh generationに属し、staleな結果をmanaged snapshotへ採用しない。
+
+### [INV-CIVITAI-CANONICAL-DIRECT-URL] Civitai 直リン URL の最短実体性と正本拡張子
+* **実体ストレージへの直結（Zero-Hop 原則）**:
+  Civitai メディアの共有・コピー用 URL は、`image.civitai.com` 等の CDN 射影レイヤーによる 301 リダイレクトを経由してはならず、追跡後の実体ストレージ（`blobs-b2.civitai.com` 等）の正規識別子へ直結していなければならない。
+* **正本拡張子のクエリ射影（Deterministic Extension Projection）**:
+  URL の末尾には、バイナリ先頭のマジックナンバー等によって確定した真の拡張子を `?.<ext>` 形式で付与しなければならない（例: `https://blobs-b2.civitai.com/file/blobs-managed-public/00SNPXBKJY5H8R7GN3K6J1TPT0?.png`）。
+  - 推測や API の仮値（一律 `.jpeg`）を付与してはならない。
+  - 外部 SNS（Misskey, Discord 等）でのインライン展開互換性と、HTTP 上の正当性を両立させること。
+

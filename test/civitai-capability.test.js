@@ -75,4 +75,19 @@ test("canonical Civitai extension is derived from binary magic bytes or Content-
     "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/5940d4d8-ab20-4449-80c6-6574e1e40f33/original=true/5940d4d8-ab20-4449-80c6-6574e1e40f33.webp",
   );
   assert.equal(projectCivitaiDirectUrl("https://example.com/file.jpeg", "webp"), "https://example.com/file.jpeg");
+
+  // INV-CIVITAI-CANONICAL-DIRECT-URL: blobs-b2 storage entity URL projects extension as `?.<ext>` query
+  const b2Url = "https://blobs-b2.civitai.com/file/blobs-managed-public/00SNPXBKJY5H8R7GN3K6J1TPT0";
+  assert.equal(
+    projectCivitaiDirectUrl(b2Url, "png"),
+    "https://blobs-b2.civitai.com/file/blobs-managed-public/00SNPXBKJY5H8R7GN3K6J1TPT0?.png",
+  );
+  assert.equal(
+    projectCivitaiDirectUrl(`${b2Url}?.jpeg`, "webp"),
+    "https://blobs-b2.civitai.com/file/blobs-managed-public/00SNPXBKJY5H8R7GN3K6J1TPT0?.webp",
+  );
+  assert.equal(
+    projectCivitaiDirectUrl("https://blobs-b2.civitai.com/file/blobs-managed-public/MMSRRNZPJ7VXX173H8CRW0CZ20#preview", "mp4"),
+    "https://blobs-b2.civitai.com/file/blobs-managed-public/MMSRRNZPJ7VXX173H8CRW0CZ20?.mp4",
+  );
 });
