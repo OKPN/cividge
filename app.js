@@ -1583,6 +1583,25 @@ function civitaiRequestUrl(url) {
   return requestUrl.toString();
 }
 
+function getCachedCivitaiGalleryItems(scopeKey) {
+  try {
+    const raw = localStorage.getItem(`civitaiGalleryCache_${scopeKey}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch (_) {}
+  return [];
+}
+
+function saveCachedCivitaiGalleryItems(scopeKey, items) {
+  try {
+    if (Array.isArray(items) && items.length > 0) {
+      localStorage.setItem(`civitaiGalleryCache_${scopeKey}`, JSON.stringify(items.slice(0, 100)));
+    }
+  } catch (_) {}
+}
+
 function mergeCivitaiItems(existingItems, incomingItems) {
   const byId = new Map(existingItems.map(item => [String(item.id), item]));
   incomingItems.forEach(item => byId.set(String(item.id), item));
@@ -1640,14 +1659,17 @@ function createCivitaiStatsHtml(stats) {
   }
 
   const hasCachedScope = civitaiGalleryState.scopeKey === scopeKey;
-  if (!loadMore && refresh) {
-    civitaiGalleryState.scopeKey = scopeKey;
-    civitaiGalleryState.items = [];
-    civitaiGalleryState.nextPages = {};
+  if (!loadMore && (!hasCachedScope || civitaiGalleryState.items.length === 0)) {
+    const stored = getCachedCivitaiGalleryItems(scopeKey);
+    if (stored.length > 0) {
+      civitaiGalleryState.items = stored;
+      civitaiGalleryState.scopeKey = scopeKey;
+    }
   }
   if (loadMore && !hasCachedScope) loadMore = false;
 
-  if (refresh || loadMore || !hasCachedScope) {
+  const hasExistingItems = civitaiGalleryState.items.length > 0;
+  if (!hasExistingItems && (refresh || loadMore || !hasCachedScope)) {
     const loadingMsg = loadMore
       ? (dict.civitaiLoadingMore || "過去の投稿を読み込み中…")
       : (isAll
@@ -1656,6 +1678,7 @@ function createCivitaiStatsHtml(stats) {
     civitaiGalleryList.innerHTML = `<span class="status-text" style="padding: 18px;">${escapeHtml(loadingMsg)}</span>`;
   }
 
+  let fetchWarning = "";
   try {
     if (refresh || loadMore || !hasCachedScope) {
       if (isAll) {
@@ -1678,26 +1701,49 @@ function createCivitaiStatsHtml(stats) {
           }
         });
         const results = await Promise.all(fetches);
-        civitaiGalleryState.items = mergeCivitaiItems(
-          loadMore ? civitaiGalleryState.items : [],
-          results.flat(),
-        );
-      } else {
-        try {
-          const pageUrl = loadMore
-            ? civitaiGalleryState.nextPages[username]
-            : `https://civitai.com/api/v1/images?username=${encodeURIComponent(username)}&limit=50&sort=Newest&browsingLevel=127&nsfw=true`;
-          if (!pageUrl) return;
-          const res = await fetch(civitaiRequestUrl(pageUrl));
-          if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-          const data = await res.json();
-          civitaiGalleryState.nextPages[username] = data.metadata?.nextPage || null;
-          civitaiGalleryState.items = mergeCivitaiItems(
+        const incoming = results.flat();
+        if (incoming.length > 0 || !loadMore) {
+          const newMerged = mergeCivitaiItems(
             loadMore ? civitaiGalleryState.items : [],
-            (data.items || []).map(it => ({ ...it, _creator: username })),
+            incoming,
           );
-        } catch (err) {
-          throw err;
+          if (newMerged.length > 0) {
+            civitaiGalleryState.items = newMerged;
+            civitaiGalleryState.scopeKey = scopeKey;
+            saveCachedCivitaiGalleryItems(scopeKey, newMerged);
+          }
+        }
+      } else {
+        const pageUrl = loadMore
+          ? civitaiGalleryState.nextPages[username]
+          : `https://civitai.com/api/v1/images?username=${encodeURIComponent(username)}&limit=50&sort=Newest&browsingLevel=127&nsfw=true`;
+        if (pageUrl) {
+          try {
+            const res = await fetch(civitaiRequestUrl(pageUrl));
+            if (!res.ok) {
+              if (civitaiGalleryState.items.length > 0) {
+                fetchWarning = `⚠️ Civitai API が一時的に過負荷 (${res.status} ${res.statusText}) のため、前回のキャッシュを表示しています。`;
+              } else {
+                throw new Error(`HTTP ${res.status} ${res.statusText}`);
+              }
+            } else {
+              const data = await res.json();
+              civitaiGalleryState.nextPages[username] = data.metadata?.nextPage || null;
+              const newMerged = mergeCivitaiItems(
+                loadMore ? civitaiGalleryState.items : [],
+                (data.items || []).map(it => ({ ...it, _creator: username })),
+              );
+              civitaiGalleryState.items = newMerged;
+              civitaiGalleryState.scopeKey = scopeKey;
+              saveCachedCivitaiGalleryItems(scopeKey, newMerged);
+            }
+          } catch (err) {
+            if (civitaiGalleryState.items.length > 0) {
+              fetchWarning = `⚠️ Civitai API 通信障害 (${err.message})。前回のキャッシュを表示しています。`;
+            } else {
+              throw err;
+            }
+          }
         }
       }
     }
@@ -1902,6 +1948,22 @@ function createCivitaiStatsHtml(stats) {
       });
     });
 
+    if (fetchWarning) {
+      const banner = document.createElement("div");
+      banner.className = "civitai-warning-banner";
+      banner.style.cssText = "grid-column: 1 / -1; padding: 10px 14px; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 8px; color: #fbbf24; font-size: 12px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;";
+      const msgSpan = document.createElement("span");
+      msgSpan.textContent = fetchWarning;
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "ghost-button";
+      closeBtn.style.cssText = "height: 24px; font-size: 11px; padding: 0 8px; color: #fbbf24; border-color: rgba(245, 158, 11, 0.4); margin-left: 8px;";
+      closeBtn.textContent = "✕";
+      closeBtn.addEventListener("click", () => banner.remove());
+      banner.append(msgSpan, closeBtn);
+      civitaiGalleryList.prepend(banner);
+    }
+
     // ✨ 案A: 「新着のみ」または個別クリエイターで画面に表示されたアイテムを自動既読化
     // （現在の画面ではそのまま閲覧でき、次回「更新」を押した時や次回アクセス時に表示されなくなる）
     if (visibleItems.length > 0) {
@@ -1928,7 +1990,26 @@ function createCivitaiStatsHtml(stats) {
 
   } catch (err) {
     safeConsole.error("Civitai gallery fetch error:", err);
-    civitaiGalleryList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger);">Civitai ギャラリーの取得に失敗しました: ${escapeHtml(err.message)}</span>`;
+    if (civitaiGalleryState.items.length === 0) {
+      civitaiGalleryList.innerHTML = `<span class="item-meta error" style="padding: 18px; color: var(--danger);">Civitai ギャラリーの取得に失敗しました: ${escapeHtml(err.message)}</span>`;
+    } else {
+      const existingBanner = civitaiGalleryList.querySelector(".civitai-warning-banner");
+      if (!existingBanner) {
+        const banner = document.createElement("div");
+        banner.className = "civitai-warning-banner";
+        banner.style.cssText = "grid-column: 1 / -1; padding: 10px 14px; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 8px; color: #fbbf24; font-size: 12px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;";
+        const msgSpan = document.createElement("span");
+        msgSpan.textContent = `⚠️ Civitai API 通信障害 (${err.message})。前回のキャッシュを表示しています。`;
+        const closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.className = "ghost-button";
+        closeBtn.style.cssText = "height: 24px; font-size: 11px; padding: 0 8px; color: #fbbf24; border-color: rgba(245, 158, 11, 0.4); margin-left: 8px;";
+        closeBtn.textContent = "✕";
+        closeBtn.addEventListener("click", () => banner.remove());
+        banner.append(msgSpan, closeBtn);
+        civitaiGalleryList.prepend(banner);
+      }
+    }
   }
 }
 
