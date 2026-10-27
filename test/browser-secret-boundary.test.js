@@ -158,3 +158,34 @@ test("CSP and current markup have no inline executable script or credential-bear
   assert.match(headers, /object-src 'none'; base-uri 'none'/);
   assert.doesNotMatch(source, /#sync=z\.|encryptPayloadWithPin|xorBytes|generateRandom6DigitPin/);
 });
+
+test("onboarding unlocks Step 2 and restores tokens without sessionStorage dependency", () => {
+  const renderer = source.slice(source.indexOf("function renderStorageOnboardingCard()"), source.indexOf("async function fetchAndRenderR2Files"));
+  let html = "";
+  const context = {
+    r2FileList: { set innerHTML(val) { html = val; }, addEventListener: () => {} },
+    document: { querySelector: () => null },
+    managedController: { getActiveProvider: () => "r2" },
+    getAppLanguage: () => "ja",
+    getSelectedR2Domain: () => "https://media.example",
+    escapeHtml,
+    filebaseBucket: null, filebaseApiKey: null, filebaseSecretKey: null,
+    r2AccountId: null, r2BucketName: null, r2AccessKeyId: null, r2SecretAccessKey: null,
+    kvWorkerUrl: null, adminApiToken: null,
+    sessionStorage: { getItem: () => null }, // sessionStorage is empty (e.g. mobile tab reopened)
+    localStorage: {
+      getItem: key => {
+        if (key === "kvWorkerUrl") return "https://worker.example";
+        if (key === "adminApiToken") return "my-admin-token";
+        return "";
+      },
+    },
+  };
+  runInNewContext(`${renderer}\nrenderStorageOnboardingCard();`, context);
+  // STEP 2 must NOT be disabled even when sessionStorage is empty
+  assert.match(html, /<fieldset id="obStorageStep"\s+style=/);
+  assert.doesNotMatch(html, /<fieldset id="obStorageStep"\s+disabled/);
+  // Admin token must be prefilled from localStorage
+  assert.match(html, /id="obAdminToken"[^>]*value="my-admin-token"/);
+  assert.match(html, /KV Worker 接続済み/);
+});

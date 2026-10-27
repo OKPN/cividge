@@ -2403,6 +2403,11 @@ updateR2Status();
 fetchAndRenderR2Files();
 fetchAndRenderCivitaiGallery();
 
+// 📱 モバイルOS・ブラウザの自動ストレージ消去（Eviction）を防ぎ、端末内での長期保存を要求
+if (typeof navigator !== "undefined" && navigator.storage?.persist) {
+  navigator.storage.persist().catch(() => {});
+}
+
 // --- イベントリスナー: R2 設定自動保存 ---
 function saveR2SettingsAuto() {
   // 🛡️ 入力欄を操作中（フォーカス中）の消去のみ許可し、触っていない別アコーディオンの既存設定を誤削除しない
@@ -4834,10 +4839,6 @@ function renderStorageOnboardingCard() {
     copiedCors: "📋 CORS 設定をコピーしました",
     adminToken: "Admin API Token", required: "(必須)",
   };
-  // 接続テストに通るまでは次の段階を開かない。画面を閉じた際にも
-  // 中途半端な認証情報だけで次段階へ進まないよう、現在のタブ内だけで保持する。
-  const kvConnected = sessionStorage.getItem("onboardingKvConnected") === "true";
-  const kvSuccessMessage = sessionStorage.getItem("onboardingKvSuccessMessage") || "";
   const currentDomain = getSelectedR2Domain() || (typeof window !== "undefined" ? window.location.origin : "");
   const fbBucketVal = (localStorage.getItem("filebaseBucket") || filebaseBucket?.value || "").trim();
   const fbKeyVal = (localStorage.getItem("filebaseApiKey") || filebaseApiKey?.value || "").trim();
@@ -4850,6 +4851,11 @@ function renderStorageOnboardingCard() {
 
   const kvUrlVal = (localStorage.getItem("kvWorkerUrl") || kvWorkerUrl?.value || "").trim();
   const adminTokenVal = (localStorage.getItem("adminApiToken") || adminApiToken?.value || "").trim();
+  const hasKv = Boolean(kvUrlVal && adminTokenVal);
+
+  // 接続テストに通るか、または既に有効な認証情報が保存されている場合は STEP 2 を利用可能にする
+  const kvConnected = (sessionStorage.getItem("onboardingKvConnected") === "true") || hasKv;
+  const kvSuccessMessage = sessionStorage.getItem("onboardingKvSuccessMessage") || (hasKv ? (isEnglish ? "✅ Connected to KV Worker" : "✅ KV Worker 接続済み") : "");
   // R2 の S3 API をブラウザから直接呼ぶため、CORS では「配信先」ではなく
   // このフロントエンドを開いている Origin を許可する。
   const r2CorsOrigins = [...new Set([frontendOrigin, "http://127.0.0.1:5173", "http://localhost:5173"])];
@@ -4908,7 +4914,7 @@ npx wrangler secret put UPLOAD_TOKEN</code></pre>
           </div>
           <div class="onboarding-input-field">
             <label>${onboarding.adminToken} <span style="color: #ef4444; font-weight: bold;">${onboarding.required}</span></label>
-            <input type="password" id="obAdminToken" placeholder="${isEnglish ? "e.g. your-secret-token" : "例: your-secret-token"}">
+            <input type="password" id="obAdminToken" placeholder="${isEnglish ? "e.g. your-secret-token" : "例: your-secret-token"}" value="${escapeHtml(adminTokenVal)}">
           </div>
           <div class="onboarding-step-action">
             <span id="obKvStatus" class="onboarding-step-status" style="color: ${kvSuccessMessage ? "#4ade80" : "#fcd34d"};">${escapeHtml(kvSuccessMessage)}</span>
