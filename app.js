@@ -2042,6 +2042,11 @@ function loadSettings() {
   if (filebaseApiKey) filebaseApiKey.value = savedFbKeyId;
   if (filebaseSecretKey) filebaseSecretKey.value = savedFbSecret;
 
+  const savedUploadProvider = localStorage.getItem("uploadProvider");
+  if (uploadProviderSelect && savedUploadProvider && ["r2", "filebase"].includes(savedUploadProvider)) {
+    uploadProviderSelect.value = savedUploadProvider;
+  }
+
   renderR2DomainSelect();
   updateFilebaseCompatibilityUi();
   updateR2Status();
@@ -2085,6 +2090,10 @@ function loadSettings() {
   const savedAdminToken = localStorage.getItem("adminApiToken") || "";
   if (adminApiToken) adminApiToken.value = savedAdminToken;
   updateAdminTokenStatusUI();
+
+  if (r2PerPageSelect) {
+    r2PerPageSelect.value = String(managedController.getPerPage());
+  }
 
   loadTemplates();
 }
@@ -2576,6 +2585,9 @@ quickDomainSelect?.addEventListener("change", (e) => {
 });
 
 uploadProviderSelect?.addEventListener("change", () => {
+  if (uploadProviderSelect.value) {
+    localStorage.setItem("uploadProvider", uploadProviderSelect.value);
+  }
   renderR2DomainSelect();
   render();
 });

@@ -91,3 +91,10 @@ test("one upload CTA and one destination selector are independent of managed vie
   const batch = app.slice(app.indexOf("async function handleBatchUpload("), app.indexOf('uploadButton?.addEventListener("click"'));
   assert.ok(batch.indexOf("requestUploadDestination(") < batch.indexOf("runConversion()"));
 });
+
+test("upload destination provider and pagination size are persisted to localStorage and restored on startup", () => {
+  assert.match(app, /localStorage\.setItem\("uploadProvider",\s*uploadProviderSelect\.value\)/);
+  assert.match(app, /const savedUploadProvider = localStorage\.getItem\("uploadProvider"\)/);
+  assert.match(app, /if \(uploadProviderSelect && savedUploadProvider && \["r2", "filebase"\]\.includes\(savedUploadProvider\)\)/);
+  assert.match(app, /if \(r2PerPageSelect\) \{\s*r2PerPageSelect\.value = String\(managedController\.getPerPage\(\)\);\s*\}/);
+});
