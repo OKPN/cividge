@@ -2412,11 +2412,6 @@ updateR2Status();
 fetchAndRenderR2Files();
 fetchAndRenderCivitaiGallery();
 
-// 📱 モバイルOS・ブラウザの自動ストレージ消去（Eviction）を防ぎ、端末内での長期保存を要求
-if (typeof navigator !== "undefined" && navigator.storage?.persist) {
-  navigator.storage.persist().catch(() => {});
-}
-
 // --- イベントリスナー: R2 設定自動保存 ---
 function saveR2SettingsAuto() {
   // 🛡️ 入力欄を操作中（フォーカス中）の消去のみ許可し、触っていない別アコーディオンの既存設定を誤削除しない

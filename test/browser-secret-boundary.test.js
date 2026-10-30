@@ -189,3 +189,10 @@ test("onboarding unlocks Step 2 and restores tokens without sessionStorage depen
   assert.match(html, /id="obAdminToken"[^>]*value="my-admin-token"/);
   assert.match(html, /KV Worker 接続済み/);
 });
+
+test("INV-NO-UNNECESSARY-PERMISSION-PROMPTS: no unsolicited permission prompts or storage.persist on startup", () => {
+  // 起動時や通常フローでブラウザの権限要求ポップアップを勝手にトリガーしてはならない
+  assert.doesNotMatch(source, /navigator\.storage(?:\?\.|\.)persist\(/);
+  assert.doesNotMatch(source, /Notification\.requestPermission\(/);
+  assert.doesNotMatch(source, /navigator\.geolocation\.getCurrentPosition\(/);
+});
