@@ -20,7 +20,7 @@ import { createWorkerClient } from "./api/worker-client.js";
 import { createFilenameTools } from "./upload/filename-policy.js";
 import { createUploadDestinationGuard } from "./ui/upload-destination.js";
 import { createStorageConnections } from "./storage/connections.js";
-import { i18nDict } from "./ui/i18n.js";
+import { i18nDict, localizeLifecycleError } from "./ui/i18n.js";
 import { insertFilenamePatternToken } from "./ui/filename-pattern-input.js";
 import { canUseCivitaiPostIntent, projectedFinalUploadMedia, detectCivitaiMediaExtension, projectCivitaiDirectUrl } from "./ui/civitai-capability.js";
 import { detectComfyMetadata } from "./media/metadata.js";
@@ -6670,7 +6670,13 @@ r2FileList?.addEventListener("click", async (e) => {
         renderCurrentStoragePage();
       }
     } catch (err) {
-      await showCustomAlert(`エラー: ${redactSecrets(err.message)}`, "❌ エラー");
+      const message = localizeLifecycleError(err.message, getAppLanguage());
+      const localizedReleaseBlock = message !== err.message;
+      const isEn = getAppLanguage() === "en";
+      await showCustomAlert(
+        localizedReleaseBlock ? message : `${isEn ? "Error" : "エラー"}: ${redactSecrets(message)}`,
+        localizedReleaseBlock ? (isEn ? "❌ Cannot release storage" : "❌ 保存先を外せません") : (isEn ? "❌ Error" : "❌ エラー"),
+      );
       target.disabled = false;
       target.textContent = origText;
     }
@@ -6892,7 +6898,13 @@ r2FileList?.addEventListener("click", async (e) => {
         renderCurrentStoragePage();
       }
     } catch (err) {
-      await showCustomAlert(`削除に失敗しました: ${redactSecrets(err.message)}`, "❌ エラー");
+      const message = localizeLifecycleError(err.message, getAppLanguage());
+      const localizedReleaseBlock = message !== err.message;
+      const isEn = getAppLanguage() === "en";
+      await showCustomAlert(
+        localizedReleaseBlock ? message : `${isEn ? "Removal failed" : "削除に失敗しました"}: ${redactSecrets(message)}`,
+        localizedReleaseBlock ? (isEn ? "❌ Cannot release storage" : "❌ 保存先を外せません") : (isEn ? "❌ Error" : "❌ エラー"),
+      );
     }
     return;
   }

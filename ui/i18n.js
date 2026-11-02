@@ -1,6 +1,7 @@
 // --- 多言語 (i18n) 辞書 ---
 export const i18nDict = {
   ja: {
+    linkedObjectNeedsAnotherPresentPlacement: "公開リンクが残っているため、この保存先は外せません。リンクを維持して外すには、先に別の保存先で保管完了を確認してください。",
     siteTitle: "Cividge",
     eyebrow: "ブラウザで変換し、自分のストレージへ直接保存・配信",
     whatIsSiteSummary: "❓ どのようなサイト？",
@@ -242,6 +243,7 @@ export const i18nDict = {
     promptEmptyNotice: "定型文の内容が空です。",
   },
   en: {
+    linkedObjectNeedsAnotherPresentPlacement: "This storage location cannot be removed while a public link remains. To keep the link available, confirm another storage location is fully stored first.",
     siteTitle: "Cividge",
     eyebrow: "Your media. Your storage. Your delivery.",
     whatIsSiteSummary: "❓ What is this site?",
@@ -515,4 +517,14 @@ export const i18nDict = {
     promptEmptyNotice: "Template content is empty.",
   }
 };
+
+const LIFECYCLE_RELEASE_BLOCKED = "A linked Object needs another PRESENT placement before source release";
+
+export function localizeLifecycleError(message, language = "ja") {
+  const normalizedLanguage = language === "en" ? "en" : "ja";
+  if (message === LIFECYCLE_RELEASE_BLOCKED) {
+    return i18nDict[normalizedLanguage].linkedObjectNeedsAnotherPresentPlacement;
+  }
+  return message;
+}
 
