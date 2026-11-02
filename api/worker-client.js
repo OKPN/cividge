@@ -59,5 +59,19 @@ async function gatewayConfigRequest(method, body) {
     return payload.config;
   }
 
-  return { lifecycleRequest, linkBindingRequest, gatewayConfigRequest };
+  async function ipfsAvailabilityRequest(cids) {
+    if (!hasAdminAccess()) throw new Error("KV Worker URLとAdmin API Tokenが必要です");
+    const worker = endpointUrl(getCustomKvWorkerUrl()).replace(/\/api\/cividge-kv\/?$/, "");
+    const token = getAdminApiToken();
+    const response = await fetch(`${worker}/api/ipfs-availability`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ cids }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(safeMessage(payload.error || `Availability check failed (${response.status})`, token));
+    return payload;
+  }
+
+  return { lifecycleRequest, linkBindingRequest, gatewayConfigRequest, ipfsAvailabilityRequest };
 }

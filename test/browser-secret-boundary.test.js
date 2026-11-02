@@ -32,9 +32,13 @@ test("actual managed renderer escapes malicious filename and keeps metadata iner
   const documentRef = { createElement: () => ({ dataset: {}, setAttribute() {}, querySelector() { return null; } }) };
   const context = {
     r2FileList: { append: card => cards.push(card), prepend() {} }, document: documentRef,
+    HIDDEN_DRIFT_LINKS_KEY: "hidden", IPFS_AVAILABILITY: {}, ipfsAvailabilityByCid: new Map(),
+    getDriftLinkIdentity: () => "", getHiddenDriftLinks: () => new Set(), isDriftCandidate: () => false,
+    classifyDriftCandidates: () => [],
+    renderDriftAvailabilityBadge: () => "",
     getAppLanguage: () => "ja", i18nDict: { ja: {} }, getVisibleManagedContents: () => [row],
     getStorageListLabels: () => new Proxy({}, { get: () => "label" }), updateStoragePaginationUI() {},
-    managedController: { visiblePage: () => [row] }, localStorage: { getItem: () => "false" },
+    managedController: { getPerPage: () => 10, getPage: () => 1, getContents: () => [row] }, localStorage: { getItem: () => "false" },
     getSelectedR2Domain: () => "https://media.example", getStoredIpfsCid: () => null, isValidIpfsCid: () => false,
     getFileStoredDomain: () => "https://media.example", getPublicDeliveryUrl: name => `https://media.example/${encodeURIComponent(name)}`,
     canUseCivitaiPostIntent: () => false, createCardDomainBadgeHtml: () => "", createCardTtlSelectHtml: () => "",

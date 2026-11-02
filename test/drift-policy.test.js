@@ -1,29 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isDriftRetired, observeDrift } from "../drift-policy.js";
+import { classifyDriftCandidates, DRIFT_AVAILABILITY } from "../drift-policy.js";
 
-test("drift policy retires only after three consecutive failures", () => {
-  const cooldown = 100;
-  let state = observeDrift(null, false, 100, cooldown);
-  assert.equal(state.count, 1);
-  assert.equal(isDriftRetired(state), false);
-  state = observeDrift(state, false, 201, cooldown);
-  assert.equal(state.count, 2);
-  assert.equal(isDriftRetired(state), false);
-  state = observeDrift(state, false, 302, cooldown);
-  assert.equal(state.count, 3);
-  assert.equal(isDriftRetired(state), true);
+test("IPFS gateway outcomes are observation labels and never retirement states", () => {
+  assert.deepEqual(Object.values(DRIFT_AVAILABILITY), ["AVAILABLE", "NOT_FOUND_FROM_CHECKED_GATEWAYS", "UNAVAILABLE"]);
+  assert.equal("RETIRED" in DRIFT_AVAILABILITY, false);
 });
 
-test("successful availability observation resets failure confidence", () => {
-  const failed = observeDrift({ count: 2, lastChecked: 100, status: "OBSERVED" }, true, 200, 100);
-  assert.equal(failed.count, 0);
-  assert.equal(failed.status, "OBSERVED");
-});
-
-test("retirement policy never emits a physical deletion authorization", () => {
-  const state = observeDrift({ count: 2, lastChecked: 100, status: "OBSERVED" }, false, 201, 100);
-  assert.equal(state.status, "RETIRED");
-  assert.equal("delete" in state, false);
-  assert.equal("release" in state, false);
+test("only objects without a managed storage observation are drift candidates", () => {
+  const cid = "Qm" + "a".repeat(44);
+  const link = "host.example:file.webp";
+  const drift = { cid, rawKey: link, isFromS3: false };
+  assert.equal(classifyDriftCandidates([drift]).length, 1);
+  assert.equal(classifyDriftCandidates([drift, { cid, rawKey: link, isFromS3: true }]).length, 0);
+  assert.equal(classifyDriftCandidates([{ ...drift, metadata: { kuboStatus: "pinned" } }]).length, 0);
+  assert.equal(classifyDriftCandidates([{ ...drift, metadata: { backend: "filebase_rpc" } }]).length, 0);
 });

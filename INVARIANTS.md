@@ -365,7 +365,7 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
      - **中南米（LATAM）**: `https://latam.orbitor.dev/ipfs`（中南米分散ノード）
      - ※`ipfs.io`, `dweb.link`, `gateway.pinata.cloud` 等の無料非認証アクセスを 429（Too Many Requests）で遮断するゲートウェイは候補から除外すること。
   2. **Kubo Pin 済み (`kuboStatus: "pinned"`)**: DHT 経由で自宅 Kubo からブロックを取り寄せる上記現役公共ゲートウェイ群を最優先にし、Filebase ゲートウェイは自宅オフライン時の最終フォールバックに配置すること（Filebase 帯域消費をゼロ化）。
-  3. **Filebase Pin 留め中 または アンピン漂流中 (`unpinned: true`)**: 最もデータ実体およびエッジキャッシュが最後まで残存している Filebase ゲートウェイ（`ipfs.filebase.io`）を最優先で問い合わせ、ダメなら公共ゲートウェイへフォールバックすること。※漂流中ファイルはエッジに 7日間キャッシュされるため Filebase 帯域への影響も極小。
+  3. **Filebase Pin 留め中またはアンピン漂流中 (`unpinned: true`)**: 配信経路は`ipfs.filebase.io`を優先した後に設定済み公共Gatewayへフォールバックする。漂流中のLinkは依然有効だが、Filebase pinやedge cacheの継続を保証しない。明示Refresh時のGateway観測は表示だけを更新し、Linkを自動削除しない。
   4. 自宅 Kubo の専用ゲートウェイ（`KUBO_GATEWAY_URL`）が設定されている場合は、最優先で問い合わせること。
 
 ---
@@ -529,4 +529,16 @@ retrieval routeとpublic IPFS network gatewayは混同しない。
   URL の末尾には、バイナリ先頭のマジックナンバー等によって確定した真の拡張子を `?.<ext>` 形式で付与しなければならない（例: `https://blobs-b2.civitai.com/file/blobs-managed-public/00SNPXBKJY5H8R7GN3K6J1TPT0?.png`）。
   - 推測や API の仮値（一律 `.jpeg`）を付与してはならない。
   - 外部 SNS（Misskey, Discord 等）でのインライン展開互換性と、HTTP 上の正当性を両立させること。
+
+### [INV-IPFS-DRIFT-IS-OBSERVATION] IPFS漂流状態の観測
+* 管理PlacementがなくてもLinkは有効なままでよい。Filebase、R2、Kuboの最後の管理Placementをユーザーが明示的に外した場合、配信はIPFSノード/Gateway上のブロック残存に依存し、永続性は保証されない。
+* 明示Refreshでは設定済みGatewayの応答を観測し、`AVAILABLE`、`NOT_FOUND_FROM_CHECKED_GATEWAYS`、`UNAVAILABLE`を区別する。Gatewayの404はIPFSネットワーク全体からの消失を証明せず、障害・timeout等は未発見として扱わない。
+* Gateway観測はLink削除、Lifecycle変更、Placement releaseを許可しない。複数回の失敗による自動退役も行わない。
+
+### [INV-MANUAL-LAST-PLACEMENT-RELEASE] 最後の管理Placementの明示解放
+* FIFO/自動容量解放は、Linkが残るObjectの最後の`PRESENT` managed Placementを解放してはならない。
+* ユーザーがその保存先を明示的に外す操作では、他の`PRESENT` managed Placementがない場合に限り、配信保証が失われる旨を確認した後、ObjectLifecycleがその解放を許可してよい。Linkは削除せず、通常のrelease claim/actuator/reportを経由する。
+
+### [INV-DRIFT-HIDE-IS-PRESENTATION-ONLY] 未発見Linkの一覧非表示
+* `NOT_FOUND_FROM_CHECKED_GATEWAYS`のLinkを一括非表示にする操作は、同一ブラウザのmanaged-list presentationだけを変更する。公開Link、KV、ObjectLifecycle、Placementには影響せず、明示操作で再表示できる。
 

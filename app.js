@@ -32,8 +32,8 @@ import {
 } from "./media-utils.js";
 import { createKuboClient } from "./kubo-client.js";
 import { createKuboPlacementApplication, KUBO_PLACEMENT_STATE } from "./kubo-placement.js";
+import { classifyDriftCandidates, DRIFT_AVAILABILITY } from "./drift-policy.js";
 import { GATEWAY_REGION_LABELS, gatewayRegionLabel, gatewayEditorSummary, normalizeGatewayEndpoint, normalizeGatewaySettings } from "./ipfs-gateway.js";
-import { isDriftRetired, observeDrift } from "./drift-policy.js";
 import { exceedsUploadLimit } from "./upload-limit.js";
 import { matchesSelectedRelayProbe } from "./relay-compat.js";
 import { canonicalFilenamePolicy, canonicalConversionMode, conversionModeToMime, isConversionModeEnabled, fetchManagedFiles } from "./view-policy.js";
@@ -247,6 +247,8 @@ const storageTabFilebase = document.querySelector("#storageTabFilebase");
 const r2FileList = document.querySelector("#r2FileList");
 const reloadR2FilesButton = document.querySelector("#reloadR2FilesButton");
 const deleteSelectedR2FilesButton = document.querySelector("#deleteSelectedR2FilesButton");
+const hideUnavailableDriftButton = document.querySelector("#hideUnavailableDriftButton");
+const showHiddenDriftButton = document.querySelector("#showHiddenDriftButton");
 const r2PaginationControls = document.querySelector("#r2PaginationControls");
 const r2PrevPageBtn = document.querySelector("#r2PrevPageBtn");
 const r2NextPageBtn = document.querySelector("#r2NextPageBtn");
@@ -346,6 +348,12 @@ function applyLanguage(lang) {
 langSelect?.addEventListener("change", (e) => {
   setAppLanguage(e.target.value);
 });
+const IPFS_AVAILABILITY = Object.freeze({ ...DRIFT_AVAILABILITY, NOT_FOUND: DRIFT_AVAILABILITY.NOT_FOUND_FROM_CHECKED_GATEWAYS });
+const ipfsAvailabilityByCid = new Map();
+let showHiddenDriftItems = false;
+const HIDDEN_DRIFT_LINKS_KEY = "cividge_hidden_drifting_links";
+// Retire the old fail-count cache: repeated gateway errors no longer hide rows.
+try { localStorage.removeItem("cividge_drift_fail_counts"); } catch { /* storage may be unavailable */ }
 
 const { isR2Configured, isFilebaseConfigured, getBucketName, getS3Client, safeDeleteS3Objects } = createStorageConnections({ r2AccountId, r2BucketName, r2AccessKeyId, r2SecretAccessKey, filebaseBucket, filebaseApiKey, filebaseSecretKey, getSelectedR2Domain });
 
@@ -654,7 +662,7 @@ async function getObjectRefForUi(provider, s3Key, cid) {
   return objectIdForManagedLink(linkKey);
 }
 
-const { lifecycleRequest, linkBindingRequest, gatewayConfigRequest } = createWorkerClient({ hasAdminAccess, getLifecycleApiEndpoint, getCustomKvWorkerUrl, getAdminApiToken });
+const { lifecycleRequest, linkBindingRequest, gatewayConfigRequest, ipfsAvailabilityRequest } = createWorkerClient({ hasAdminAccess, getLifecycleApiEndpoint, getCustomKvWorkerUrl, getAdminApiToken });
 
 // The browser can execute Filebase/Kubo capabilities, but never decides that an
 // Object is unreferenced. It claims a task authorized by the Durable Object and
@@ -707,15 +715,38 @@ async function ensureAuthoritativeKuboPin(objectRef, cid, { requestPin = true } 
   return true;
 }
 
-async function requestAuthorizedRelease(objectRef, reason, placement = null) {
+async function requestAuthorizedRelease(objectRef, reason, placement = null, { allowLastPlacementDrift = false } = {}) {
   if (!objectRef || !hasAdminAccess()) return null;
   const action = placement ? "requestPlacementRelease" : "requestRelease";
-  const result = await lifecycleRequest({ action, objectRef, reason, ...(placement ? { placement } : {}) });
+  const result = await lifecycleRequest({ action, objectRef,
+    reason: allowLastPlacementDrift ? "manual-drift" : reason,
+    ...(allowLastPlacementDrift ? { allowLastPlacementDrift: true } : {}),
+    ...(placement ? { placement } : {}) });
   if (!placement && Array.isArray(result?.lifecycle?.links) && result.lifecycle.links.length === 0) {
     void videoPreviewCache.remove(objectRef).catch(() => {});
   }
   if (result?.browserTasks?.length) await executeAuthorizedBrowserReleaseTasks(objectRef, result.browserTasks);
   return result;
+}
+
+async function requestManualPlacementRelease(objectRef, placement, linkName) {
+  try {
+    await requestAuthorizedRelease(objectRef, "manual-placement", placement);
+    return true;
+  } catch (error) {
+    if (!String(error?.message || "").includes("another PRESENT placement")) throw error;
+    const isEn = getAppLanguage() === "en";
+    const confirmed = await showCustomConfirm(
+      isEn
+        ? `No other managed storage is confirmed for '${linkName}'. Remove this last placement anyway? The public Link will remain, but delivery depends on IPFS nodes and gateways retaining the blocks. It may stop working at any time; Cividge cannot guarantee it will remain available.`
+        : `'${linkName}' には、ほかに保管完了を確認できた保存先がありません。この最後の保存先を外しますか？公開LinkとURLは残りますが、配信はIPFSノードやGatewayにブロックが残っている間だけです。いつ配信できなくなってもおかしくなく、Cividgeは保持を保証できません。`,
+      isEn ? "Release last managed copy?" : "最後の保存先を外しますか？",
+      isEn ? "Release and allow IPFS drift" : "外してIPFSへ委ねる"
+    );
+    if (!confirmed) return false;
+    await requestAuthorizedRelease(objectRef, "manual-drift", placement, { allowLastPlacementDrift: true });
+    return true;
+  }
 }
 
 async function deleteKvCid(key, expectedGeneration = null) {
@@ -4602,7 +4633,7 @@ function getStorageListLabels() {
       r2Stored: "⚡ R2: 保管中", r2StoredProtected: "⚡ R2: 保管中 (保護)", r2Removed: "⚡ R2: 未保持 (Kubo保全中)",
       r2ProtectedTooltip: "自宅Kuboに保全されるまで、誤消去を防ぐためR2実体は削除できません",
       kuboOff: "🏠 Kubo: 未設定", kuboStored: "🏠 Kubo: 保持中", kuboMissing: "🏠 Kubo: 未保持",
-      ipfsDrifting: "🌊 IPFS: 漂流中", ipfsDriftingAlive: "🌊 漂流中 (生存確認)", ipfsDriftingMiss: "⚠️ 漂流中 (応答なし {n}/3)", delete: "削除", rename: "ファイル名を変更",
+      ipfsDrifting: "🌊 IPFS: 漂流中 (未確認)", ipfsDriftingAlive: "🌊 IPFS: Gateway応答あり", ipfsDriftingMiss: "⚠️ 確認できず", ipfsDriftingNotFound: "⚠️ 確認Gatewayで未発見", delete: "削除", rename: "ファイル名を変更",
       nodeCheck: "🌐 ノード確認 ↗", workflow: "🧬 ワークフローあり", connectionError: "通信エラー:",
       neverDelete: "⏳ 削除しない（無期限）", deleteAfter: "後に削除",
     };
@@ -4615,7 +4646,7 @@ function getStorageListLabels() {
     r2Stored: "⚡ R2: Stored", r2StoredProtected: "⚡ R2: Stored (Locked)", r2Removed: "⚡ R2: Unstored (On Kubo)",
     r2ProtectedTooltip: "Cannot remove R2 object until it is pinned on your home Kubo node to prevent data loss.",
     kuboOff: "🏠 Kubo: Disabled", kuboStored: "🏠 Kubo: Pinned", kuboMissing: "🏠 Kubo: Not pinned",
-    ipfsDrifting: "🌊 IPFS: Drifting", ipfsDriftingAlive: "🌊 Drifting (Alive)", ipfsDriftingMiss: "⚠️ Drifting (Miss {n}/3)", delete: "Delete", rename: "Rename file",
+    ipfsDrifting: "🌊 IPFS: Drifting (unchecked)", ipfsDriftingAlive: "🌊 IPFS: Gateway found content", ipfsDriftingMiss: "⚠️ Check unavailable", ipfsDriftingNotFound: "⚠️ Not found on checked gateways", delete: "Delete", rename: "Rename file",
     nodeCheck: "🌐 Check nodes ↗", workflow: "🧬 Workflow found", connectionError: "Connection error:",
     neverDelete: "⏳ Keep forever", deleteAfter: "delete after",
   };
@@ -4742,7 +4773,55 @@ r2PerPageSelect?.addEventListener("change", (e) => {
 });
 
 function getVisibleManagedContents() {
-  return managedController.visible();
+  const rows = managedController.visible();
+  if (showHiddenDriftItems) return rows;
+  const hidden = getHiddenDriftLinks();
+  const driftKeys = new Set(classifyDriftCandidates(rows).map(getDriftLinkIdentity));
+  return rows.filter(item => !driftKeys.has(getDriftLinkIdentity(item)) || !hidden.has(getDriftLinkIdentity(item)));
+}
+
+function getDriftLinkIdentity(item) {
+  const cid = item?.cid || item?.contentCid || item?.metadata?.contentCid || item?.metadata?.c_cid || "";
+  const linkKey = item?.rawKey || item?.Key || "";
+  return isValidIpfsCid(cid) && linkKey ? `${cid}|${linkKey}` : "";
+}
+
+function getHiddenDriftLinks() {
+  try {
+    const value = JSON.parse(localStorage.getItem(HIDDEN_DRIFT_LINKS_KEY) || "[]");
+    return new Set(Array.isArray(value) ? value.filter(item => typeof item === "string") : []);
+  } catch { return new Set(); }
+}
+
+function saveHiddenDriftLinks(hidden) {
+  localStorage.setItem(HIDDEN_DRIFT_LINKS_KEY, JSON.stringify([...hidden]));
+}
+
+function isDriftCandidate(item) {
+  const identity = getDriftLinkIdentity(item);
+  return Boolean(identity) && classifyDriftCandidates(managedController.getContents())
+    .some(candidate => getDriftLinkIdentity(candidate) === identity);
+}
+
+function countHiddenDriftLinks() {
+  const hidden = getHiddenDriftLinks();
+  const current = new Set(classifyDriftCandidates(managedController.visible()).map(getDriftLinkIdentity));
+  return [...hidden].filter(key => current.has(key)).length;
+}
+
+function renderDriftAvailabilityBadge(item, labels, lang) {
+  const cid = item.cid || item.contentCid || item.metadata?.contentCid || item.metadata?.c_cid;
+  const status = ipfsAvailabilityByCid.get(cid);
+  const isMissing = status === IPFS_AVAILABILITY.NOT_FOUND;
+  const isFound = status === IPFS_AVAILABILITY.AVAILABLE;
+  const text = isMissing ? labels.ipfsDriftingNotFound : isFound ? labels.ipfsDriftingAlive
+    : status === IPFS_AVAILABILITY.UNAVAILABLE ? labels.ipfsDriftingMiss : labels.ipfsDrifting;
+  const color = isMissing ? "#f87171" : isFound ? "#38bdf8" : "#fbbf24";
+  const background = isMissing ? "rgba(239,68,68,.15)" : isFound ? "rgba(56,189,248,.15)" : "rgba(245,158,11,.15)";
+  const title = lang === "en"
+    ? "This is a gateway observation only; IPFS content may still exist elsewhere."
+    : "確認対象Gatewayでの観測です。IPFSネットワーク全体から消えたことを示すものではありません。";
+  return `<span class="drifting-availability-badge" data-cid="${escapeHtml(cid)}" title="${escapeHtml(title)}" style="font-size:10px;padding:2px 7px;border-radius:4px;background:${background};color:${color};border:1px solid ${color};font-weight:600;display:inline-flex;align-items:center;gap:3px;">${text}</span>`;
 }
 
 function selectManagedStorageView(view) {
@@ -5213,7 +5292,11 @@ async function fetchAndRenderR2Files({ forceRefresh = false, cleanupExpiredCivit
     renderUrlPalette();
     recalculateStorageUsage(managedController.getActiveProvider());
     renderCurrentStoragePage();
-    auditDriftingFiles(managedController.getContents());
+    await auditDriftingFiles(managedController.getContents(), fetchGeneration);
+    if (managedController.isCurrentObservation(fetchGeneration)) {
+      renderCurrentStoragePage();
+      updateSelectedR2ActionButtonsState();
+    }
   } catch (error) {
     if (!managedController.isCurrentObservation(fetchGeneration)) return;
     managedController.finishObservation(fetchGeneration);
@@ -5599,9 +5682,6 @@ async function fetchManagedProviderContents(requestedProvider, canonicalKvFiles,
     // 一覧画面を開いただけで勝手にアンピン＆KV書き込み連打が走る副作用の密輸を根絶。
     // FIFO による容量解放はアップロード時（uploadFiles）の容量不足判定時のみ実行する。
 
-    const driftRetention = getDriftFailCounts();
-    contents = contents.filter(item => !isDriftRetired(driftRetention[item.rawKey || item.Key]));
-
     // （※ 自宅 Kubo 遅延マイグレーションは一覧描画後に実行します）
 
     if (!managedController.isCurrentObservation(fetchGeneration)) return [];
@@ -5777,8 +5857,14 @@ function renderCurrentStoragePage() {
     return;
   }
 
-  // 表示件数に合わせてスライス
-  const pageItems = managedController.visiblePage();
+  // Hidden drift rows are a presentation filter, so pagination must slice the
+  // same filtered snapshot used for the count. visiblePage() would paginate
+  // the unfiltered controller rows and could let hidden entries leak back in.
+  const perPage = managedController.getPerPage();
+  const pageItems = perPage <= 0
+    ? visibleContents
+    : visibleContents.slice((managedController.getPage() - 1) * perPage, managedController.getPage() * perPage);
+  const driftLinkIdentities = new Set(classifyDriftCandidates(managedController.getContents()).map(getDriftLinkIdentity));
 
   const isKuboAutoPin = localStorage.getItem("kuboAutoPin") !== "false";
 
@@ -5798,6 +5884,12 @@ function renderCurrentStoragePage() {
 
     const itemKey = item.rawKey || item.Key || "";
     const itemDisplayName = item.Key || "";
+    const driftIdentity = getDriftLinkIdentity({ ...item, cid: itemCid });
+    const isDriftRow = driftLinkIdentities.has(driftIdentity);
+    const isLocallyHiddenDrift = Boolean(isDriftRow && driftIdentity && getHiddenDriftLinks().has(driftIdentity));
+    const locallyHiddenBadgeHtml = isLocallyHiddenDrift
+      ? `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.12);color:#cbd5e1;border:1px solid rgba(148,163,184,.3);">${lang === "en" ? "Hidden in this browser" : "このブラウザで非表示中"}</span>`
+      : "";
 
     article.dataset.key = itemKey;
     article.dataset.displayname = itemDisplayName;
@@ -5807,6 +5899,8 @@ function renderCurrentStoragePage() {
     article.dataset.expiresat = item.expiresAt ? String(item.expiresAt) : "0";
     article.dataset.allowedhost = (item.metadata?.allowedHost || item.metadata?.d || "") || "";
     article.dataset.provider = item.storageProvider || (isFilebase ? "filebase" : "r2");
+    if (isDriftRow && driftIdentity) article.dataset.driftkey = driftIdentity;
+    if (isDriftRow && itemCid && ipfsAvailabilityByCid.has(itemCid)) article.dataset.driftstatus = ipfsAvailabilityByCid.get(itemCid);
 
     // 🌐 このファイルカード専用の固定配信ドメイン（プルダウン切り替えで絶対に釣られない）
     const rawAllowedHost = item.metadata?.allowedHost || item.metadata?.d || "";
@@ -5901,18 +5995,7 @@ function renderCurrentStoragePage() {
       }
 
       let driftingBadgeHtml = "";
-      const hasKuboRecord = isKuboPinned || item.metadata?.kuboStatus === "pinned" || item.kuboStatus === "pinned";
-      if (!isFromS3 && !isRpcPresent && !hasKuboRecord) {
-        const driftCounts = getDriftFailCounts();
-        const currentDriftCount = driftCounts[itemKey]?.count || 0;
-        const driftText = currentDriftCount > 0
-          ? labels.ipfsDriftingMiss.replace("{n}", currentDriftCount)
-          : labels.ipfsDrifting;
-        const driftBg = currentDriftCount > 0 ? "rgba(239, 68, 68, 0.15)" : "rgba(245, 158, 11, 0.15)";
-        const driftColor = currentDriftCount > 0 ? "#f87171" : "#fbbf24";
-        const driftBorder = currentDriftCount > 0 ? "rgba(239, 68, 68, 0.4)" : "rgba(245, 158, 11, 0.4)";
-        driftingBadgeHtml = `<span class="drifting-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: ${driftBg}; color: ${driftColor}; border: 1px solid ${driftBorder}; font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${driftText}</span>`;
-      }
+      if (isDriftRow) driftingBadgeHtml = renderDriftAvailabilityBadge({ ...item, cid: itemCid }, labels, lang);
 
       storageTierHtml = `
         <div style="display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap;">
@@ -5969,17 +6052,7 @@ function renderCurrentStoragePage() {
 
       let r2DriftingBadgeHtml = "";
       const hasR2KuboRecord = isKuboPinned || item.metadata?.kuboStatus === "pinned" || item.kuboStatus === "pinned";
-      if (!isFromS3 && !hasR2KuboRecord) {
-        const driftCounts = getDriftFailCounts();
-        const currentDriftCount = driftCounts[itemKey]?.count || 0;
-        const driftText = currentDriftCount > 0
-          ? labels.ipfsDriftingMiss.replace("{n}", currentDriftCount)
-          : labels.ipfsDrifting;
-        const driftBg = currentDriftCount > 0 ? "rgba(239, 68, 68, 0.15)" : "rgba(245, 158, 11, 0.15)";
-        const driftColor = currentDriftCount > 0 ? "#f87171" : "#fbbf24";
-        const driftBorder = currentDriftCount > 0 ? "rgba(239, 68, 68, 0.4)" : "rgba(245, 158, 11, 0.4)";
-        r2DriftingBadgeHtml = `<span class="drifting-badge-${escapeHtml(itemKey)}" style="font-size: 10px; padding: 2px 7px; border-radius: 4px; background: ${driftBg}; color: ${driftColor}; border: 1px solid ${driftBorder}; font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">${driftText}</span>`;
-      }
+      if (isDriftRow) r2DriftingBadgeHtml = renderDriftAvailabilityBadge({ ...item, cid: itemCid }, labels, lang);
 
       storageTierHtml = `
         <div style="display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap;">
@@ -6032,6 +6105,7 @@ function renderCurrentStoragePage() {
             ${renameBtnHtml}
             <span class="r2-wf-badge-placeholder" data-key="${escapeHtml(itemKey)}"></span>
             ${pwdBadgeHtml}
+            ${locallyHiddenBadgeHtml}
           </div>
           <div class="item-meta item-basic-meta" style="color: var(--muted); font-size: 11px; display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;">
             <span style="color: #94a3b8; font-weight: 600;">${formatBytes(item.Size || 0)}</span>
@@ -6107,120 +6181,26 @@ function renderCurrentStoragePage() {
   updateSelectedR2ActionButtonsState();
 }
 
-// --- 🌊 IPFS漂流ファイル（全アンピン）安否監査＆3ストライク自動整理ユーティリティ ---
-const DRIFT_STORAGE_KEY = "cividge_drift_fail_counts";
-const DRIFT_FAIL_COOLDOWN_MS = 60 * 60 * 1000; // 1時間（連打防止クールダウン）
-
-function getDriftFailCounts() {
-  try {
-    return JSON.parse(localStorage.getItem(DRIFT_STORAGE_KEY) || "{}");
-  } catch {
-    return {};
-  }
-}
-
-function recordDriftCheckResult(rawKey, isAlive) {
-  const counts = getDriftFailCounts();
-  const now = Date.now();
-  const next = observeDrift(counts[rawKey], isAlive, now, DRIFT_FAIL_COOLDOWN_MS);
-  if (isAlive) {
-    delete counts[rawKey];
-  } else {
-    counts[rawKey] = next;
-  }
-  localStorage.setItem(DRIFT_STORAGE_KEY, JSON.stringify(counts));
-  return { shouldRetire: isDriftRetired(next), count: next.count, skipped: Boolean(next.skipped) };
-}
-
-/**
- * 実体データをダウンロードせず、HTTP HEAD で軽量に安否確認 (4秒タイムアウト)
- * [INV-CORE-001] cache: "no-store" を外し、エッジキャッシュを優先照会（エッジ生存中はKV消費0回）
- */
-async function checkDriftSurvival(url) {
-  if (!url) return false;
-  const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), 4000);
-  try {
-    const res = await fetch(url, {
-      method: "HEAD",
-      signal: ctrl.signal,
-    });
-    clearTimeout(tid);
-    return res.ok || res.status === 206 || res.status === 304;
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * 漂流ファイル（Filebase/R2なし ＋ Kuboなし）を順次安否確認
- */
-async function auditDriftingFiles(contents) {
-  if (!contents || contents.length === 0) return;
-
-  // 漂流ファイルのみを抽出（S3実体なし ＋ Kubo実体なし）
-  const driftingItems = contents.filter(item => {
-    const isFromS3 = Boolean(item.isFromS3);
-    const hasKuboRecord = item.isKuboPinned || item.metadata?.kuboStatus === "pinned" || item.kuboStatus === "pinned";
-    return !isFromS3 && !hasKuboRecord;
-  });
-
-  if (driftingItems.length === 0) return;
-
-  const labels = getStorageListLabels();
-  const now = Date.now();
-
-  for (const item of driftingItems) {
-    const rawKey = item.rawKey || item.Key;
-    const isFilebase = item.storageProvider === "filebase";
-    const rawAllowedHost = item.metadata?.allowedHost || item.metadata?.d || "";
-    const fileDomain = getFileStoredDomain(rawKey, item.Key, rawAllowedHost).replace(/\/$/, "");
-    const publicUrl = item.publicUrl || item.proxyUrl || getPublicDeliveryUrl(item.Key, isFilebase ? "filebase" : "r2", fileDomain);
-    if (!rawKey || !publicUrl) continue;
-
-    // 🛡️ クールダウン先行ガード: 前回失敗から1時間以内なら HEAD 通信自体を完全にスキップ（通信無駄打ちゼロ）
-    const counts = getDriftFailCounts();
-    const entry = counts[rawKey];
-    if (entry && entry.count > 0 && (now - entry.lastChecked < DRIFT_FAIL_COOLDOWN_MS)) {
-      continue;
-    }
-
-    const isAlive = await checkDriftSurvival(publicUrl);
-    const result = recordDriftCheckResult(rawKey, isAlive);
-
-    const elem = [...(r2FileList?.querySelectorAll(`.result-item[data-key="${CSS.escape(rawKey)}"]`) || [])]
-      .find(card => card.dataset.provider === item.storageProvider);
-    const badge = elem?.querySelector(`.drifting-badge-${CSS.escape(rawKey)}`);
-    if (result.shouldRetire) {
-      safeConsole.warn(`🌊 漂流ファイルを3回連続の取得失敗により管理一覧から退役: ${rawKey}`);
-      removeItemsFromLocalLedger(item.storageProvider, [rawKey]);
-      if (elem) {
-        elem.style.transition = "opacity 0.4s ease, transform 0.4s ease";
-        elem.style.opacity = "0";
-        elem.style.transform = "scale(0.95)";
-        setTimeout(() => {
-          elem.remove();
-          if (r2FileList.querySelectorAll(".result-item").length === 0) {
-            const lang = getAppLanguage();
-            const dict = i18nDict[lang] || i18nDict.ja;
-            r2FileList.innerHTML = `<span class="item-meta" style="padding: 18px; color: var(--muted); display: block; text-align: center;">${escapeHtml(dict.noFilesR2)}</span>`;
-          }
-        }, 400);
+// --- 🌊 IPFS漂流ファイルの読み取り専用Gateway観測 ---
+// Availability is refreshed only from the explicit managed-list Refresh action.
+// It observes configured gateways; it never mutates Link or Placement state.
+async function auditDriftingFiles(contents, generation) {
+  if (!hasAdminAccess()) return;
+  const cids = [...new Set((contents || []).filter(isDriftCandidate).map(item =>
+    item.cid || item.contentCid || item.metadata?.contentCid || item.metadata?.c_cid
+  ).filter(isValidIpfsCid))];
+  for (let offset = 0; offset < cids.length; offset += 5) {
+    if (!managedController.isCurrentObservation(generation)) return;
+    const batch = cids.slice(offset, offset + 5);
+    try {
+      const result = await ipfsAvailabilityRequest(batch);
+      for (const cid of batch) {
+        const status = result?.results?.[cid]?.status;
+        ipfsAvailabilityByCid.set(cid, Object.values(IPFS_AVAILABILITY).includes(status) ? status : IPFS_AVAILABILITY.UNAVAILABLE);
       }
-    } else if (isAlive) {
-      if (badge) {
-        badge.textContent = labels.ipfsDriftingAlive;
-        badge.style.background = "rgba(56, 189, 248, 0.15)";
-        badge.style.color = "#38bdf8";
-        badge.style.border = "1px solid rgba(56, 189, 248, 0.4)";
-      }
-    } else {
-      if (badge) {
-        badge.textContent = labels.ipfsDriftingMiss.replace("{n}", result.count);
-        badge.style.background = "rgba(239, 68, 68, 0.15)";
-        badge.style.color = "#f87171";
-        badge.style.border = "1px solid rgba(239, 68, 68, 0.4)";
-      }
+    } catch (error) {
+      for (const cid of batch) ipfsAvailabilityByCid.set(cid, IPFS_AVAILABILITY.UNAVAILABLE);
+      safeConsole.warn("IPFS gateway availability check failed:", redactSecrets(error.message));
     }
   }
 }
@@ -6645,7 +6625,7 @@ r2FileList?.addEventListener("click", async (e) => {
     }
 
     const ok = await showCustomConfirm(
-      `自宅Kuboノードから '${key}' のPinを解除しますか？\n\n（Filebase上の保存状態やIPFS配信には影響しません）`,
+      `自宅Kuboノードから '${key}' のPinを解除しますか？\n\n他の保存先で保持中なら配信は継続できます。これが最後の保持済み保存先の場合、次の確認でIPFSへ委ねることを明示できます。`,
       "🏠 Kubo Pin解除の確認"
     );
     if (!ok) return;
@@ -6659,7 +6639,12 @@ r2FileList?.addEventListener("click", async (e) => {
       const meta = cachedItem?.metadata || cachedItem || {};
       const isR2 = meta.backend === "r2" || meta.b === "r2" || cachedItem?.backend === "r2" || rowProvider === "r2";
       const objectRef = await getObjectRefForUi(isR2 ? "r2" : "filebase", meta.s3Key || key, cid);
-      await requestAuthorizedRelease(objectRef, "manual-placement", "kubo");
+      const released = await requestManualPlacementRelease(objectRef, "kubo", key);
+      if (!released) {
+        target.disabled = false;
+        target.textContent = origText;
+        return;
+      }
       if (cachedItem) {
         addOrUpdateLocalLedgerItem(rowProvider, {
           ...cachedItem,
@@ -6855,8 +6840,8 @@ r2FileList?.addEventListener("click", async (e) => {
 
     const isEn = getAppLanguage() === "en";
     const confirmMsg = isEn
-      ? `Unpin and remove '${key}' from Filebase?\n\n・The object will be removed from Filebase storage.\n・The public URL remains active and served via IPFS / local Kubo.\n・⚠️ Note: You cannot re-store it to Filebase unless you re-upload the original file.`
-      : `ファイル '${key}' を Filebase から削除（アンピン）しますか？\n\n・Filebase から実体を削除（アンピン）します。\n・URL は維持され、IPFS/自宅Kuboから配信されます。\n・⚠️ ※元ファイルを再度アップロードするまで、Filebase への再保管は行えません。`;
+      ? `Unpin and remove '${key}' from Filebase? If another managed placement is not confirmed, Cividge will ask separately before allowing this to become IPFS drift. The public Link remains, but availability is not guaranteed after the last managed copy is released. Re-storing to Filebase requires uploading the original again.`
+      : `ファイル '${key}' を Filebase からアンピンしますか？ほかの保存先で保管完了が確認できない場合は、IPFSへ委ねてよいか別途確認します。公開Linkは残りますが、最後の管理保存先を外した後の配信は保証されません。Filebaseへ再保管するには元ファイルの再アップロードが必要です。`;
     const confirmTitle = isEn ? "☁️ Unpin from Filebase" : "☁️ Filebase 削除の確認";
     const ok = await showCustomConfirm(confirmMsg, confirmTitle);
     if (!ok) return;
@@ -6884,7 +6869,8 @@ r2FileList?.addEventListener("click", async (e) => {
 
       if (key && cid) {
         // Only the authority can grant the Filebase actuator task.
-        await requestAuthorizedRelease(objectRef, "manual-placement", "filebase");
+        const released = await requestManualPlacementRelease(objectRef, "filebase", key);
+        if (!released) return;
       }
 
       // 🚀 [INV-CORE-005] Local-First 原則: 手元台帳の該当アイテムを更新し即座に再描画
@@ -6924,7 +6910,8 @@ r2FileList?.addEventListener("click", async (e) => {
     if (!ok) return;
 
     try {
-      await requestAuthorizedRelease(await getObjectRefForUi("r2", s3Key, cid), "manual-placement", "r2");
+      const released = await requestManualPlacementRelease(await getObjectRefForUi("r2", s3Key, cid), "r2", key);
+      if (!released) return;
 
       // ローカルハッシュキャッシュをパージ
       deleteR2Hash(s3Key);
@@ -6994,7 +6981,58 @@ function updateSelectedR2ActionButtonsState() {
     deleteSelectedR2FilesButton.style.display = checkboxes.length > 0 ? "inline-flex" : "none";
     deleteSelectedR2FilesButton.textContent = `選択削除 (${checkboxes.length})`;
   }
+  const selectedCards = [...checkboxes].map(box => box.closest(".result-item")).filter(Boolean);
+  const actionable = selectedCards.filter(card => showHiddenDriftItems
+    ? getHiddenDriftLinks().has(card.dataset.driftkey)
+    : card.dataset.driftstatus === IPFS_AVAILABILITY.NOT_FOUND && card.dataset.driftkey);
+  if (hideUnavailableDriftButton) {
+    hideUnavailableDriftButton.style.display = actionable.length ? "inline-flex" : "none";
+    hideUnavailableDriftButton.textContent = getAppLanguage() === "en"
+      ? (showHiddenDriftItems ? `Restore selected (${actionable.length})` : `Hide unavailable selected (${actionable.length})`)
+      : (showHiddenDriftItems ? `選択を表示に戻す (${actionable.length})` : `未発見の選択を一覧から非表示 (${actionable.length})`);
+  }
+  if (showHiddenDriftButton) {
+    const hiddenCount = countHiddenDriftLinks();
+    showHiddenDriftButton.style.display = hiddenCount ? "inline-flex" : "none";
+    showHiddenDriftButton.textContent = getAppLanguage() === "en"
+      ? (showHiddenDriftItems ? "Hide hidden items" : `Show hidden items (${hiddenCount})`)
+      : (showHiddenDriftItems ? "非表示項目を隠す" : `非表示項目を表示 (${hiddenCount})`);
+  }
 }
+
+hideUnavailableDriftButton?.addEventListener("click", async () => {
+  const selected = [...document.querySelectorAll(".r2-file-checkbox:checked")]
+    .map(box => box.closest(".result-item")).filter(Boolean);
+  const hidden = getHiddenDriftLinks();
+  const targets = selected.filter(card => showHiddenDriftItems
+    ? hidden.has(card.dataset.driftkey)
+    : card.dataset.driftstatus === IPFS_AVAILABILITY.NOT_FOUND && card.dataset.driftkey);
+  if (!targets.length) return;
+  const isRestore = showHiddenDriftItems;
+  if (!isRestore) {
+    const isEn = getAppLanguage() === "en";
+    const ok = await showCustomConfirm(
+      isEn
+        ? `Hide ${targets.length} selected item(s) from this browser's managed list. This does not delete the public Link, URL, or file and does not change visibility for other viewers.`
+        : `選択した ${targets.length} 件をこのブラウザの管理一覧から非表示にします。公開Linkや公開URL、ファイル自体は削除されず、他の閲覧者への公開状態も変わりません。`,
+      isEn ? "🌊 Hide from managed list" : "🌊 管理一覧から非表示",
+      isEn ? "Hide from this list" : "一覧から非表示"
+    );
+    if (!ok) return;
+  }
+  for (const card of targets) {
+    if (isRestore) hidden.delete(card.dataset.driftkey);
+    else hidden.add(card.dataset.driftkey);
+  }
+  saveHiddenDriftLinks(hidden);
+  document.querySelectorAll(".r2-file-checkbox:checked").forEach(box => { box.checked = false; });
+  renderCurrentStoragePage();
+});
+
+showHiddenDriftButton?.addEventListener("click", () => {
+  showHiddenDriftItems = !showHiddenDriftItems;
+  renderCurrentStoragePage();
+});
 
 deleteSelectedR2FilesButton?.addEventListener("click", async () => {
   const checkboxes = Array.from(document.querySelectorAll(".r2-file-checkbox:checked"));

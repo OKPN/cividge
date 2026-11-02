@@ -1,7 +1,7 @@
 // --- 多言語 (i18n) 辞書 ---
 export const i18nDict = {
   ja: {
-    linkedObjectNeedsAnotherPresentPlacement: "公開リンクが残っているため、この保存先は外せません。リンクを維持して外すには、先に別の保存先で保管完了を確認してください。",
+    linkedObjectNeedsAnotherPresentPlacement: "公開Linkが残る間の自動解放はできません。手動で最後の保存先を外す場合は、IPFSへ委ねて配信保証を手放す確認を行ってください。",
     siteTitle: "Cividge",
     eyebrow: "ブラウザで変換し、自分のストレージへ直接保存・配信",
     whatIsSiteSummary: "❓ どのようなサイト？",
@@ -243,7 +243,7 @@ export const i18nDict = {
     promptEmptyNotice: "定型文の内容が空です。",
   },
   en: {
-    linkedObjectNeedsAnotherPresentPlacement: "This storage location cannot be removed while a public link remains. To keep the link available, confirm another storage location is fully stored first.",
+    linkedObjectNeedsAnotherPresentPlacement: "Automatic release is blocked while a public Link remains. A manual release of the last stored copy requires explicit confirmation that availability will no longer be guaranteed.",
     siteTitle: "Cividge",
     eyebrow: "Your media. Your storage. Your delivery.",
     whatIsSiteSummary: "❓ What is this site?",

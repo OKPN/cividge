@@ -1,24 +1,33 @@
-export const DRIFT_RETENTION_STATES = new Set(["OBSERVED", "RETIRED"]);
+// Deliberately contains no retry threshold or automatic retirement policy.
+// Gateway availability is an observation only; only explicit user actions can
+// hide a row in the browser or mutate its Link/Placement lifecycle.
+export const DRIFT_AVAILABILITY = Object.freeze({
+  AVAILABLE: "AVAILABLE",
+  NOT_FOUND_FROM_CHECKED_GATEWAYS: "NOT_FOUND_FROM_CHECKED_GATEWAYS",
+  UNAVAILABLE: "UNAVAILABLE",
+});
 
-// Availability is an observation. Three consecutive failures retire a Link
-// from this browser's managed list; they never authorize lifecycle or physical
-// deletion.
-export function observeDrift(previous, isAvailable, now, cooldownMs, threshold = 3) {
-  const state = previous && typeof previous === "object"
-    ? { count: Number(previous.count || 0), lastChecked: Number(previous.lastChecked || 0), status: previous.status || "OBSERVED" }
-    : { count: 0, lastChecked: 0, status: "OBSERVED" };
-
-  if (isAvailable) return { count: 0, lastChecked: now, status: "OBSERVED", reset: true };
-  if (state.count > 0 && now - state.lastChecked < cooldownMs) return { ...state, skipped: true };
-
-  const count = state.count + 1;
-  return {
-    count,
-    lastChecked: now,
-    status: count >= threshold ? "RETIRED" : "OBSERVED",
+export function classifyDriftCandidates(items) {
+  const rows = items || [];
+  const identity = item => {
+    const metadata = item?.metadata || {};
+    const cid = item?.cid || item?.contentCid || metadata.contentCid || metadata.c_cid || "";
+    const linkKey = item?.rawKey || item?.Key || "";
+    return cid && linkKey ? `${cid}|${linkKey}` : "";
   };
-}
-
-export function isDriftRetired(value) {
-  return value?.status === "RETIRED";
+  const hasPresentPlacement = item => {
+    const metadata = item?.metadata || {};
+    const rpcPresent = (metadata.backend || metadata.b) === "filebase_rpc" && !metadata.unpinned;
+    const kuboPresent = item?.isKuboPinned || item?.kuboStatus === "pinned" || metadata.kuboStatus === "pinned";
+    return Boolean(item?.isFromS3 || rpcPresent || kuboPresent);
+  };
+  const byIdentity = new Map();
+  for (const item of rows) {
+    const key = identity(item);
+    if (key && !byIdentity.has(key)) byIdentity.set(key, item);
+  }
+  return [...byIdentity.entries()].filter(([key]) => {
+    const [cid] = key.split("|");
+    return !rows.some(row => identity(row) === key && hasPresentPlacement(row)) && Boolean(cid);
+  }).map(([, item]) => item);
 }
