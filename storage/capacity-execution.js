@@ -198,6 +198,14 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
   
       const itemsToDelete = selectR2FifoCandidates(contents, totalBytes, requiredBytes, limitBytes);
       if (itemsToDelete.length === 0) return;
+
+      // Kubo 自動 Pin がオフの場合、解放候補があっても保全先が無いため
+      // 解放しない (保全なし解放をしない設計)。以前は無言で全件 skip され
+      // 「FIFO が効かない理由が分からない」状態だったため、明示的に警告する。
+      if (!isKuboAutoPinR2) {
+        safeConsole.warn(`⚠️ R2 FIFO: 容量解放の候補が ${itemsToDelete.length} 件ありますが、Kubo 自動 Pin (kuboAutoPinR2) がオフのため解放を保留しました。Kubo 保全なしでは解放しません。解放するには Kubo 自動 Pin を有効にしてください。`);
+        return;
+      }
   
       // 🚀 [INV-CORE-005] 手元台帳キャッシュから参照（kv.list 全件走査ゼロ化）
       const kvFiles = (getManagedContents() && getManagedContents().length > 0)
