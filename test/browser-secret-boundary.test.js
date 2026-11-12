@@ -166,9 +166,10 @@ test("CSP and current markup have no inline executable script or credential-bear
 test("onboarding unlocks Step 2 and restores tokens without sessionStorage dependency", () => {
   const renderer = source.slice(source.indexOf("function renderStorageOnboardingCard()"), source.indexOf("async function fetchAndRenderR2Files"));
   let html = "";
+  const inputs = {};
   const context = {
     r2FileList: { set innerHTML(val) { html = val; }, addEventListener: () => {} },
-    document: { querySelector: () => null },
+    document: { querySelector: sel => (inputs[sel] ??= { value: "", addEventListener: () => {} }) },
     managedController: { getActiveProvider: () => "r2" },
     getAppLanguage: () => "ja",
     getSelectedR2Domain: () => "https://media.example",
@@ -189,8 +190,11 @@ test("onboarding unlocks Step 2 and restores tokens without sessionStorage depen
   // STEP 2 must NOT be disabled even when sessionStorage is empty
   assert.match(html, /<fieldset id="obStorageStep"\s+style=/);
   assert.doesNotMatch(html, /<fieldset id="obStorageStep"\s+disabled/);
-  // Admin token must be prefilled from localStorage
-  assert.match(html, /id="obAdminToken"[^>]*value="my-admin-token"/);
+  // Admin token must be restored via the .value property only; it must
+  // never be serialized into the HTML as a value attribute (audit rule).
+  assert.doesNotMatch(html, /id="obAdminToken"[^>]*value=/);
+  assert.doesNotMatch(html, /my-admin-token/);
+  assert.equal(inputs["#obAdminToken"]?.value, "my-admin-token");
   assert.match(html, /KV Worker 接続済み/);
 });
 

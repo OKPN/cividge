@@ -5000,7 +5000,7 @@ npx wrangler secret put UPLOAD_TOKEN</code></pre>
           </div>
           <div class="onboarding-input-field">
             <label>${onboarding.adminToken} <span style="color: #ef4444; font-weight: bold;">${onboarding.required}</span></label>
-            <input type="password" id="obAdminToken" placeholder="${isEnglish ? "e.g. your-secret-token" : "例: your-secret-token"}" value="${escapeHtml(adminTokenVal)}">
+            <input type="password" id="obAdminToken" placeholder="${isEnglish ? "e.g. your-secret-token" : "例: your-secret-token"}">
           </div>
           <div class="onboarding-step-action">
             <span id="obKvStatus" class="onboarding-step-status" style="color: ${kvSuccessMessage ? "#4ade80" : "#fcd34d"};">${escapeHtml(kvSuccessMessage)}</span>
@@ -6758,7 +6758,7 @@ r2FileList?.addEventListener("click", async (e) => {
         } else {
           renderCurrentStoragePage();
         }
-        await showCustomAlert(`✅ 自宅 Kubo ノードへの実体保存と Pin 留めに成功しました！\n\nCID: ${realCid || addRes.cid}`, "🎉 保全完了");
+        await showCustomAlert(`✅ 自宅 Kubo ノードへの実体保存と Pin 留めに成功しました！\n\nCID: ${realCid || (isValidIpfsCid(cid) ? cid : "（不明）")}`, "🎉 保全完了");
       } catch (err) {
         await showCustomAlert(`エラー: ${redactSecrets(err.message)}`, "❌ エラー");
         target.disabled = false;
