@@ -146,132 +146,25 @@ export function createUploadOrchestrator({ getS3Client, getBucketName, hasAdminA
         }
       }
   
-      if (!managedPlan && isFilebase) {
+      if (!managedPlan) {
+        // 非管理者経路では重複実体の別名 Link を作れない (管理者は上の
+        // managed 経路で重複排除される)。かつてここには「スマート
+        // エイリアス」の成功経路があったが、管理者では managedPlan が
+        // 必ず非 null、非管理者では重複検出後に例外で終わるため到達不能
+        // だった (2026-11-12 レビューで撤去)。検出と明示エラーだけを行う。
         calculatedCid = await calculateFilebaseCid(uploadBytes);
         if (calculatedCid) {
-          const duplicate = await findFilebaseObjectByCid(s3, bucketName, calculatedCid);
+          const duplicate = isFilebase
+            ? await findFilebaseObjectByCid(s3, bucketName, calculatedCid)
+            : await findR2ObjectByHash(s3, bucketName, calculatedCid, uploadBytes.length);
           if (duplicate) {
-            if (!hasAdminAccess()) {
-              throw new Error("同一CIDのファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
-            }
-  
-            const baseDomain = deliveryDomain.replace(/\/$/, "");
-            result.isUploaded = true;
-            result.uploadedProvider = "filebase";
-            result.storageKey = duplicate.key;
-            result.duplicateOf = duplicate.key;
-            result.ipfsCid = duplicate.cid;
-            result.mime = contentType;
-            result.password = password;
-            result.hasPassword = Boolean(password);
-            result.ttl = ttlSeconds;
-            result.expiresAt = expiresAt;
-            result.civitaiTemporary = civitaiTemporary;
-  
-            // [INV-CORE-006] 新名 -> 既存のS3実体キー、という別名マッピングを作る。旧URLは維持される。
-            const kvKey = buildKvKey(baseDomain, result.name);
-            await registerKvCid(
-              kvKey,
-              duplicate.cid,
-              uploadBytes.length,
-              contentType,
-              duplicate.key,
-              password,
-              null,
-              ttlSeconds,
-              expiresAt,
-              false,
-              null,
-              baseDomain,
-              true,
-              imageDimensions?.width,
-              imageDimensions?.height,
-              civitaiTemporary,
-              null,
-              "filebase",
-               { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
-            );
-            if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
-            storeIpfsCid(kvKey, duplicate.cid);
-            storeIpfsCid(result.name, duplicate.cid);
-            storeIpfsCid(duplicate.key, duplicate.cid);
-            result.proxyUrl = getSelectedDeliveryUrl(result);
-            result.kvKey = kvKey;
-            setFileStoredDomain(kvKey, baseDomain);
-            onPublicUrl(result.name, result.proxyUrl);
-            queueVideoThumbnail(uploadBlob, result.name, objectId);
-            recordWorkflowForResult();
-  
-            return true;
-          }
-        }
-      } else if (!managedPlan) {
-        // ⚡ R2 IPFS UnixFS CID 重複検査:
-        // Filebase と同一の UnixFS CID を計算し、同一 CID の既存実体があれば PutObject をスキップしてスマートエイリアス化
-        calculatedCid = await calculateFilebaseCid(uploadBytes);
-        if (calculatedCid) {
-          const duplicate = await findR2ObjectByHash(s3, bucketName, calculatedCid, uploadBytes.length);
-          if (duplicate) {
-            if (!hasAdminAccess()) {
-              throw new Error("同一内容のファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
-            }
-  
-            const baseDomain = deliveryDomain.replace(/\/$/, "");
-            result.isUploaded = true;
-            result.uploadedProvider = "r2";
-            result.storageKey = duplicate.key;
-            result.duplicateOf = duplicate.key;
-            result.ipfsCid = calculatedCid;
-            result.mime = contentType;
-            result.password = password;
-            result.hasPassword = Boolean(password);
-            result.ttl = ttlSeconds;
-            result.expiresAt = expiresAt;
-            result.civitaiTemporary = civitaiTemporary;
-  
-            // [INV-CORE-006] 新名 -> 既存の R2 実体キー、という別名マッピングを登録（R2 容量を消費しない）
-            const kvKey = buildKvKey(baseDomain, result.name);
-            await registerKvCid(
-              kvKey,
-              calculatedCid,
-              uploadBytes.length,
-              contentType,
-              duplicate.key,
-              password,
-              null,
-              ttlSeconds,
-              expiresAt,
-              false,
-              null,
-              baseDomain,
-              true,
-              imageDimensions?.width,
-              imageDimensions?.height,
-              civitaiTemporary,
-              calculatedCid,
-              "r2",
-               { confirmPlacementPresent: true, cachePolicy, objectId, bucket: bucketName }
-            );
-            if (civitaiTemporary) markCivitaiTemporaryTransfer(targetProvider, result.name, expiresAt);
-            storeR2Hash(kvKey, calculatedCid);
-            storeR2Hash(result.name, calculatedCid);
-            storeR2Hash(duplicate.key, calculatedCid);
-            storeIpfsCid(kvKey, calculatedCid);
-            storeIpfsCid(result.name, calculatedCid);
-            storeIpfsCid(duplicate.key, calculatedCid);
-            result.proxyUrl = `${baseDomain}/${encodeURIComponent(result.name)}`;
-            result.kvKey = kvKey;
-            setFileStoredDomain(kvKey, baseDomain);
-            onPublicUrl(result.name, result.proxyUrl);
-            queueVideoThumbnail(uploadBlob, result.name, objectId);
-            recordWorkflowForResult();
-  
-            safeConsole.log(`⚡ R2 重複排除（UnixFS CID照合: ${calculatedCid}）: 既存実体「${duplicate.key}」を検知したため PutObject をスキップしスマートエイリアスを作成しました。`);
-            return true;
+            throw new Error(isFilebase
+              ? "同一CIDのファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。"
+              : "同一内容のファイルを検出しました。別名URLの作成にはKV Worker URLとAdmin API Tokenの設定が必要です。");
           }
         }
       }
-  
+
       // 🪐 Filebase (IPFS): 容量上限に近づいている場合、最も古い実体を自動アンピン (FIFO)
       if (isFilebase) {
         await ensureStorageCapacityFilebase(s3, bucketName, uploadBytes.length);
