@@ -2,6 +2,55 @@
 
 ---
 
+## 🔧 コードレビュー指摘の修正記録 (2026-11-12、実施済み・未デプロイ)
+
+### 出典と検証結果
+* 2026-11-12 に Muse が両リポジトリを通読レビューした指摘（詳細は Muse ワークスペースの `cividge-review/CODE_REVIEW.md`、P0 1件 / P1 5件 / P2 12件 / 観察 16件）への修正。優先順位は リスク × 外部露出 × 修正範囲の閉じ具合 で決定し、下記 1〜7 位と P2 群の大半を実施した。
+* **本番未デプロイ**: 修正は両リポジトリともローカル commit 済み・未 push・未デプロイ。特に 1 位のプロキシ修正は Pages へデプロイするまで本番（cividge.pages.dev）では有効にならない。本番では修正前に `GET /i/<CID>` が `Content-Type: text/html` を inline・CSP 無しで返すことを実測確認した。
+* 検証 (host01 実機): Frontend は `npm ci` 成功、テスト **118/118** 成功、production build 成功。Worker はテスト **109/109** 成功。
+
+### `functions/i/[[path]].js` IPFS プロキシの無力化 — commit `13aef71`
+* なぜ必要だったか: 無認証で任意 CID を中継するプロキシが、アプリ本体（localStorage に S3 シークレットキー・Admin Token・UPLOAD_TOKEN を保持）と同一 origin に同居し、上流 Content-Type を透過、SVG は inline、HTML は素通り、CSP 無しだった。悪意ある HTML/SVG を開かせるとアプリ origin のスクリプトとして実行され、秘密一式が読める XSS 経路になる。
+* どう直したか: 全応答に `Content-Security-Policy: default-src 'none'; sandbox` を付与（スクリプト実行と同一オリジン権限を剥奪）。Content-Type は mimeMap のメディア種別と安全な image/video/audio 種別だけを許可し、それ以外は `application/octet-stream` + attachment に倒す（上流の text/html を透過しない）。エラー応答にも CSP を付与。恒久対応としての別 origin 分離は未実施（デプロイ構成の判断が要るため）。
+
+### R2 配信の Range 対応 — Worker commit `a12828a`
+* なぜ必要だったか: R2 分岐は Range を無視し常に 200 で全量を返していた（`Accept-Ranges` の宣言のみ）。R2 上の動画/音声がシークできず、README の 206 主張とも矛盾した。
+* どう直したか: `delivery.js` に `parseBytesRange` を追加し、R2 `get` へ range を渡して 206 + `Content-Range` を返す。範囲外は head で実在確認のうえ 416。Range リクエストは全量キャッシュのヒット対象から外した（保存側は元々 200 のみ保存）。新規テスト `test/delivery-range.test.js` 5件で境界を固定。
+
+### 拡張子ホワイトリストの一本化 — Worker commit `3cd66ca`
+* なぜ必要だったか: アップロード側 ALLOWED_EXTS のアーカイブ系（zip/7z/rar/tar/gz）は配信側に無く「成功するが常時 404」のファイルが作れた。未知拡張子は黙って `.webp` に化けた。なお kv-worker README は「アーカイブ形式は origin defense のため設計としてブロック」と明記しており、配信側と README が正本、アップロード側が漂流していた。
+* どう直したか: README の設計に合わせ、アップロード側からアーカイブ系を外して配信ホワイトリストと集合を一致させた。未知・未許可の拡張子は `.webp` 化せず HTTP 400 で明示的に拒否する。拒否テストを `test/upload-auth.test.js` に追加。
+
+### Admin Token の監査・コード・テスト三者一致 — commit `9bc2343`
+* なぜ必要だったか: 監査文書は「secret を value 属性へ埋め込まない」と主張する一方、`app.js` のオンボーディングは Admin Token を innerHTML の `value` 属性に埋め込み、境界テストがそれを仕様として固定化していた。
+* どう直したか: `obAdminToken` 入力から value 属性を外し、他の秘密欄と同じく描画後の `.value` 復元のみに統一（復元ループには元々含まれていた）。境界テストを「属性に含まれないこと＋ `.value` で復元されること」の検証へ反転させた。これで監査文書の記述が実態と一致する。
+
+### purge Plan B の決着 — Worker commit `f03a2d4`
+* なぜ必要だったか: 配信バイトは `__cividge_projection=<指紋>` 付き内部キーで保存されるが、`purgeHybridCache` は指紋なしキーで delete していたため永遠に一致せず、purge できるという前提が崩れていた（ハーネスで実測再現済み）。
+* どう直したか: 方式 (b) を採用し Plan B を撤去した。Worker Cache API のエントリは KV の現行射影を観測してからでなければ到達できず、削除・再登録はフィンガープリントの変化で構造的に無効化されるため、個別 delete は不要という設計をコード内コメントに明記。公開 URL の CDN 層は Zone REST purge が引き続き best-effort で担う。あわせて到達不能だった KV 直収納（backend="kv" / blob_）の配信分岐と、受け取るだけで保存されない `dataBase64` フィールドも撤去した。
+
+### R2 FIFO の無言無効化への警告 — commit `52e56c1`
+* なぜ必要だったか: `kuboAutoPinR2=false` の組合せでは解放候補があっても解放ループが全件 skip され、ログも出ず「FIFO が効かない理由が分からない」状態だった。
+* どう直したか: 設計判断として「Kubo 保全なしでは解放しない」は維持し、この組合せで候補がある場合は保留した旨と有効化手順を明示的に警告ログへ出すようにした。テストを `test/capacity-execution.test.js` に追加。
+
+### Windows 専用依存の optional 化 — commit `43a89d4`
+* なぜ必要だったか: `@rollup/rollup-win32-x64-msvc` が通常の dependencies にあり、Linux では `npm ci` が EBADPLATFORM で失敗した（実測済み）。
+* どう直したか: `optionalDependencies` へ移動。効果は両方向で実測: Linux で `--force` 無しの `npm ci` が成功しテスト 118/118、Windows (host01) でも `npm ci`・build が従来通り成功する。
+
+### 実施分
+* `app.js` の未定義変数 `addRes`（Kubo 成功アラート）: 実バイトから算出した `realCid`（無ければ検証済み `cid`）を表示するよう修正 — commit `9bc2343`（Admin Token 修正と同じ app.js のコミットに含む）。
+* `putR2Upload` のバッファ経路の customMetadata 欠落（`contentCid` キー違い＋ `object-id` 欠落で同一性検証が必ず失敗）: 他経路と同じ形へ統一 — Worker commit `3cd66ca`。
+* `upload.js` の死んだストリーミング経路（`uploadStreamToFilebase` / `createFilebaseMultipartStream` / `streamBufferedBytes`、常時 null の `fileStream`）と、計算だけして捨てていた PBKDF2 `passwordMeta` を撤去 — Worker commit `3cd66ca`。
+* 到達不能な「スマートエイリアス」成功経路（`upload/upload-orchestrator.js`、管理者では managedPlan が必ず非 null、非管理者では重複検出後に例外終了のため到達不能を検証済み）: 検出と明示エラーだけを残し撤去 — commit `6f95dca`。
+* 未使用依存 `hono` を Worker から除去 — Worker commit `2ca21cd`。`server.js` の永遠に false な条件（`startsWith("/api/upload?")` 等）を整理 — Worker commit `3cd66ca`。期限コメントの陳腐化（delivery が削除するという旧記述）を SPEC 不変条件 8 に合わせて修正 — Worker commit `f03a2d4`。
+
+### 見送り分（理由付き）
+* KV メタデータの read-modify-write 競合（syncLifecycleProjection × 登録 POST）: KV には CAS が無く根本対策には DO 側マージ設計が要る。射影は次回同期で自己回復し、正本は DO / LinkBinding にあるため、実害は一時的な投影ずれに限ると判断し見送り。
+* IPFS ゲートウェイ failover の最悪レイテンシ（候補×GW×6秒の直列試行）: 全体デッドラインの導入は配信ホットパスの設計変更を伴うため別途検討。
+* 管理 API 経由の「報告のみで Placement RELEASED 化」: admin 信頼境界内の誤操作リスクであり、actuator 実行証明の設計判断が要るため見送り。
+* 動画プレビュー（?preview=1）の常時 no-store: 非保護 Link のプレビューをキャッシュするには射影フィンガープリント方式への統合が要るため見送り。
+
+---
 ## 🌊 IPFS漂流・最後の保存先解放の現行仕様 (2026-11-03)
 
 ### 決定事項
