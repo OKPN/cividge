@@ -1,5 +1,14 @@
 // functions/i/[[path]].js
 // Cloudflare Pages Function: IPFS ゲートウェイ中継プロキシ ＆ エッジキャッシュ配信
+//
+// セキュリティ境界 (2026-11-12): この Function はアプリ本体と同一 origin で
+// 応答するため、中継した HTML/SVG が origin のスクリプトとして実行されると
+// localStorage 内のシークレット (S3 キー / Admin Token / UPLOAD_TOKEN) が
+// 読まれてしまう。対策として全応答に CSP sandbox を付け (スクリプト実行と
+// 同一オリジン権限を剥奪する)、Content-Type は安全なメディア種別だけを
+// 許可し、それ以外は attachment として返す。
+
+const RELAY_CSP = "default-src 'none'; sandbox";
 
 export async function onRequest(context) {
   const { request, params } = context;
@@ -9,7 +18,7 @@ export async function onRequest(context) {
   if (!pathParam || (Array.isArray(pathParam) && pathParam.length === 0)) {
     return new Response("404 Not Found: Missing IPFS CID", {
       status: 404,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Content-Security-Policy": RELAY_CSP },
     });
   }
 
@@ -20,7 +29,7 @@ export async function onRequest(context) {
   if (!cid || cid.length < 10) {
     return new Response("400 Bad Request: Invalid IPFS CID", {
       status: 400,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Content-Security-Policy": RELAY_CSP },
     });
   }
 
@@ -107,7 +116,7 @@ export async function onRequest(context) {
   if (!upstreamResponse) {
     return new Response("504 Gateway Timeout: IPFS network did not respond", {
       status: 504,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Content-Security-Policy": RELAY_CSP },
     });
   }
 
@@ -117,10 +126,26 @@ export async function onRequest(context) {
   headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
   headers.set("Content-Disposition", disposition);
   headers.set("X-Content-Type-Options", "nosniff");
+  // 同一オリジン権限の剥奪: 直接開かれてもスクリプトは動かず、
+  // アプリ origin の localStorage には到達できない。
+  headers.set("Content-Security-Policy", RELAY_CSP);
 
-  // MIME タイプの自動補正
+  // MIME タイプの自動補正と Content-Type の許可制:
+  // mimeMap に無い拡張子では上流の Content-Type を透過しない
+  // (text/html 等が inline で返ると XSS 経路になるため)。
   if (mimeMap[ext]) {
     headers.set("Content-Type", mimeMap[ext]);
+  } else {
+    const upstreamType = (upstreamResponse.headers.get("Content-Type") || "")
+      .split(";")[0].trim().toLowerCase();
+    const isSafeMediaType =
+      (upstreamType.startsWith("image/") && upstreamType !== "image/svg+xml") ||
+      upstreamType.startsWith("video/") ||
+      upstreamType.startsWith("audio/");
+    if (!isSafeMediaType) {
+      headers.set("Content-Type", "application/octet-stream");
+      headers.set("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+    }
   }
 
   // 成功時は長期キャッシュ（IPFS のコンテンツはイミュータブルで中身が変わらないため immutable 設定）
