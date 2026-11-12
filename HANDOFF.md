@@ -2,11 +2,11 @@
 
 ---
 
-## 🔧 コードレビュー指摘の修正記録 (2026-11-12、実施済み・未デプロイ)
+## 🔧 コードレビュー指摘の修正記録 (2026-11-12、実施・デプロイ済み)
 
 ### 出典と検証結果
 * 2026-11-12 に Muse が両リポジトリを通読レビューした指摘（詳細は Muse ワークスペースの `cividge-review/CODE_REVIEW.md`、P0 1件 / P1 5件 / P2 12件 / 観察 16件）への修正。優先順位は リスク × 外部露出 × 修正範囲の閉じ具合 で決定し、下記 1〜7 位と P2 群の大半を実施した。
-* **本番未デプロイ**: 修正は両リポジトリともローカル commit 済み・未 push・未デプロイ。特に 1 位のプロキシ修正は Pages へデプロイするまで本番（cividge.pages.dev）では有効にならない。本番では修正前に `GET /i/<CID>` が `Content-Type: text/html` を inline・CSP 無しで返すことを実測確認した。
+* **デプロイ済み (2026-11-12)**: Worker は Version ID `5f4dee05-fbc7-4b87-b891-1e48a61e8a00`、Pages は deployment `https://82655e0e.cividge.pages.dev`（本番 cividge.pages.dev へ反映）。本番確認: 修正前に `text/html` を inline・CSP 無しで返した CID が、修正後は CSP sandbox + `application/octet-stream` + attachment で返ること、トップページ 200、リレー経由 mp4 への Range リクエストが 206（100 バイト）で返ることを実測した。Git リモートへの push は未実施。
 * 検証 (host01 実機): Frontend は `npm ci` 成功、テスト **118/118** 成功、production build 成功。Worker はテスト **109/109** 成功。
 
 ### `functions/i/[[path]].js` IPFS プロキシの無力化 — commit `13aef71`
