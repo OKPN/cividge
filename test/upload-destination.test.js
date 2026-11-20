@@ -96,10 +96,12 @@ test("PC compact command bar and top-right settings drawer preserve full-width f
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   assert.match(html, /class="command-bar-grid"/);
+  assert.match(html, /class="execution-bar"/);
   assert.match(html, /id="openSettingsDrawerButton"/);
   assert.match(html, /id="settingsDrawerBackdrop"[\s\S]*?id="settingsDrawer"[\s\S]*?id="desktopSettingsSlot"[\s\S]*?id="allSettingsAccordionsContainer"/);
   assert.match(html, /class="panel r2-files-panel"[\s\S]*?id="r2FileList"/);
-  assert.match(css, /\.command-bar-grid\s*\{[^}]*repeat\(3/);
+  assert.match(css, /\.command-bar-grid\s*\{[^}]*grid-template-columns:/);
+  assert.match(css, /\.execution-bar\s*\{/);
   assert.match(css, /\.settings-drawer\s*\{/);
 });
 
