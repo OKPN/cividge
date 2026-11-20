@@ -36,7 +36,16 @@
             <p class="eyebrow" data-i18n="eyebrow">ブラウザで変換し、自分のストレージへ直接保存・配信</p>
             <h1 data-i18n="siteTitle">Cividge</h1>
           </div>
-          <div class="topbar-actions" style="display: flex; gap: 8px; align-items: center;">
+          <div class="topbar-actions" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <div class="topbar-status-pills" aria-label="接続ステータス">
+              <button type="button" class="status-pill" id="statusPillKv" title="KV 配信・管理 Worker"><span class="status-dot"></span>KV</button>
+              <button type="button" class="status-pill" id="statusPillR2" title="Cloudflare R2"><span class="status-dot"></span>R2</button>
+              <button type="button" class="status-pill" id="statusPillFilebase" title="Filebase (IPFS)"><span class="status-dot"></span>Filebase</button>
+              <button type="button" class="status-pill" id="statusPillKubo" title="自宅 Kubo"><span class="status-dot"></span>Kubo</button>
+            </div>
+            <button class="ghost-button settings-drawer-trigger" id="openSettingsDrawerButton" type="button" title="KV / R2 / Filebase / Kubo / スマホ共有 / 外部投稿設定を開く">
+              <span>⚙️</span> <span data-i18n="openSettingsDrawer">接続・連携設定</span>
+            </button>
             <button class="ghost-button" id="topbarSyncButton" type="button" style="height: 36px; padding: 0 10px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;" title="スマホや別端末と設定・Civitaiクリエイター一覧を引き継ぐ">
               <span style="font-size: 13px;">📱</span> <span data-i18n="topbarSyncBtn">スマホ共有 / バックアップ</span>
             </button>
@@ -47,7 +56,7 @@
           </div>
         </header>
 
-        <details class="settings-accordion site-about-accordion" style="margin-bottom: 20px;">
+        <details class="settings-accordion site-about-accordion" style="margin-bottom: 0;">
           <summary style="font-size: 13px; font-weight: 600; color: #c7d2fe; cursor: pointer;" data-i18n="whatIsSiteSummary">❓ どのようなサイト？</summary>
           <div class="settings-content" style="padding: 12px 16px; font-size: 13px; color: var(--text-muted); line-height: 1.6; background: rgba(99, 102, 241, 0.06); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; margin-top: 8px;" data-i18n="whatIsSiteBody" data-i18n-html="true">
             <strong>Civitai Bridge（Cividge）</strong>は、ブラウザ内でメディアを変換し、自分の Cloudflare R2 または Filebase（IPFS）へ保存・配信する個人用アップローダです。<br>
@@ -56,6 +65,130 @@
         </details>
 
         <div class="tool-grid">
+          <aside class="panel settings-panel settings-command-bar">
+            <div class="command-bar-grid">
+              <!-- Column 1: 変換・リネーム -->
+              <div class="command-col">
+                <div class="command-col-title" data-i18n="commandColConvert">変換・リネーム</div>
+                <div class="toggle-control-group">
+                  <label class="check-label-row">
+                    <input type="checkbox" id="enableConvertCheck" checked>
+                    <span class="section-label-text" data-i18n="enableConvertLabel">画像を変換する</span>
+                  </label>
+                  <div id="convertSettingsArea" class="toggle-sub-area convert-inline-row" style="margin-top: 2px;">
+                    <label class="field">
+                      <span data-i18n="outputFormat">出力形式</span>
+                      <select id="formatSelect">
+                        <option value="passthrough" data-i18n="passthroughFormat">変換しない</option>
+                        <option value="webp" selected>WebP</option>
+                        <option value="jxl">JXL</option>
+                        <option value="jpeg">JPEG</option>
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span data-i18n="quality">品質</span>
+                      <div class="range-row">
+                        <input id="qualityRange" type="range" min="1" max="100" value="85">
+                        <output id="qualityOutput">85</output>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="toggle-control-group" style="border-top: 1px dashed var(--border); padding-top: 10px;">
+                  <label class="check-label-row">
+                    <input type="checkbox" id="enableRenameCheck">
+                    <span class="section-label-text" data-i18n="enableRenameLabel">ファイル名を変更する</span>
+                  </label>
+                  <div id="renameSettingsArea" class="toggle-sub-area" style="display: flex; flex-direction: column; gap: 6px; margin-top: 2px;">
+                    <label class="field">
+                      <span data-i18n="renameRule">ファイル名ルール</span>
+                      <div class="input-clear-wrapper">
+                        <input id="renamePattern" type="text" value="{original}" spellcheck="false" style="padding-right: 28px;">
+                        <button type="button" id="clearRenamePattern" title="入力をクリア">&times;</button>
+                      </div>
+                      <div class="pattern-helpers" style="margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap;">
+                        <button type="button" class="tag-button" data-insert="{original}" data-i18n="originalName">元ファイル名</button>
+                        <button type="button" class="tag-button" data-insert="{num:2}" data-i18n="seq01">連番 (01)</button>
+                        <button type="button" class="tag-button" data-insert="{num:3}" data-i18n="seq001">連番 (001)</button>
+                        <button type="button" class="tag-button" data-insert="{random:6}" data-i18n="random6">ランダム (6文字)</button>
+                      </div>
+                    </label>
+                    <div class="preview-chip" id="renamePreviewBox">
+                      <span style="color: var(--muted); font-size: 11px;" data-i18n="previewLabel">プレビュー:</span>
+                      <strong id="renamePreviewText" style="font-family: monospace; font-size: 12px; color: #818cf8;">sample.webp</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Column 2: 共有・保存オプション -->
+              <div class="command-col">
+                <div class="command-col-title" data-i18n="commandColShare">共有・保存オプション</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                  <label class="field" style="margin: 0;">
+                    <span style="display: flex; align-items: center; gap: 6px; height: 18px;">
+                      <span data-i18n="retentionPeriod" style="font-size: 11.5px; font-weight: 600;">⏳ 有効期間 (時限)</span>
+                    </span>
+                    <select id="tempTtlSelect" style="height: 36px; font-size: 12px;">
+                      <option value="0" selected data-i18n="ttlNever">削除しない (無期限)</option>
+                      <option value="3600" data-i18n="ttl1h">1時間 (1時間後消滅)</option>
+                      <option value="43200" data-i18n="ttl12h">12時間 (12時間後消滅)</option>
+                      <option value="86400" data-i18n="ttl1d">1日間 (24時間後消滅)</option>
+                      <option value="259200" data-i18n="ttl3d">3日間 (72時間後消滅)</option>
+                      <option value="604800" data-i18n="ttl7d">7日間 (168時間後消滅)</option>
+                    </select>
+                  </label>
+                  <label class="field" style="margin: 0;">
+                    <span style="display: flex; justify-content: space-between; align-items: center;">
+                      <span data-i18n="tempPasswordLabel">🔑 閲覧パスワード</span>
+                      <span style="color: var(--muted); font-size: 11px;" data-i18n="optionalText">(任意)</span>
+                    </span>
+                    <input id="tempPasswordInput" type="password" placeholder="合言葉を設定" data-i18n="tempPasswordPlaceholder" spellcheck="false" autocomplete="off" style="height: 36px; font-size: 12px;">
+                  </label>
+                </div>
+
+                <label class="field" style="margin: 0;">
+                  <span data-i18n="cachePolicyLabel">キャッシュポリシー</span>
+                  <select id="uploadCachePolicySelect" style="height: 36px; font-size: 12px;">
+                    <option value="BOARD" selected data-i18n="cachePolicyBoard">掲示板・一時共有（削除反映を優先）</option>
+                    <option value="PUBLISHED" data-i18n="cachePolicyPublished">ブログ・記録（edge最大7日）</option>
+                  </select>
+                  <small data-i18n="cachePolicyHint">Filebase・Kuboに保持されていない場合、公開edgeは最大1日です。ブラウザは短いキャッシュのままです。</small>
+                </label>
+
+                <details style="margin: 0; padding: 5px 8px; border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 6px; color: var(--muted); font-size: 10px; line-height: 1.4;">
+                  <summary style="cursor: pointer; color: #cbd5e1; font-weight: 600;" data-i18n="passwordIpfsNoticeSummary">IPFS のパスワード保護について</summary>
+                  <div style="margin-top: 5px;" data-i18n="passwordIpfsNotice">※ パスワードは Cividge の配信 URL を保護します。IPFS の CID を知る人は、IPFS Gateway 経由で直接取得できる場合があります。秘匿が必要なファイルは投稿しないでください。</div>
+                </details>
+
+                <div class="local-save-row">
+                  <label class="check-label-row" style="margin: 0;">
+                    <input type="checkbox" id="enableZipCheck">
+                    <span style="font-size: 12px; font-weight: 600; color: #c7d2fe;" data-i18n="zipOptionLabel">🗜️ ZIP形式でまとめて保存する</span>
+                  </label>
+                  <button class="primary-button" id="convertDownloadButton" type="button" disabled data-i18n="btnDownload">📥 ダウンロード</button>
+                </div>
+              </div>
+
+              <!-- Column 3: アップロード実行 -->
+              <div class="command-col command-col-upload">
+                <div class="command-col-title" data-i18n="commandColUpload">アップロード実行</div>
+                <div class="upload-cta-stack">
+                  <div class="upload-destination-fields">
+                  <label class="field"><span data-i18n="uploadStorageLabel">保存先</span>
+                    <select id="uploadProviderSelect"><option value="auto" data-i18n="uploadStorageAuto">自動 (動画・音声→R2 / その他→Filebase)</option><option value="r2">Cloudflare R2</option><option value="filebase">Filebase (IPFS)</option></select>
+                  </label>
+                  <label class="field"><span data-i18n="uploadDomainLabel">配信ドメイン</span>
+                    <select id="quickDomainSelect"></select>
+                  </label>
+                  </div>
+                  <button class="primary-button upload-primary-cta" id="uploadButton" type="button" disabled data-i18n="uploadAction">☁️ アップロード</button>
+                </div>
+              </div>
+            </div>
+          </aside>
+
           <section class="panel input-panel">
             <div class="panel-heading">
               <div style="display: flex; align-items: center; gap: 10px;">
@@ -82,138 +215,175 @@
             </div>
             <div class="file-list" id="fileList"></div>
           </section>
+        </div>
 
-          <aside class="panel settings-panel">
-            <div class="panel-heading">
-              <h2 data-i18n="settings">設定</h2>
+        <details class="panel settings-accordion" id="postComposerPanel" style="margin: 0;">
+          <summary data-i18n="textComposerHeading">💬 テキスト作成支援</summary>
+          <div class="settings-content" style="padding: 18px; display: flex; flex-direction: column; gap: 12px;">
+            <div class="composer-template-row" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px;">
+              <label for="templateSelect" style="font-size: 12px; color: var(--muted); white-space: nowrap;" data-i18n="templateLabel">定型文:</label>
+              <select id="templateSelect" style="flex: 1; min-width: 120px; height: 36px; border: 1px solid var(--border); border-radius: 6px; background: #17191e; color: var(--text); padding: 0 8px;">
+                <option value="">-- 定型文を選択 --</option>
+              </select>
+              <button class="ghost-button" id="saveTemplateButton" type="button" style="min-height: 36px; padding: 0 12px;" data-i18n="promptSave">定型文を保存</button>
+              <button class="ghost-button danger-button" id="deleteTemplateButton" type="button" style="min-height: 36px; padding: 0 12px; display: none;" data-i18n="promptDelete">削除</button>
+              <button class="ghost-button" id="insertUrlTagButton" type="button" style="min-height: 36px; padding: 0 12px; color: #818cf8; border-color: rgba(129, 140, 248, 0.4);" data-i18n="btnInsertUrlTag" title="本文のカーソル位置に {url} を挿入">＋ {url} を挿入</button>
             </div>
 
-            <!-- ① 画像変換設定 -->
-            <div class="settings-section">
-              <div class="toggle-control-group">
-                <label class="check-label-row">
-                  <input type="checkbox" id="enableConvertCheck" checked>
-                  <span class="section-label-text" data-i18n="enableConvertLabel">画像を変換する</span>
-                </label>
-                <div id="convertSettingsArea" class="toggle-sub-area" style="display: flex; flex-direction: column; gap: 10px; margin-top: 4px;">
-                  <label class="field">
-                    <span data-i18n="outputFormat">出力形式</span>
-                    <select id="formatSelect">
-                      <option value="passthrough" data-i18n="passthroughFormat">変換しない</option>
-                      <option value="webp" selected>WebP</option>
-                      <option value="jxl">JXL</option>
-                      <option value="jpeg">JPEG</option>
-                    </select>
-                  </label>
-
-                  <label class="field">
-                    <span data-i18n="quality">品質</span>
-                    <div class="range-row">
-                      <input id="qualityRange" type="range" min="1" max="100" value="85">
-                      <output id="qualityOutput">85</output>
-                    </div>
-                  </label>
-                </div>
+            <div class="url-inserter-palette" style="display: flex; flex-direction: column; gap: 6px;">
+              <span style="font-size: 12px; color: var(--muted);" data-i18n="paletteNote">クリックしてURLを本文（カーソル位置）に挿入:</span>
+              <div id="paletteList" style="display: flex; gap: 8px; flex-wrap: wrap; max-height: 120px; overflow-y: auto; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: #181a1f; min-height: 48px;">
+                <!-- サムネイルチップがJSで挿入される -->
               </div>
             </div>
 
-            <!-- ② ファイル名ルール -->
-            <div class="settings-section" style="border-top: 1px dashed var(--border); padding-top: 14px;">
-              <div class="toggle-control-group">
-                <label class="check-label-row">
-                  <input type="checkbox" id="enableRenameCheck">
-                  <span class="section-label-text" data-i18n="enableRenameLabel">ファイル名を変更する</span>
-                </label>
-                <div id="renameSettingsArea" class="toggle-sub-area" style="display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
-                  <label class="field">
-                    <span data-i18n="renameRule">ファイル名ルール</span>
-                    <div class="input-clear-wrapper">
-                      <input id="renamePattern" type="text" value="{original}" spellcheck="false" style="padding-right: 28px;">
-                      <button type="button" id="clearRenamePattern" title="入力をクリア">&times;</button>
-                    </div>
-                    <div class="pattern-helpers" style="margin-top: 4px; display: flex; gap: 6px; flex-wrap: wrap;">
-                      <button type="button" class="tag-button" data-insert="{original}" data-i18n="originalName">元ファイル名</button>
-                      <button type="button" class="tag-button" data-insert="{num:2}" data-i18n="seq01">連番 (01)</button>
-                      <button type="button" class="tag-button" data-insert="{num:3}" data-i18n="seq001">連番 (001)</button>
-                      <button type="button" class="tag-button" data-insert="{random:6}" data-i18n="random6">ランダム (6文字)</button>
-                    </div>
-                  </label>
-                  <div class="preview-chip" id="renamePreviewBox">
-                    <span style="color: var(--muted); font-size: 11px;" data-i18n="previewLabel">プレビュー:</span>
-                    <strong id="renamePreviewText" style="font-family: monospace; font-size: 12px; color: #818cf8;">sample.webp</strong>
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <textarea id="composerTextarea" rows="6" placeholder="ここにチャット等に投稿する文章を書きます。上の画像をクリックしてURLを挿入したり、定型文をロードできます。" data-i18n="composerPlaceholder" style="width: 100%; border: 1px solid var(--border); border-radius: 6px; background: #17191e; color: var(--text); padding: 12px; resize: vertical; font-family: inherit; font-size: 14px; outline: none;"></textarea>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+              <button class="ghost-button" id="clearComposerButton" type="button" style="min-height: 40px; flex: 1; min-width: 80px;" data-i18n="btnClear">クリア</button>
+              <button class="primary-button" id="copyComposerTextButton" type="button" style="min-height: 40px; flex: 2; margin: 0; min-width: 120px;" data-i18n="btnPromptCopy">文章をコピーする</button>
+            </div>
+          </div>
+        </details>
+
+        <section class="panel r2-files-panel">
+          <div class="panel-heading" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div class="storage-tab-group" style="display: flex; gap: 6px; align-items: center;">
+              <button type="button" class="tab-button active" id="storageTabAll" data-i18n="allStorageTab" style="font-size: 13px; font-weight: 700; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer;">すべて</button>
+              <button type="button" class="tab-button active" id="storageTabR2" style="font-size: 13px; font-weight: 700; padding: 6px 14px; border-radius: 6px; border: 1px solid #f97316; background: rgba(249, 115, 22, 0.15); color: #fb923c; cursor: pointer; transition: all 0.15s ease;">⚡ Cloudflare R2</button>
+              <button type="button" class="tab-button" id="storageTabFilebase" style="font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); color: var(--muted); cursor: pointer; transition: all 0.15s ease;">🪐 Filebase</button>
+            </div>
+            <div class="storage-usage" id="storageUsage" style="display: flex; flex-direction: column; gap: 4px; flex: 1; margin: 0 16px;">
+              <div class="storage-info-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span id="storageUsageText" style="font-weight: 500;">使用量: 0 GB / 5 GB (0%)</span>
+                  <span id="r2BillingWarningBadge" data-i18n="r2BillingWarningBadge" data-i18n-title="r2BillingWarningTooltip" style="display: inline-flex; align-items: center; gap: 3px; cursor: help; font-size: 11px; font-weight: bold; padding: 1px 6px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);" title="⚠️ R2は保存容量がアカウント内総量で10GBを超えると自動従量課金が始まります（上限キャップ機能なし）。Cividge以外の用途も含めた総量で判定されるため、課金条件を自身でも必ずご確認ください。">⚠️ 10GB課金注意</span>
+                </div>
+                <div class="storage-limit-control" style="display: flex; align-items: center; gap: 6px;">
+                  <label for="storageLimitInput" style="font-size: 12px; color: var(--muted);" data-i18n="limitLabel">上限:</label>
+                  <div style="display: inline-flex; align-items: center; gap: 4px;">
+                    <input id="storageLimitInput" type="number" min="1" max="500" step="1" value="5" style="width: 58px; height: 26px; padding: 2px 6px; font-size: 12px; font-weight: bold; text-align: right; background: #121316; color: var(--text); border: 1px solid var(--border); border-radius: 4px; outline: none;" title="上限容量を整数(GB)で直接入力">
+                    <span style="font-size: 12px; font-weight: 600; color: var(--muted);">GB</span>
                   </div>
+                  <input id="storageLimitRange" type="range" min="1" max="50" step="1" value="5" style="width: 80px; cursor: pointer;" title="スライダーで上限を調整">
                 </div>
               </div>
+              <progress id="storageUsageBar" value="0" max="100" style="width: 100%; height: 8px; border-radius: 4px; overflow: hidden; accent-color: var(--accent);"></progress>
             </div>
-
-            <!-- アクションボタン群 -->
-            <!-- セクション 1: ローカル保存 -->
-            <div class="action-buttons-group" style="border-top: 1px solid var(--border);">
-              <label class="check-label-row" style="margin-bottom: 4px;">
-                <input type="checkbox" id="enableZipCheck">
-                <span style="font-size: 12px; font-weight: 600; color: #c7d2fe;" data-i18n="zipOptionLabel">🗜️ ZIP形式でまとめて保存する</span>
+            <div class="r2-heading-actions" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+              <label id="autoFifoLabel" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none;" title="選択中ストレージの容量上限に近づいたとき、古い実体から自動で容量を解放します">
+                <input type="checkbox" id="autoFifoCheckbox" style="width: 16px; height: 16px; cursor: pointer;">
+                <span data-i18n="autoFifoLabel">📦 自動容量解放 (FIFO)</span>
               </label>
-
-              <button class="primary-button" id="convertDownloadButton" type="button" disabled data-i18n="btnDownload">📥 ダウンロード</button>
-            </div>
-
-            <!-- セクション 2: クラウドアップロード共有 (パスワード任意設定) -->
-            <div class="settings-section" style="border-top: 1px solid var(--border); padding-top: 16px;">
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 6px;">
-                <!-- 時限アップロード設定 (初期状態: 0 = 削除しない) -->
-                <label class="field" style="margin: 0;">
-                  <span style="display: flex; align-items: center; gap: 6px; height: 18px;">
-                    <span data-i18n="retentionPeriod" style="font-size: 11.5px; font-weight: 600;">⏳ 有効期間 (時限)</span>
-                  </span>
-                  <select id="tempTtlSelect" style="height: 36px; font-size: 12px;">
-                    <option value="0" selected data-i18n="ttlNever">削除しない (無期限)</option>
-                    <option value="3600" data-i18n="ttl1h">1時間 (1時間後消滅)</option>
-                    <option value="43200" data-i18n="ttl12h">12時間 (12時間後消滅)</option>
-                    <option value="86400" data-i18n="ttl1d">1日間 (24時間後消滅)</option>
-                    <option value="259200" data-i18n="ttl3d">3日間 (72時間後消滅)</option>
-                    <option value="604800" data-i18n="ttl7d">7日間 (168時間後消滅)</option>
-                  </select>
-                </label>
-
-                <!-- 閲覧パスワード -->
-                <label class="field" style="margin: 0;">
-                  <span style="display: flex; justify-content: space-between; align-items: center;">
-                    <span data-i18n="tempPasswordLabel">🔑 閲覧パスワード</span>
-                    <span style="color: var(--muted); font-size: 11px;" data-i18n="optionalText">(任意)</span>
-                  </span>
-                  <input id="tempPasswordInput" type="password" placeholder="合言葉を設定" data-i18n="tempPasswordPlaceholder" spellcheck="false" autocomplete="off" style="height: 36px; font-size: 12px;">
-                </label>
-              </div>
-
-              <label class="field" style="margin: 6px 0 8px;">
-                <span data-i18n="cachePolicyLabel">キャッシュポリシー</span>
-                <select id="uploadCachePolicySelect" style="height: 36px; font-size: 12px;">
-                  <option value="BOARD" selected data-i18n="cachePolicyBoard">掲示板・一時共有（削除反映を優先）</option>
-                  <option value="PUBLISHED" data-i18n="cachePolicyPublished">ブログ・記録（edge最大7日）</option>
+              <button class="ghost-button danger-button" id="deleteSelectedR2FilesButton" type="button" style="display: none; min-height: 34px; padding: 0 10px; font-size: 11.5px;" data-i18n="btnBatchDelete">選択削除</button>
+              <button class="ghost-button" id="hideUnavailableDriftButton" type="button" style="display: none; min-height: 34px; padding: 0 10px; font-size: 11.5px;">選択を一覧から非表示</button>
+              <button class="ghost-button" id="showHiddenDriftButton" type="button" style="display: none; min-height: 34px; padding: 0 10px; font-size: 11.5px;">非表示項目を表示</button>
+              
+              <!-- 📄 ページ送りコントロール -->
+              <div id="r2PaginationControls" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255, 255, 255, 0.04); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); height: 34px; box-sizing: border-box;">
+                <button type="button" id="r2PrevPageBtn" class="ghost-button" style="min-height: 26px; width: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; border-radius: 4px;" title="前のページ" disabled>◀</button>
+                <span id="r2PageInfo" style="font-size: 11.5px; font-weight: 600; color: var(--text); white-space: nowrap; min-width: 50px; text-align: center;">1 / 1</span>
+                <button type="button" id="r2NextPageBtn" class="ghost-button" style="min-height: 26px; width: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; border-radius: 4px;" title="次のページ" disabled>▶</button>
+                <select id="r2PerPageSelect" style="height: 26px; font-size: 11px; background: rgba(0,0,0,0.3); color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; outline: none; cursor: pointer;" title="1ページの表示件数">
+                  <option value="5">5件</option>
+                  <option value="10" selected>10件</option>
+                  <option value="20">20件</option>
+                  <option value="50">50件</option>
+                  <option value="0">すべて</option>
                 </select>
-                <small data-i18n="cachePolicyHint">Filebase・Kuboに保持されていない場合、公開edgeは最大1日です。ブラウザは短いキャッシュのままです。</small>
-              </label>
+              </div>
 
-              <details style="margin: 2px 0 0; padding: 6px 8px; border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 6px; color: var(--muted); font-size: 10px; line-height: 1.4;">
-                <summary style="cursor: pointer; color: #cbd5e1; font-weight: 600;" data-i18n="passwordIpfsNoticeSummary">IPFS のパスワード保護について</summary>
-                <div style="margin-top: 5px;" data-i18n="passwordIpfsNotice">※ パスワードは Cividge の配信 URL を保護します。IPFS の CID を知る人は、IPFS Gateway 経由で直接取得できる場合があります。秘匿が必要なファイルは投稿しないでください。</div>
-              </details>
+              <button class="ghost-button" id="reloadR2FilesButton" type="button" style="min-height: 34px; padding: 0 12px; font-size: 12px;" data-i18n="btnReload">更新</button>
+            </div>
+          </div>
+          <div class="result-list" id="r2FileList"></div>
+        </section>
 
-              <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 8px;">
-                <div class="upload-destination-fields">
-                <label class="field"><span data-i18n="uploadStorageLabel">保存先</span>
-                  <select id="uploadProviderSelect"><option value="auto" data-i18n="uploadStorageAuto">自動 (動画・音声→R2 / その他→Filebase)</option><option value="r2">Cloudflare R2</option><option value="filebase">Filebase (IPFS)</option></select>
-                </label>
-                <label class="field"><span data-i18n="uploadDomainLabel">配信ドメイン</span>
-                  <select id="quickDomainSelect"></select>
-                </label>
-                </div>
-                <button class="primary-button upload-primary-cta" id="uploadButton" type="button" disabled data-i18n="uploadAction">☁️ アップロード</button>
+        <!-- 🎨 Civitai ギャラリー (投稿作品 & クリエイターウォッチ) セクション -->
+        <section class="panel" id="civitaiPanel" style="margin-top: 20px;">
+          <div class="panel-heading civitai-panel-heading">
+            <div class="civitai-heading-title">
+              <h2 style="font-size: 15px; margin: 0; display: flex; align-items: center; gap: 6px;">
+                <span data-i18n="civitaiGalleryHeading">🎨 Civitai Gallery & Watcher</span>
+              </h2>
+              <div class="civitai-unread-badge-group">
+                <span id="civitaiNewBadge" style="display: none; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 12px; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);"></span>
+                <button class="ghost-button" id="civitaiMarkReadBtn" type="button" style="display: none; font-size: 10.5px; padding: 2px 8px; height: 24px;" data-i18n="civitaiMarkRead">✓ 既読にする</button>
               </div>
             </div>
+            <div class="civitai-heading-controls">
+              <div class="civitai-select-group">
+                <span style="font-size: 11px; color: var(--muted); white-space: nowrap;" data-i18n="civitaiUsernameLabel">👤 クリエイター:</span>
+                <select id="civitaiUserSelect" style="height: 100%; min-width: 110px; font-size: 12px; border: none; background: transparent; color: var(--text); outline: none; font-weight: 600; cursor: pointer; color-scheme: dark;">
+                </select>
+                <button class="ghost-button" id="civitaiUserAddBtn" type="button" style="padding: 2px 7px; font-size: 13px; height: 26px; min-width: 26px; line-height: 1;" title="新しいクリエイターを追加">＋</button>
+                <button class="ghost-button" id="civitaiUserDeleteBtn" type="button" style="padding: 2px 6px; font-size: 11px; height: 26px; min-width: 26px; line-height: 1; color: #f43f5e;" title="選択中のクリエイターを削除">🗑️</button>
+              </div>
+              <div class="civitai-actions-group">
+                <button class="ghost-button" id="reloadCivitaiButton" type="button" data-i18n="btnReload">🔄 更新</button>
+                <a id="civitaiProfileLink" href="https://civitai.com" target="_blank" rel="noopener noreferrer" class="ghost-button" style="text-decoration: none;" title="Civitai のプロフィールページを開く">Civitai ↗</a>
+              </div>
+            </div>
+          </div>
+          <!-- ➕ クリエイター追加用インラインフォーム -->
+          <div id="civitaiUserAddForm" style="display: none; align-items: center; gap: 8px; margin-top: 10px; padding: 10px 14px; background: rgba(56, 189, 248, 0.06); border: 1px dashed rgba(56, 189, 248, 0.35); border-radius: 6px; flex-wrap: wrap;">
+            <span style="font-size: 12px; color: #38bdf8; font-weight: 600;" data-i18n="civitaiAddCreator">➕ ウォッチするクリエイターを追加:</span>
+            <input type="text" id="civitaiUserNewInput" placeholder="Civitaiユーザー名 (例: OKPN)" style="flex: 1; min-width: 160px; height: 32px; font-size: 12px; padding: 0 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 4px; color: var(--text);">
+            <button class="primary-button" id="civitaiUserNewSaveBtn" type="button" style="margin: 0; padding: 0 14px; height: 32px; font-size: 12px;" data-i18n="btnAdd">追加</button>
+            <button class="ghost-button" id="civitaiUserNewCancelBtn" type="button" style="padding: 0 12px; height: 32px; font-size: 12px;" data-i18n="btnCancel">キャンセル</button>
+          </div>
+          <div class="result-list" id="civitaiGalleryList" style="margin-top: 12px;"></div>
+          <div id="civitaiGalleryControls" style="display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
+            <button class="ghost-button" id="civitaiLoadMoreBtn" type="button" style="display: none;" data-i18n="civitaiLoadMore">↓ 過去の投稿をさらに読み込む</button>
+          </div>
+        </section>
+ 
+        <!-- 📱 スマホ表示時専用: Civitai パネル直下に移動する設定アコーディオン配置スロット -->
+        <section class="panel mobile-settings-panel" id="mobileSettingsSlot" style="margin-top: 20px; display: none;">
+          <div class="panel-heading">
+            <h2 style="font-size: 15px; margin: 0; display: flex; align-items: center; gap: 6px;">
+              <span>⚙️ 接続・詳細設定 (KV / R2 / Filebase)</span>
+            </h2>
+          </div>
+          <div class="mobile-settings-body" style="padding: 0 18px 18px;"></div>
+        </section>
 
+        <footer class="site-footer">
+          <div class="footer-inner">
+            <div class="footer-left">
+              <span class="footer-app-name">Cividge</span>
+              <span class="license-badge">MIT License</span>
+            </div>
+            <div class="footer-center">
+              <a href="https://github.com/OKPN/cividge" target="_blank" rel="noopener noreferrer" class="footer-github-link">
+                <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" style="vertical-align: text-bottom; margin-right: 4px;"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
+                Cividge
+              </a>
+              <a href="https://github.com/OKPN/cividge-kv-worker" target="_blank" rel="noopener noreferrer" class="footer-github-link">
+                <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" style="vertical-align: text-bottom; margin-right: 4px;"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
+                cividge-kv-worker
+              </a>
+            </div>
+            <div class="footer-right">
+              <span class="signature-text">Created by <strong class="author-name">OKPN</strong></span>
+            </div>
+          </div>
+        </footer>
+      </section>
+    </main>
+
+    <!-- 接続・連携設定 スライドオーバードロワー -->
+    <div id="settingsDrawerBackdrop" class="settings-drawer-backdrop" hidden>
+      <aside id="settingsDrawer" class="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settingsDrawerTitle">
+        <div class="settings-drawer-header">
+          <h2 id="settingsDrawerTitle" data-i18n="settingsDrawerTitle">⚙️ 接続・連携設定</h2>
+          <button type="button" id="closeSettingsDrawerButton" class="ghost-button settings-drawer-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="settings-drawer-body">
             <!-- 安全な Cloudflare R2 / Filebase 接続情報アコーディオン -->
-            <div id="desktopSettingsSlot" style="padding: 0 18px 18px;">
+            <div id="desktopSettingsSlot">
               <div id="allSettingsAccordionsContainer">
                 <div id="cfSettingsContainer">
                 <div class="settings-content" style="padding: 14px 0 4px; display: flex; flex-direction: column; gap: 12px;">
@@ -582,165 +752,10 @@
               </div>
 
             </div>
-          </aside>
         </div>
+      </aside>
+    </div>
 
-        <details class="panel settings-accordion" id="postComposerPanel" style="margin: 24px 0;">
-          <summary data-i18n="textComposerHeading">💬 テキスト作成支援</summary>
-          <div class="settings-content" style="padding: 18px; display: flex; flex-direction: column; gap: 12px;">
-            <div class="composer-template-row" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px;">
-              <label for="templateSelect" style="font-size: 12px; color: var(--muted); white-space: nowrap;" data-i18n="templateLabel">定型文:</label>
-              <select id="templateSelect" style="flex: 1; min-width: 120px; height: 36px; border: 1px solid var(--border); border-radius: 6px; background: #17191e; color: var(--text); padding: 0 8px;">
-                <option value="">-- 定型文を選択 --</option>
-              </select>
-              <button class="ghost-button" id="saveTemplateButton" type="button" style="min-height: 36px; padding: 0 12px;" data-i18n="promptSave">定型文を保存</button>
-              <button class="ghost-button danger-button" id="deleteTemplateButton" type="button" style="min-height: 36px; padding: 0 12px; display: none;" data-i18n="promptDelete">削除</button>
-              <button class="ghost-button" id="insertUrlTagButton" type="button" style="min-height: 36px; padding: 0 12px; color: #818cf8; border-color: rgba(129, 140, 248, 0.4);" data-i18n="btnInsertUrlTag" title="本文のカーソル位置に {url} を挿入">＋ {url} を挿入</button>
-            </div>
-
-            <div class="url-inserter-palette" style="display: flex; flex-direction: column; gap: 6px;">
-              <span style="font-size: 12px; color: var(--muted);" data-i18n="paletteNote">クリックしてURLを本文（カーソル位置）に挿入:</span>
-              <div id="paletteList" style="display: flex; gap: 8px; flex-wrap: wrap; max-height: 120px; overflow-y: auto; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: #181a1f; min-height: 48px;">
-                <!-- サムネイルチップがJSで挿入される -->
-              </div>
-            </div>
-
-            <div style="display: flex; flex-direction: column; gap: 6px;">
-              <textarea id="composerTextarea" rows="6" placeholder="ここにチャット等に投稿する文章を書きます。上の画像をクリックしてURLを挿入したり、定型文をロードできます。" data-i18n="composerPlaceholder" style="width: 100%; border: 1px solid var(--border); border-radius: 6px; background: #17191e; color: var(--text); padding: 12px; resize: vertical; font-family: inherit; font-size: 14px; outline: none;"></textarea>
-            </div>
-
-            <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
-              <button class="ghost-button" id="clearComposerButton" type="button" style="min-height: 40px; flex: 1; min-width: 80px;" data-i18n="btnClear">クリア</button>
-              <button class="primary-button" id="copyComposerTextButton" type="button" style="min-height: 40px; flex: 2; margin: 0; min-width: 120px;" data-i18n="btnPromptCopy">文章をコピーする</button>
-            </div>
-          </div>
-        </details>
-
-        <section class="panel r2-files-panel">
-          <div class="panel-heading" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-            <div class="storage-tab-group" style="display: flex; gap: 6px; align-items: center;">
-              <button type="button" class="tab-button active" id="storageTabAll" data-i18n="allStorageTab" style="font-size: 13px; font-weight: 700; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer;">すべて</button>
-              <button type="button" class="tab-button active" id="storageTabR2" style="font-size: 13px; font-weight: 700; padding: 6px 14px; border-radius: 6px; border: 1px solid #f97316; background: rgba(249, 115, 22, 0.15); color: #fb923c; cursor: pointer; transition: all 0.15s ease;">⚡ Cloudflare R2</button>
-              <button type="button" class="tab-button" id="storageTabFilebase" style="font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.04); color: var(--muted); cursor: pointer; transition: all 0.15s ease;">🪐 Filebase</button>
-            </div>
-            <div class="storage-usage" id="storageUsage" style="display: flex; flex-direction: column; gap: 4px; flex: 1; margin: 0 16px;">
-              <div class="storage-info-row" style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
-                <div style="display: flex; align-items: center; gap: 6px;">
-                  <span id="storageUsageText" style="font-weight: 500;">使用量: 0 GB / 5 GB (0%)</span>
-                  <span id="r2BillingWarningBadge" data-i18n="r2BillingWarningBadge" data-i18n-title="r2BillingWarningTooltip" style="display: inline-flex; align-items: center; gap: 3px; cursor: help; font-size: 11px; font-weight: bold; padding: 1px 6px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);" title="⚠️ R2は保存容量がアカウント内総量で10GBを超えると自動従量課金が始まります（上限キャップ機能なし）。Cividge以外の用途も含めた総量で判定されるため、課金条件を自身でも必ずご確認ください。">⚠️ 10GB課金注意</span>
-                </div>
-                <div class="storage-limit-control" style="display: flex; align-items: center; gap: 6px;">
-                  <label for="storageLimitInput" style="font-size: 12px; color: var(--muted);" data-i18n="limitLabel">上限:</label>
-                  <div style="display: inline-flex; align-items: center; gap: 4px;">
-                    <input id="storageLimitInput" type="number" min="1" max="500" step="1" value="5" style="width: 58px; height: 26px; padding: 2px 6px; font-size: 12px; font-weight: bold; text-align: right; background: #121316; color: var(--text); border: 1px solid var(--border); border-radius: 4px; outline: none;" title="上限容量を整数(GB)で直接入力">
-                    <span style="font-size: 12px; font-weight: 600; color: var(--muted);">GB</span>
-                  </div>
-                  <input id="storageLimitRange" type="range" min="1" max="50" step="1" value="5" style="width: 80px; cursor: pointer;" title="スライダーで上限を調整">
-                </div>
-              </div>
-              <progress id="storageUsageBar" value="0" max="100" style="width: 100%; height: 8px; border-radius: 4px; overflow: hidden; accent-color: var(--accent);"></progress>
-            </div>
-            <div class="r2-heading-actions" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-              <label id="autoFifoLabel" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none;" title="選択中ストレージの容量上限に近づいたとき、古い実体から自動で容量を解放します">
-                <input type="checkbox" id="autoFifoCheckbox" style="width: 16px; height: 16px; cursor: pointer;">
-                <span data-i18n="autoFifoLabel">📦 自動容量解放 (FIFO)</span>
-              </label>
-              <button class="ghost-button danger-button" id="deleteSelectedR2FilesButton" type="button" style="display: none; min-height: 34px; padding: 0 10px; font-size: 11.5px;" data-i18n="btnBatchDelete">選択削除</button>
-              <button class="ghost-button" id="hideUnavailableDriftButton" type="button" style="display: none; min-height: 34px; padding: 0 10px; font-size: 11.5px;">選択を一覧から非表示</button>
-              <button class="ghost-button" id="showHiddenDriftButton" type="button" style="display: none; min-height: 34px; padding: 0 10px; font-size: 11.5px;">非表示項目を表示</button>
-              
-              <!-- 📄 ページ送りコントロール -->
-              <div id="r2PaginationControls" style="display: inline-flex; align-items: center; gap: 6px; background: rgba(255, 255, 255, 0.04); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); height: 34px; box-sizing: border-box;">
-                <button type="button" id="r2PrevPageBtn" class="ghost-button" style="min-height: 26px; width: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; border-radius: 4px;" title="前のページ" disabled>◀</button>
-                <span id="r2PageInfo" style="font-size: 11.5px; font-weight: 600; color: var(--text); white-space: nowrap; min-width: 50px; text-align: center;">1 / 1</span>
-                <button type="button" id="r2NextPageBtn" class="ghost-button" style="min-height: 26px; width: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; border-radius: 4px;" title="次のページ" disabled>▶</button>
-                <select id="r2PerPageSelect" style="height: 26px; font-size: 11px; background: rgba(0,0,0,0.3); color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; outline: none; cursor: pointer;" title="1ページの表示件数">
-                  <option value="5">5件</option>
-                  <option value="10" selected>10件</option>
-                  <option value="20">20件</option>
-                  <option value="50">50件</option>
-                  <option value="0">すべて</option>
-                </select>
-              </div>
-
-              <button class="ghost-button" id="reloadR2FilesButton" type="button" style="min-height: 34px; padding: 0 12px; font-size: 12px;" data-i18n="btnReload">更新</button>
-            </div>
-          </div>
-          <div class="result-list" id="r2FileList"></div>
-        </section>
-
-        <!-- 🎨 Civitai ギャラリー (投稿作品 & クリエイターウォッチ) セクション -->
-        <section class="panel" id="civitaiPanel" style="margin-top: 20px;">
-          <div class="panel-heading civitai-panel-heading">
-            <div class="civitai-heading-title">
-              <h2 style="font-size: 15px; margin: 0; display: flex; align-items: center; gap: 6px;">
-                <span data-i18n="civitaiGalleryHeading">🎨 Civitai Gallery & Watcher</span>
-              </h2>
-              <div class="civitai-unread-badge-group">
-                <span id="civitaiNewBadge" style="display: none; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 12px; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);"></span>
-                <button class="ghost-button" id="civitaiMarkReadBtn" type="button" style="display: none; font-size: 10.5px; padding: 2px 8px; height: 24px;" data-i18n="civitaiMarkRead">✓ 既読にする</button>
-              </div>
-            </div>
-            <div class="civitai-heading-controls">
-              <div class="civitai-select-group">
-                <span style="font-size: 11px; color: var(--muted); white-space: nowrap;" data-i18n="civitaiUsernameLabel">👤 クリエイター:</span>
-                <select id="civitaiUserSelect" style="height: 100%; min-width: 110px; font-size: 12px; border: none; background: transparent; color: var(--text); outline: none; font-weight: 600; cursor: pointer; color-scheme: dark;">
-                </select>
-                <button class="ghost-button" id="civitaiUserAddBtn" type="button" style="padding: 2px 7px; font-size: 13px; height: 26px; min-width: 26px; line-height: 1;" title="新しいクリエイターを追加">＋</button>
-                <button class="ghost-button" id="civitaiUserDeleteBtn" type="button" style="padding: 2px 6px; font-size: 11px; height: 26px; min-width: 26px; line-height: 1; color: #f43f5e;" title="選択中のクリエイターを削除">🗑️</button>
-              </div>
-              <div class="civitai-actions-group">
-                <button class="ghost-button" id="reloadCivitaiButton" type="button" data-i18n="btnReload">🔄 更新</button>
-                <a id="civitaiProfileLink" href="https://civitai.com" target="_blank" rel="noopener noreferrer" class="ghost-button" style="text-decoration: none;" title="Civitai のプロフィールページを開く">Civitai ↗</a>
-              </div>
-            </div>
-          </div>
-          <!-- ➕ クリエイター追加用インラインフォーム -->
-          <div id="civitaiUserAddForm" style="display: none; align-items: center; gap: 8px; margin-top: 10px; padding: 10px 14px; background: rgba(56, 189, 248, 0.06); border: 1px dashed rgba(56, 189, 248, 0.35); border-radius: 6px; flex-wrap: wrap;">
-            <span style="font-size: 12px; color: #38bdf8; font-weight: 600;" data-i18n="civitaiAddCreator">➕ ウォッチするクリエイターを追加:</span>
-            <input type="text" id="civitaiUserNewInput" placeholder="Civitaiユーザー名 (例: OKPN)" style="flex: 1; min-width: 160px; height: 32px; font-size: 12px; padding: 0 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 4px; color: var(--text);">
-            <button class="primary-button" id="civitaiUserNewSaveBtn" type="button" style="margin: 0; padding: 0 14px; height: 32px; font-size: 12px;" data-i18n="btnAdd">追加</button>
-            <button class="ghost-button" id="civitaiUserNewCancelBtn" type="button" style="padding: 0 12px; height: 32px; font-size: 12px;" data-i18n="btnCancel">キャンセル</button>
-          </div>
-          <div class="result-list" id="civitaiGalleryList" style="margin-top: 12px;"></div>
-          <div id="civitaiGalleryControls" style="display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
-            <button class="ghost-button" id="civitaiLoadMoreBtn" type="button" style="display: none;" data-i18n="civitaiLoadMore">↓ 過去の投稿をさらに読み込む</button>
-          </div>
-        </section>
- 
-        <!-- 📱 スマホ表示時専用: Civitai パネル直下に移動する設定アコーディオン配置スロット -->
-        <section class="panel mobile-settings-panel" id="mobileSettingsSlot" style="margin-top: 20px; display: none;">
-          <div class="panel-heading">
-            <h2 style="font-size: 15px; margin: 0; display: flex; align-items: center; gap: 6px;">
-              <span>⚙️ 接続・詳細設定 (KV / R2 / Filebase)</span>
-            </h2>
-          </div>
-          <div class="mobile-settings-body" style="padding: 0 18px 18px;"></div>
-        </section>
-
-        <footer class="site-footer">
-          <div class="footer-inner">
-            <div class="footer-left">
-              <span class="footer-app-name">Cividge</span>
-              <span class="license-badge">MIT License</span>
-            </div>
-            <div class="footer-center">
-              <a href="https://github.com/OKPN/cividge" target="_blank" rel="noopener noreferrer" class="footer-github-link">
-                <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" style="vertical-align: text-bottom; margin-right: 4px;"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
-                Cividge
-              </a>
-              <a href="https://github.com/OKPN/cividge-kv-worker" target="_blank" rel="noopener noreferrer" class="footer-github-link">
-                <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" style="vertical-align: text-bottom; margin-right: 4px;"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"></path></svg>
-                cividge-kv-worker
-              </a>
-            </div>
-            <div class="footer-right">
-              <span class="signature-text">Created by <strong class="author-name">OKPN</strong></span>
-            </div>
-          </div>
-        </footer>
-      </section>
-    </main>
 
     <!-- QRコード同期モーダル (最外郭・全画面オーバーレイ) -->
     <div id="qrModal" class="modal-backdrop" style="display: none;">

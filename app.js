@@ -168,6 +168,13 @@ const cfClearButton = document.querySelector("#cfClearButton");
 const cfShareQrButton = document.querySelector("#cfShareQrButton");
 const cfBackupUrlButton = document.querySelector("#cfBackupUrlButton");
 const topbarSyncButton = document.querySelector("#topbarSyncButton");
+const settingsDrawerBackdrop = document.querySelector("#settingsDrawerBackdrop");
+const openSettingsDrawerButton = document.querySelector("#openSettingsDrawerButton");
+const closeSettingsDrawerButton = document.querySelector("#closeSettingsDrawerButton");
+const statusPillKv = document.querySelector("#statusPillKv");
+const statusPillR2 = document.querySelector("#statusPillR2");
+const statusPillFilebase = document.querySelector("#statusPillFilebase");
+const statusPillKubo = document.querySelector("#statusPillKubo");
 const globalClearButton = document.querySelector("#globalClearButton");
 const providerR2 = document.querySelector("#providerR2");
 const providerFilebase = document.querySelector("#providerFilebase");
@@ -1373,6 +1380,13 @@ function updateR2Status() {
   }
 
   if (uploadButton) uploadButton.disabled = uploadUiLocked || !uploadState.getFiles().length;
+
+  const kvOk = hasAdminAccess();
+  const kuboOk = Boolean((localStorage.getItem("kuboRpcUrl") || kuboRpcUrl?.value || "").trim());
+  statusPillKv?.classList.toggle("is-connected", kvOk);
+  statusPillR2?.classList.toggle("is-connected", r2Ok);
+  statusPillFilebase?.classList.toggle("is-connected", fbOk);
+  statusPillKubo?.classList.toggle("is-connected", kuboOk);
 
   return r2Ok || fbOk;
 }
@@ -3131,6 +3145,49 @@ copyRestorationKeyButton?.addEventListener("click", async () => {
 cfShareQrButton?.addEventListener("click", openSyncQrModal);
 topbarSyncButton?.addEventListener("click", openSyncQrModal);
 
+function openSettingsDrawer(targetAccordionId = null) {
+  const isMobile = window.matchMedia?.("(max-width: 960px)")?.matches;
+  const targetAccordion = targetAccordionId ? document.getElementById(targetAccordionId) : null;
+  if (isMobile) {
+    const mobileSlot = document.getElementById("mobileSettingsSlot");
+    if (targetAccordion) {
+      for (let node = targetAccordion; node; node = node.parentElement) if (node.tagName === "DETAILS") node.open = true;
+      targetAccordion.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      mobileSlot?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    return;
+  }
+  if (!settingsDrawerBackdrop) return;
+  settingsDrawerBackdrop.hidden = false;
+  document.body.classList.add("drawer-open");
+  if (targetAccordion) {
+    for (let node = targetAccordion; node; node = node.parentElement) if (node.tagName === "DETAILS") node.open = true;
+    requestAnimationFrame(() => targetAccordion.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+  }
+}
+
+function closeSettingsDrawer() {
+  if (!settingsDrawerBackdrop) return;
+  settingsDrawerBackdrop.hidden = true;
+  document.body.classList.remove("drawer-open");
+}
+
+openSettingsDrawerButton?.addEventListener("click", () => openSettingsDrawer());
+closeSettingsDrawerButton?.addEventListener("click", closeSettingsDrawer);
+settingsDrawerBackdrop?.addEventListener("click", (e) => {
+  if (e.target === settingsDrawerBackdrop) closeSettingsDrawer();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && settingsDrawerBackdrop && !settingsDrawerBackdrop.hidden) {
+    closeSettingsDrawer();
+  }
+});
+statusPillKv?.addEventListener("click", () => openSettingsDrawer("kvSettingsAccordion"));
+statusPillR2?.addEventListener("click", () => openSettingsDrawer("r2SettingsAccordion"));
+statusPillFilebase?.addEventListener("click", () => openSettingsDrawer("filebaseSettingsAccordion"));
+statusPillKubo?.addEventListener("click", () => openSettingsDrawer("kuboSettingsAccordion"));
+
 globalClearButton?.addEventListener("click", () => {
   if (!confirm("⚠️ アプリに保存された全設定（R2接続情報、Civitaiウォッチリスト、変換設定等）を消去して初期化しますか？")) return;
   localStorage.clear();
@@ -4541,7 +4598,9 @@ const requestUploadDestination = createUploadDestinationGuard({
     const open = await showCustomConfirm(messages[issue], english ? "Upload settings required" : "アップロード設定が必要です",
       english ? "Open settings" : "設定を開く", english ? "Cancel" : "キャンセル");
     if (!open) return;
-    const accordion = document.getElementById(provider === "filebase" ? "filebaseSettingsAccordion" : "r2SettingsAccordion");
+    const accordionId = provider === "filebase" ? "filebaseSettingsAccordion" : "r2SettingsAccordion";
+    openSettingsDrawer(accordionId);
+    const accordion = document.getElementById(accordionId);
     if (!accordion) return;
     for (let node = accordion; node; node = node.parentElement) if (node.tagName === "DETAILS") node.open = true;
     accordion.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -8275,6 +8334,7 @@ function setupResponsiveSettingsLayout() {
   const mql = window.matchMedia("(max-width: 960px)");
   const updateLayout = (matches) => {
     if (matches) {
+      closeSettingsDrawer();
       if (!mobileBody.contains(settingsContainer)) {
         mobileBody.appendChild(settingsContainer);
       }
