@@ -95,6 +95,52 @@ test("one upload CTA and one destination selector are independent of managed vie
 test("upload destination provider and pagination size are persisted to localStorage and restored on startup", () => {
   assert.match(app, /localStorage\.setItem\("uploadProvider",\s*uploadProviderSelect\.value\)/);
   assert.match(app, /const savedUploadProvider = localStorage\.getItem\("uploadProvider"\)/);
-  assert.match(app, /if \(uploadProviderSelect && savedUploadProvider && \["r2", "filebase"\]\.includes\(savedUploadProvider\)\)/);
+  assert.match(app, /if \(savedUploadProvider && \["auto", "r2", "filebase"\]\.includes\(savedUploadProvider\)\)/);
   assert.match(app, /if \(r2PerPageSelect\) \{\s*r2PerPageSelect\.value = String\(managedController\.getPerPage\(\)\);\s*\}/);
+});
+
+test("auto upload provider routes video/audio to R2 and images to Filebase when both are configured", () => {
+  const resolverSrc = app.slice(app.indexOf("function resolveAutoUploadProvider("), app.indexOf("async function handleBatchUpload("));
+  const resolveAuto = runInNewContext(`(${resolverSrc.trim()})`, {
+    isR2Configured: () => true,
+    isFilebaseConfigured: () => true,
+  });
+  assert.equal(resolveAuto({ name: "clip.mp4", type: "video/mp4" }), "r2");
+  assert.equal(resolveAuto({ name: "voice.m4a", type: "audio/mp4" }), "r2");
+  assert.equal(resolveAuto({ name: "pic.webp", type: "image/webp" }), "filebase");
+
+  const r2Only = runInNewContext(`(${resolverSrc.trim()})`, {
+    isR2Configured: () => true,
+    isFilebaseConfigured: () => false,
+  });
+  assert.equal(r2Only({ name: "pic.webp", type: "image/webp" }), "r2");
+
+  const calls = [];
+  const files = [
+    { name: "clip.mp4", type: "video/mp4" },
+    { name: "pic.png", type: "image/png" },
+  ];
+  const results = [
+    { name: "clip.mp4", blob: { type: "video/mp4" } },
+    { name: "pic.webp", blob: { type: "image/webp" } },
+  ];
+  const batchSrc = app.slice(app.indexOf("async function handleBatchUpload("), app.indexOf('uploadButton?.addEventListener("click"'));
+  const runBatch = runInNewContext(`(${batchSrc.trim()})`, {
+    uploadDestinationBusy: false,
+    uploadState: { getFiles: () => files, getResults: () => results },
+    resolveAutoUploadProvider: resolveAuto,
+    requestUploadDestination: async p => ({ provider: p, domain: p === "r2" ? "https://kv.k7m.f5.si" : "https://misskey.okpn.f5.si" }),
+    runConversion: async () => true,
+    uploadImage: async (res, provider, _pw, opts) => { calls.push([res.name, provider, opts.deliveryDomain]); return true; },
+    setUiLock: () => {}, renderCurrentStoragePage: () => {},
+    document: { querySelector: () => ({ value: "" }) },
+    statusText: { textContent: "", className: "" }, progressBar: { value: 0 },
+    safeConsole: { error: assert.fail }, redactSecrets: v => v,
+  });
+  return runBatch("auto").then(() => {
+    assert.deepEqual(calls, [
+      ["clip.mp4", "r2", "https://kv.k7m.f5.si"],
+      ["pic.webp", "filebase", "https://misskey.okpn.f5.si"],
+    ]);
+  });
 });

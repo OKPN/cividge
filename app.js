@@ -1295,9 +1295,20 @@ function renderR2DomainSelect() {
   populateSelect(r2DomainSelect, r2Domains, selectedR2Domain, isEnglish ? "-- No R2 delivery domain (add with ＋) --" : "-- R2 配信ドメインが未登録です (＋から追加) --");
   populateSelect(filebaseDomainSelect, filebaseDomains, selectedFilebaseDomain, isEnglish ? "-- No Filebase delivery domain (add with ＋) --" : "-- Filebase 配信ドメインが未登録です (＋から追加) --");
   const uploadProvider = uploadProviderSelect?.value || "r2";
-  populateSelect(quickDomainSelect, uploadProvider === "filebase" ? filebaseDomains : r2Domains,
-    uploadProvider === "filebase" ? selectedFilebaseDomain : selectedR2Domain,
-    isEnglish ? "-- Configure a delivery domain --" : "-- 配信ドメインを設定してください --");
+  if (quickDomainSelect) quickDomainSelect.disabled = false;
+  if (uploadProvider === "auto") {
+    const autoDomains = [...new Set([...r2Domains, ...filebaseDomains])];
+    const savedAuto = localStorage.getItem("autoSelectedDomain") || "";
+    const selectedAuto = autoDomains.includes(savedAuto)
+      ? savedAuto
+      : (selectedR2Domain || selectedFilebaseDomain || autoDomains[0] || "");
+    populateSelect(quickDomainSelect, autoDomains, selectedAuto,
+      isEnglish ? "-- Configure a delivery domain --" : "-- 配信ドメインを設定してください --");
+  } else {
+    populateSelect(quickDomainSelect, uploadProvider === "filebase" ? filebaseDomains : r2Domains,
+      uploadProvider === "filebase" ? selectedFilebaseDomain : selectedR2Domain,
+      isEnglish ? "-- Configure a delivery domain --" : "-- 配信ドメインを設定してください --");
+  }
 
   if (r2DomainDeleteBtn) {
     r2DomainDeleteBtn.disabled = r2Domains.length === 0;
@@ -2074,8 +2085,16 @@ function loadSettings() {
   if (filebaseSecretKey) filebaseSecretKey.value = savedFbSecret;
 
   const savedUploadProvider = localStorage.getItem("uploadProvider");
-  if (uploadProviderSelect && savedUploadProvider && ["r2", "filebase"].includes(savedUploadProvider)) {
-    uploadProviderSelect.value = savedUploadProvider;
+  if (uploadProviderSelect) {
+    if (savedUploadProvider && ["auto", "r2", "filebase"].includes(savedUploadProvider)) {
+      uploadProviderSelect.value = savedUploadProvider;
+    } else if (isR2Configured() && isFilebaseConfigured()) {
+      uploadProviderSelect.value = "auto";
+    } else if (isFilebaseConfigured() && !isR2Configured()) {
+      uploadProviderSelect.value = "filebase";
+    } else {
+      uploadProviderSelect.value = "r2";
+    }
   }
 
   renderR2DomainSelect();
@@ -2606,6 +2625,14 @@ filebaseDomainSelect?.addEventListener("change", (e) => {
 
 quickDomainSelect?.addEventListener("change", (e) => {
   const provider = uploadProviderSelect?.value || "r2";
+  if (provider === "auto") {
+    const chosen = e.target.value;
+    localStorage.setItem("autoSelectedDomain", chosen);
+    if (getR2DomainList("r2").includes(chosen)) setSelectedR2Domain(chosen, "r2");
+    if (getR2DomainList("filebase").includes(chosen)) setSelectedR2Domain(chosen, "filebase");
+    renderR2DomainSelect();
+    return;
+  }
   setSelectedR2Domain(e.target.value, provider);
   renderR2DomainSelect();
 });
@@ -4085,7 +4112,9 @@ fileList?.addEventListener("click", async (event) => {
     target.textContent = "UP中...";
     try {
       setUiLock(true);
-      const destination = await requestUploadDestination(uploadProviderSelect?.value || "r2");
+      const rawProvider = uploadProviderSelect?.value || "r2";
+      const targetProvider = rawProvider === "auto" ? resolveAutoUploadProvider(file) : rawProvider;
+      const destination = await requestUploadDestination(targetProvider);
       if (!destination) return;
       setUiLock(true);
       if (!result || !isConversionCacheValid()) {
@@ -4524,16 +4553,40 @@ const requestUploadDestination = createUploadDestinationGuard({
   },
 });
 
+function resolveAutoUploadProvider(fileOrResult) {
+  const mime = String(fileOrResult?.type || fileOrResult?.blob?.type || "").toLowerCase();
+  const name = String(fileOrResult?.name || "");
+  const isStreamMedia = mime.startsWith("video/") || mime.startsWith("audio/") ||
+    /\.(mp4|webm|mov|m4v|avi|ogv|mp3|wav|ogg|m4a|flac|aac)$/i.test(name);
+  const r2Ready = isR2Configured();
+  const fbReady = isFilebaseConfigured();
+  if (r2Ready && fbReady) return isStreamMedia ? "r2" : "filebase";
+  if (r2Ready) return "r2";
+  if (fbReady) return "filebase";
+  return isStreamMedia ? "r2" : "filebase";
+}
+
 async function handleBatchUpload(targetProvider) {
   if (!uploadState.getFiles().length || uploadDestinationBusy) return;
   uploadDestinationBusy = true;
-  const providerLabel = targetProvider === "filebase" ? "Filebase" : "R2";
+  const isAuto = targetProvider === "auto";
+  const providerLabel = isAuto ? "自動" : (targetProvider === "filebase" ? "Filebase" : "R2");
   try {
     setUiLock(true);
-    const destination = await requestUploadDestination(targetProvider);
-    if (!destination) return;
-    const options = {
-      deliveryDomain: destination.domain,
+    const destinations = {};
+    if (isAuto) {
+      const neededProviders = [...new Set(uploadState.getFiles().map(f => resolveAutoUploadProvider(f)))];
+      for (const p of neededProviders) {
+        const dest = await requestUploadDestination(p);
+        if (!dest) return;
+        destinations[p] = dest;
+      }
+    } else {
+      const destination = await requestUploadDestination(targetProvider);
+      if (!destination) return;
+      destinations[targetProvider] = destination;
+    }
+    const baseOptions = {
       password: document.querySelector("#tempPasswordInput")?.value.trim() || "",
       requestedTtl: Number(document.querySelector("#tempTtlSelect")?.value || 0),
       cachePolicy: document.querySelector("#uploadCachePolicySelect")?.value === "PUBLISHED" ? "PUBLISHED" : "BOARD",
@@ -4548,8 +4601,12 @@ async function handleBatchUpload(targetProvider) {
     let completed = 0;
     for (let i = 0; i < targets.length; i++) {
       const result = targets[i];
-      if (statusText) statusText.textContent = `${providerLabel} アップロード中 (${i + 1}/${targets.length})`;
-      const uploadSuccess = await uploadImage(result, targetProvider, null, options);
+      const itemProvider = isAuto ? resolveAutoUploadProvider(result) : targetProvider;
+      const itemDest = destinations[itemProvider] || await requestUploadDestination(itemProvider);
+      if (!itemDest) break;
+      const itemLabel = itemProvider === "filebase" ? "Filebase" : "R2";
+      if (statusText) statusText.textContent = `${itemLabel} アップロード中 (${i + 1}/${targets.length})`;
+      const uploadSuccess = await uploadImage(result, itemProvider, null, { ...baseOptions, deliveryDomain: itemDest.domain });
       if (!uploadSuccess) {
         break;
       }
