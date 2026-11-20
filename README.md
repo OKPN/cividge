@@ -70,21 +70,34 @@ Kubo is a preservation layer. Its RPC endpoint is used for pin operations; confi
 
 ## Setup overview
 
-The frontend repository (`cividge`) and the delivery/registry Worker repository (`cividge-kv-worker`) work together.
+The frontend repository (`cividge`) and the delivery/registry Worker repository (`cividge-kv-worker`) work together. You can start minimal and layer security and optimizations in order:
 
-1. Create one Cloudflare Workers KV namespace for the **Worker** and configure its `CIVIDGE_KV` binding, Durable Object bindings/migrations, and any R2 binding required by your deployment.
-2. Deploy `cividge-kv-worker` with a private admin token. Wrangler applies its declared Durable Object migrations; do not treat KV as their replacement.
-3. Open the existing [Cividge frontend](https://cividge.pages.dev/). Deploy a separate frontend only if you want to manage its code and origin yourself.
-4. In Cividge, explicitly connect **your own** KV Worker URL and admin token first, then connect R2 and/or Filebase. Shared UI does not mean shared storage or lifecycle authority.
-5. Register separate delivery domains for R2 and Filebase.
-6. Configure R2 CORS when using browser-to-R2 uploads.
+### 1. Minimum Required (Upload & Delivery)
+1. Deploy `cividge-kv-worker` with a `CIVIDGE_KV` namespace, Durable Object bindings/migrations (`ObjectLifecycleV2`, `LinkBindingV2`), and `R2_BUCKET` (if using R2).
+2. Configure the required Worker secret: `ADMIN_API_TOKEN`.
+3. Create a Cloudflare R2 bucket (with browser-direct PUT CORS) and/or a Filebase IPFS bucket.
+4. Bind at least one public delivery domain (Worker custom domain or static `pages.dev` relay; `workers.dev` rejects public media `GET` with `404`).
+5. Open [cividge.pages.dev](https://cividge.pages.dev/) (or your self-hosted frontend), connect your Worker URL + `ADMIN_API_TOKEN`, enter storage credentials, and add your delivery domain(s).
 
-> Do not register the same delivery domain for both R2 and Filebase. URLs are `delivery-domain/file-name`; sharing a domain makes same-name objects ambiguous.
+> **Delivery domains & backend sharing**: Different delivery domains isolate namespaces (`delivery-domain/file-name`). When sharing a delivery domain across R2 and Filebase (e.g. with **Auto** mode), each filename remains uniquely resolved via the canonical KV ledger—attempting to publish the same filename to a different backend or content returns `409 Conflict`.
+
+### 2. Security & Quota Protection (Priority Order)
+1. **Cloudflare WAF Custom Rules (Highest Priority)**: Block unapproved paths, non-media extensions, and non-`GET`/`HEAD` methods on delivery domains so bot scans do not exhaust Worker/KV quotas. If you enable an R2 Custom Domain, add a strict WAF block rule permitting `/objects/` (`GET`/`HEAD` only) to stop 404 scans from burning R2 Class B operations.
+2. **Upload-only Token Separation**: Set `UPLOAD_TOKEN` (separate from `ADMIN_API_TOKEN`) for external upload clients / Windows SendTo scripts so they cannot delete or list objects.
+3. **API Rate Limiting**: Add Cloudflare Rate Limiting on `/r/` or `/api/`.
+4. **Shared Bucket Guard**: Keep `FILEBASE_DEDICATED_BUCKET = "false"` unless the Filebase bucket is reserved exclusively for Cividge Worker RPC pins.
+
+### 3. Optional Enhancements (Priority Order)
+1. **R2 Custom Domain `307` Seek Offload (`R2_PUBLIC_ORIGINS`)**: Redirect unauthenticated, non-expiring R2 video/audio (`objects/<cid>`) with `307` to a matching R2 Custom Domain (`r2-cdn.example.com`) so `206 Range` seeks bypass Worker and KV quotas completely.
+2. **Dual R2 + Filebase & `Auto` Storage Destination**: Connect both R2 and Filebase to default **Storage destination** to **Auto (Video/Audio→R2 / Other→Filebase)**—offloading seek-heavy media to R2 while serving images and other files via edge-cached Filebase to preserve R2 free-tier storage.
+3. **Immediate Edge Cache Purge**: Set `CLOUDFLARE_ZONE_ID` and `CLOUDFLARE_PURGE_TOKEN` to purge deleted links immediately.
+4. **Home Kubo + Cloudflare Tunnel (`KUBO_GATEWAY_URL`)**: Run a private preservation node behind Cloudflare Tunnel (optionally with client-only stealth P2P settings).
 
 ### 🤖 For AI Coding Agents (Codex, Claude, etc.)
 
-This repository includes official agent skills in [`.codex/skills/`](.codex/skills/) to automate safe builds, deployments, and public relay creation without breaking existing routes:
+This repository includes official agent skills in [`.codex/skills/`](.codex/skills/) to automate setup, safe builds/deployments, and public relay creation without breaking existing routes:
 
+- **`cividge-setup`**: End-to-end setup, WAF hardening, `R2_PUBLIC_ORIGINS` video/audio offload, and verification walkthrough prioritized into Required, Security, and Optional phases.
 - **`cividge-deploy`**: Safely pulls latest code, enforces `npm run build`, and deploys to Cloudflare Pages or Workers with automated curl health verification.
 - **`cloudflare-pages-relay`**: Deploys function-free, disposable `pages.dev` 307 relays and registers them into the multi-relay worker without exposing origin domains.
 
@@ -191,7 +204,7 @@ Automatic selection uses the public viewer's country/continent, not the administ
 
 JXL previews in upload cards, the managed list, and the URL palette first use native image decoding. If unsupported, a bundled, lazily loaded WebAssembly decoder renders a small presentation-only image. Original JXL bytes, public URLs, and Object identity are unchanged; no server thumbnail or persisted preview is created. Decoder/retrieval failure leaves a format placeholder and does not remove the managed row. Raw JXL direct-link display still requires browser support.
 
-The uploader uses one **Upload** action with explicit **Storage destination** and **Delivery domain** selectors. Each provider retains its existing domain selection; switching the upload destination does not change the managed-list view or fetch that list. Missing configuration opens guidance with an **Open settings** action before conversion/upload. Managed Pages relay identity is probed before upload; standalone/direct-origin operation retains its existing behavior. Local completeness checks do not prove credentials or remote service availability. Server preflight remains authoritative. Opening settings never automatically resumes an upload, and the chosen provider/domain are captured for the running batch.
+The uploader uses one **Upload** action with explicit **Storage destination** and **Delivery domain** selectors. When both R2 and Filebase are configured, **Storage destination** defaults to **Auto (Video/Audio→R2 / Other→Filebase)** while leaving **Delivery domain** selectable so you can route seek-heavy video/audio to R2 and other files to Filebase in the same batch. Each provider retains its existing domain selection; switching the upload destination does not change the managed-list view or fetch that list. Missing configuration opens guidance with an **Open settings** action before conversion/upload. Managed Pages relay identity is probed before upload; standalone/direct-origin operation retains its existing behavior. Local completeness checks do not prove credentials or remote service availability. Server preflight remains authoritative. Opening settings never automatically resumes an upload, and the chosen provider/domain are captured for the running batch.
 
 ## Cloudflare R2
 
@@ -223,6 +236,22 @@ Allow the URL where the frontend is opened, such as `https://my-cividge.pages.de
   }
 ]
 ```
+
+### Optional: R2 Custom Domain seek offload (`R2_PUBLIC_ORIGINS`)
+
+Video and audio playback generates dozens of `206 Range` seek requests per play. Because `206` responses bypass the Worker edge cache, offloading public video/audio directly to an R2 Custom Domain prevents seeks from consuming daily Worker/KV free-tier quotas:
+
+1. Attach an R2 Custom Domain (e.g., `r2-cdn.example.com`) to your R2 bucket in Cloudflare Dashboard.
+2. Add a **mandatory Cloudflare WAF block rule** so bots cannot trigger paid/quota-counting R2 Class B operations on `/`, `/.env`, or arbitrary paths:
+   ```cloudflare
+   http.host eq "r2-cdn.example.com"
+   and (
+     not starts_with(http.request.uri.path, "/objects/")
+     or http.request.uri.path eq "/objects/"
+     or not (http.request.method in {"GET" "HEAD"})
+   )
+   ```
+3. Set `R2_PUBLIC_ORIGINS = "example.com=https://r2-cdn.example.com"` under `[vars]` in `cividge-kv-worker/wrangler.toml` (comma-separated per parent zone). Unauthenticated, non-expiring R2 video/audio stored under `objects/<cid>` will return `307` to the matching `r2-cdn` origin after `R2_BUCKET.head()` confirms existence (preserving R2 → Kubo fallback). Password-protected, expiring, image, and missing R2 objects remain handled by the Worker.
 
 ## Filebase / IPFS
 
