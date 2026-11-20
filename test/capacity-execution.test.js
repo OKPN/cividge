@@ -150,3 +150,42 @@ test("Filebase FIFO skips Kubo pin for audio/video while still pinning images", 
     ["sha256:objects/QmImg", "fifo", "filebase"],
   ]);
 });
+
+test("FIFO releases expired files first without contacting Kubo", async () => {
+  const deletedLinks = [];
+  const releases = [];
+  const capacity = createStorageCapacityExecution({
+    getSetting: key => (key === "filebaseStorageLimit" || key === "r2StorageLimit" ? "1" : null),
+    checkKuboOnline: async () => { throw new Error("Kubo should not be contacted for expired-only FIFO"); },
+    getAppLanguage: () => "ja", getKuboPinnedCids: async () => new Set(),
+    formatBytes: value => String(value), getStoredIpfsCid: () => null,
+    getManagedContents: () => [
+      { rawKey: "img.example:expired.webp", Key: "expired.webp", s3Key: "objects/QmExpired", cid: "QmExpired", expiresAt: Date.now() - 10_000 },
+      { rawKey: "img.example:live.webp", Key: "live.webp", s3Key: "objects/QmLive", cid: "QmLive" },
+    ],
+    getObjectRefForUi: async (_p, key) => `sha256:${key}`,
+    activeKuboPins: new Set(),
+    ensureAuthoritativeKuboPin: async () => { throw new Error("should not pin expired item"); },
+    deleteKvCid: async (linkKey) => { deletedLinks.push(linkKey); },
+    requestAuthorizedRelease: async (objectRef, reason, placement = null) => { releases.push([objectRef, reason, placement]); },
+    loadLedgerFromLocalStorage: () => [], calculateFilebaseCid: async () => null,
+    kuboPlacementApplication: { acquire: async () => { throw new Error("should not pin expired item"); } },
+    addFileToKubo: async () => {},
+    storeIpfsCid() {}, storeR2Hash() {}, deleteR2Hash() {},
+  });
+  const s3 = {
+    send: async () => ({
+      Contents: [
+        { Key: "objects/QmLive", Size: 400 * 1024, LastModified: new Date(0) },
+        { Key: "objects/QmExpired", Size: 500 * 1024, LastModified: new Date(100_000) },
+      ],
+    }),
+  };
+  await capacity.ensureStorageCapacityFilebase(s3, "filebase", 1);
+  await capacity.ensureStorageCapacityR2(s3, "r2", 1);
+  assert.deepEqual(deletedLinks, ["img.example:expired.webp", "img.example:expired.webp"]);
+  assert.deepEqual(releases, [
+    ["sha256:objects/QmExpired", "fifo", null],
+    ["sha256:objects/QmExpired", "fifo", null],
+  ]);
+});

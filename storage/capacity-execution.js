@@ -1,6 +1,6 @@
 import { safeConsole } from "../security/diagnostics.js";
 import { ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
-import { selectFilebaseFifoCandidates, selectR2FifoCandidates } from "./fifo-policy.js";
+import { collectExpiredStorageKeys, selectFilebaseFifoCandidates, selectR2FifoCandidates } from "./fifo-policy.js";
 
 const STREAM_MEDIA_EXT_RE = /\.(mp4|webm|mov|m4v|avi|ogv|mp3|wav|ogg|m4a|flac|aac)$/i;
 
@@ -11,6 +11,12 @@ function isStreamMediaItem(s3Key, linkedItems = []) {
     const mime = String(item?.mime || item?.metadata?.mime || "").toLowerCase();
     return STREAM_MEDIA_EXT_RE.test(name) || mime.startsWith("video/") || mime.startsWith("audio/");
   });
+}
+
+function shouldReleaseWithoutKuboPin(targetKey, matchingItems, skipMediaPin, expiredKeys, hasDeleteKvCid) {
+  if (!hasDeleteKvCid || matchingItems.length === 0) return false;
+  if (expiredKeys && expiredKeys.has(targetKey)) return true;
+  return Boolean(skipMediaPin && isStreamMediaItem(targetKey, matchingItems));
 }
 
 export function createStorageCapacityExecution({ getSetting, checkKuboOnline, getAppLanguage,
@@ -70,12 +76,13 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       let isKuboAvailable = false;
       let kuboPinnedSet = null;
       const managedList = getManagedContents() || [];
+      const expiredKeys = collectExpiredStorageKeys(managedList);
       const { candidates, freedBytes } = selectFilebaseFifoCandidates(
-        contents, currentTotalBytes, requiredBytes, limitBytes, isKuboPrioritizePinned, null, getStoredIpfsCid
+        contents, currentTotalBytes, requiredBytes, limitBytes, isKuboPrioritizePinned, null, getStoredIpfsCid, expiredKeys
       );
       const needsKuboForFilebase = isKuboAutoPin && candidates.some(targetKey => {
         const matchingItems = managedList.filter(i => (i.rawKey || i.Key) === targetKey || i.s3Key === targetKey || i.metadata?.s3Key === targetKey);
-        return !(skipMediaPin && isStreamMediaItem(targetKey, matchingItems));
+        return !shouldReleaseWithoutKuboPin(targetKey, matchingItems, skipMediaPin, expiredKeys, Boolean(deleteKvCid));
       });
   
       if (needsKuboForFilebase) {
@@ -110,7 +117,7 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       // 保護対象（pinned_ で始まるもの）を除外し、ソート
       // isKuboPrioritizePinned が有効かつ kuboPinnedSet がある場合は、Kubo保管済みを最優先にし、それぞれ古い順（LastModified 昇順）にする
       const prioritized = kuboPinnedSet
-        ? selectFilebaseFifoCandidates(contents, currentTotalBytes, requiredBytes, limitBytes, isKuboPrioritizePinned, kuboPinnedSet, getStoredIpfsCid)
+        ? selectFilebaseFifoCandidates(contents, currentTotalBytes, requiredBytes, limitBytes, isKuboPrioritizePinned, kuboPinnedSet, getStoredIpfsCid, expiredKeys)
         : { candidates, freedBytes };
       const finalCandidates = prioritized.candidates;
       const finalFreedBytes = prioritized.freedBytes;
@@ -141,12 +148,14 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
           cid = getStoredIpfsCid(targetKey);
         }
 
-        if (skipMediaPin && isStreamMediaItem(targetKey, matchingItems) && matchingItems.length > 0 && deleteKvCid) {
+        if (shouldReleaseWithoutKuboPin(targetKey, matchingItems, skipMediaPin, expiredKeys, Boolean(deleteKvCid))) {
           try {
             await releaseStreamMediaViaFifo("filebase", meta?.s3Key || targetKey, matchingItems, cid);
-            safeConsole.log(`🪐 Filebase FIFO: 動画・音声のためKuboへPinせずLinkごと削除しました: ${targetKey}`);
+            safeConsole.log(expiredKeys.has(targetKey)
+              ? `🪐 Filebase FIFO: 期限切れのためKuboへPinせずLinkごと削除しました: ${targetKey}`
+              : `🪐 Filebase FIFO: 動画・音声のためKuboへPinせずLinkごと削除しました: ${targetKey}`);
           } catch (mediaErr) {
-            safeConsole.warn(`Filebase FIFO media release failed on ${targetKey}:`, mediaErr);
+            safeConsole.warn(`Filebase FIFO direct release failed on ${targetKey}:`, mediaErr);
           }
           continue;
         }
@@ -230,13 +239,14 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       let totalBytes = contents.reduce((sum, item) => sum + (item.Size || 0), 0);
       if (totalBytes + requiredBytes <= limitBytes * 0.85) return;
   
-      const itemsToDelete = selectR2FifoCandidates(contents, totalBytes, requiredBytes, limitBytes);
-      if (itemsToDelete.length === 0) return;
-
       // 🚀 [INV-CORE-005] 手元台帳キャッシュから参照（kv.list 全件走査ゼロ化）
       const kvFiles = (getManagedContents() && getManagedContents().length > 0)
         ? getManagedContents()
         : (loadLedgerFromLocalStorage("r2") || []);
+      const expiredKeys = collectExpiredStorageKeys(kvFiles);
+
+      const itemsToDelete = selectR2FifoCandidates(contents, totalBytes, requiredBytes, limitBytes, expiredKeys);
+      if (itemsToDelete.length === 0) return;
 
       const isKuboAutoPinR2 = getSetting("kuboAutoPinR2") !== "false";
       const skipMediaPin = getSetting("kuboSkipMediaPin") !== "false";
@@ -245,7 +255,7 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       const preserveItems = [];
       for (const item of itemsToDelete) {
         const linkedItems = kvFiles.filter(kv => (kv.metadata?.s3Key || kv.metadata?.k_s3 || kv.s3Key || kv.Key) === item.Key);
-        if (skipMediaPin && isStreamMediaItem(item.Key, linkedItems) && linkedItems.length > 0 && deleteKvCid) {
+        if (shouldReleaseWithoutKuboPin(item.Key, linkedItems, skipMediaPin, expiredKeys, Boolean(deleteKvCid))) {
           mediaItems.push({ item, linkedItems });
         } else {
           preserveItems.push({ item, linkedItems });
