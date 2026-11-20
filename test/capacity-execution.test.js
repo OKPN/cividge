@@ -50,3 +50,103 @@ test("R2 FIFO with Kubo auto-pin off warns instead of silently skipping releases
   assert.equal(releases, 0);
   assert.ok(warnings.some(line => line.includes("kuboAutoPinR2")), `expected an explicit warning, got: ${warnings.join(" | ")}`);
 });
+
+test("R2 FIFO skips Kubo pin for video/audio by default and deletes link + object directly", async () => {
+  const deletedLinks = [];
+  const releases = [];
+  const kuboPins = [];
+  const capacity = createStorageCapacityExecution({
+    getSetting: key => (key === "r2StorageLimit" ? "1" : (key === "kuboAutoPinR2" ? "false" : null)),
+    checkKuboOnline: async () => { throw new Error("Kubo should not be contacted for video-only R2 FIFO"); },
+    getAppLanguage: () => "ja", getKuboPinnedCids: async () => new Set(),
+    formatBytes: value => String(value), getStoredIpfsCid: () => null,
+    getManagedContents: () => [
+      { rawKey: "media.example:clip.mp4", Key: "clip.mp4", s3Key: "objects/QmVideo1", policyRevision: 2 },
+    ],
+    getObjectRefForUi: async () => "sha256:video1",
+    activeKuboPins: new Set(), ensureAuthoritativeKuboPin: async () => { kuboPins.push("fb"); },
+    deleteKvCid: async (linkKey, gen) => { deletedLinks.push([linkKey, gen]); },
+    requestAuthorizedRelease: async (objectRef, reason, placement = null) => { releases.push([objectRef, reason, placement]); },
+    loadLedgerFromLocalStorage: () => [], calculateFilebaseCid: async () => "QmVideo1",
+    kuboPlacementApplication: { acquire: async () => { kuboPins.push("r2"); } },
+    addFileToKubo: async () => { kuboPins.push("add"); },
+    storeIpfsCid() {}, storeR2Hash() {}, deleteR2Hash() {},
+  });
+  const s3 = { send: async () => ({ Contents: [{ Key: "objects/QmVideo1", Size: 900 * 1024 * 1024, LastModified: new Date(0) }] }) };
+  await capacity.ensureStorageCapacityR2(s3, "r2", 200 * 1024 * 1024);
+  assert.deepEqual(kuboPins, []);
+  assert.deepEqual(deletedLinks, [["media.example:clip.mp4", 2]]);
+  assert.deepEqual(releases, [["sha256:video1", "fifo", null]]);
+});
+
+test("R2 FIFO still pins video to Kubo when kuboSkipMediaPin is explicitly false", async () => {
+  const kuboPins = [];
+  const releases = [];
+  const capacity = createStorageCapacityExecution({
+    getSetting: key => (key === "r2StorageLimit" ? "1" : (key === "kuboSkipMediaPin" ? "false" : null)),
+    checkKuboOnline: async () => ({ online: true }),
+    getAppLanguage: () => "ja", getKuboPinnedCids: async () => new Set(),
+    formatBytes: value => String(value), getStoredIpfsCid: () => null,
+    getManagedContents: () => [
+      { rawKey: "media.example:clip.mp4", Key: "clip.mp4", s3Key: "objects/QmVideo1" },
+    ],
+    getObjectRefForUi: async () => "sha256:video1",
+    activeKuboPins: new Set(), ensureAuthoritativeKuboPin: async () => {},
+    deleteKvCid: async () => { throw new Error("should not delete link when kuboSkipMediaPin is false"); },
+    requestAuthorizedRelease: async (objectRef, reason, placement = null) => { releases.push([objectRef, reason, placement]); },
+    loadLedgerFromLocalStorage: () => [], calculateFilebaseCid: async () => "QmVideo1",
+    kuboPlacementApplication: { acquire: async ({ performAcquire }) => { await performAcquire(); kuboPins.push("r2"); } },
+    addFileToKubo: async () => { kuboPins.push("add"); },
+    storeIpfsCid() {}, storeR2Hash() {}, deleteR2Hash() {},
+  });
+  const s3 = {
+    send: async (cmd) => {
+      if (cmd.constructor.name === "ListObjectsV2Command") {
+        return { Contents: [{ Key: "objects/QmVideo1", Size: 900 * 1024 * 1024, LastModified: new Date(0) }] };
+      }
+      return { Body: { transformToByteArray: async () => new Uint8Array([1, 2, 3]) } };
+    },
+  };
+  await capacity.ensureStorageCapacityR2(s3, "r2", 200 * 1024 * 1024);
+  assert.deepEqual(kuboPins, ["add", "r2"]);
+  assert.deepEqual(releases, [["sha256:video1", "fifo", "r2"]]);
+});
+
+test("Filebase FIFO skips Kubo pin for audio/video while still pinning images", async () => {
+  const deletedLinks = [];
+  const releases = [];
+  const pinnedCids = [];
+  const capacity = createStorageCapacityExecution({
+    getSetting: key => (key === "filebaseStorageLimit" ? "1" : null),
+    checkKuboOnline: async () => ({ online: true }),
+    getAppLanguage: () => "ja", getKuboPinnedCids: async () => new Set(),
+    formatBytes: value => String(value), getStoredIpfsCid: () => null,
+    getManagedContents: () => [
+      { rawKey: "media.example:song.m4a", Key: "song.m4a", s3Key: "objects/QmAudio", cid: "QmAudio" },
+      { rawKey: "media.example:pic.webp", Key: "pic.webp", s3Key: "objects/QmImg", cid: "QmImg" },
+    ],
+    getObjectRefForUi: async (_p, key) => `sha256:${key}`,
+    activeKuboPins: new Set(),
+    ensureAuthoritativeKuboPin: async (_ref, cid) => { pinnedCids.push(cid); },
+    deleteKvCid: async (linkKey) => { deletedLinks.push(linkKey); },
+    requestAuthorizedRelease: async (objectRef, reason, placement = null) => { releases.push([objectRef, reason, placement]); },
+    loadLedgerFromLocalStorage: () => [], calculateFilebaseCid: async () => null,
+    kuboPlacementApplication: {}, addFileToKubo: async () => {},
+    storeIpfsCid() {}, storeR2Hash() {}, deleteR2Hash() {},
+  });
+  const s3 = {
+    send: async () => ({
+      Contents: [
+        { Key: "objects/QmAudio", Size: 500 * 1024 * 1024, LastModified: new Date(0) },
+        { Key: "objects/QmImg", Size: 500 * 1024 * 1024, LastModified: new Date(1000) },
+      ],
+    }),
+  };
+  await capacity.ensureStorageCapacityFilebase(s3, "filebase", 100 * 1024 * 1024);
+  assert.deepEqual(pinnedCids, ["QmImg"]);
+  assert.deepEqual(deletedLinks, ["media.example:song.m4a"]);
+  assert.deepEqual(releases, [
+    ["sha256:objects/QmAudio", "fifo", null],
+    ["sha256:objects/QmImg", "fifo", "filebase"],
+  ]);
+});

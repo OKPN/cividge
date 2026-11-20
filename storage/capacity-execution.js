@@ -2,11 +2,33 @@ import { safeConsole } from "../security/diagnostics.js";
 import { ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
 import { selectFilebaseFifoCandidates, selectR2FifoCandidates } from "./fifo-policy.js";
 
+const STREAM_MEDIA_EXT_RE = /\.(mp4|webm|mov|m4v|avi|ogv|mp3|wav|ogg|m4a|flac|aac)$/i;
+
+function isStreamMediaItem(s3Key, linkedItems = []) {
+  if (STREAM_MEDIA_EXT_RE.test(String(s3Key || ""))) return true;
+  return linkedItems.some(item => {
+    const name = String(item?.Key || item?.rawKey || item?.filename || "");
+    const mime = String(item?.mime || item?.metadata?.mime || "").toLowerCase();
+    return STREAM_MEDIA_EXT_RE.test(name) || mime.startsWith("video/") || mime.startsWith("audio/");
+  });
+}
+
 export function createStorageCapacityExecution({ getSetting, checkKuboOnline, getAppLanguage,
   getKuboPinnedCids, formatBytes, getStoredIpfsCid, getManagedContents, getObjectRefForUi,
-  activeKuboPins, ensureAuthoritativeKuboPin, requestAuthorizedRelease,
+  activeKuboPins, ensureAuthoritativeKuboPin, requestAuthorizedRelease, deleteKvCid,
   loadLedgerFromLocalStorage, calculateFilebaseCid, kuboPlacementApplication,
   addFileToKubo, storeIpfsCid, storeR2Hash, deleteR2Hash }) {
+  async function releaseStreamMediaViaFifo(provider, s3Key, linkedItems, cid = null) {
+    if (!deleteKvCid || !linkedItems.length) return false;
+    const objectRef = await getObjectRefForUi(provider, s3Key, cid);
+    for (const item of linkedItems) {
+      const linkKey = item?.rawKey || item?.Key;
+      if (!linkKey) continue;
+      await deleteKvCid(linkKey, item.policyRevision ?? item.generation ?? null);
+    }
+    await requestAuthorizedRelease(objectRef, "fifo");
+    return true;
+  }
   // 🪐 Filebase FIFO（先入れ先出し）自動容量解放
   async function ensureStorageCapacityFilebase(s3, bucketName, requiredBytes = 0) {
     const isAutoFifo = getSetting("autoFifo") !== "false";
@@ -44,10 +66,19 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       // 🏠 Kubo 自動ピン留め設定の確認（外出先・Kuboオフライン時はファイル消失防止のため安全に中断）
       const isKuboAutoPin = getSetting("kuboAutoPin") !== "false";
       const isKuboPrioritizePinned = getSetting("kuboPrioritizePinned") !== "false";
+      const skipMediaPin = getSetting("kuboSkipMediaPin") !== "false";
       let isKuboAvailable = false;
       let kuboPinnedSet = null;
+      const managedList = getManagedContents() || [];
+      const { candidates, freedBytes } = selectFilebaseFifoCandidates(
+        contents, currentTotalBytes, requiredBytes, limitBytes, isKuboPrioritizePinned, null, getStoredIpfsCid
+      );
+      const needsKuboForFilebase = isKuboAutoPin && candidates.some(targetKey => {
+        const matchingItems = managedList.filter(i => (i.rawKey || i.Key) === targetKey || i.s3Key === targetKey || i.metadata?.s3Key === targetKey);
+        return !(skipMediaPin && isStreamMediaItem(targetKey, matchingItems));
+      });
   
-      if (isKuboAutoPin) {
+      if (needsKuboForFilebase) {
         const kuboCheck = await checkKuboOnline(1500);
         isKuboAvailable = kuboCheck.online;
         if (!isKuboAvailable) {
@@ -78,11 +109,13 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
   
       // 保護対象（pinned_ で始まるもの）を除外し、ソート
       // isKuboPrioritizePinned が有効かつ kuboPinnedSet がある場合は、Kubo保管済みを最優先にし、それぞれ古い順（LastModified 昇順）にする
-      const { candidates, freedBytes } = selectFilebaseFifoCandidates(
-        contents, currentTotalBytes, requiredBytes, limitBytes, isKuboPrioritizePinned, kuboPinnedSet, getStoredIpfsCid
-      );
+      const prioritized = kuboPinnedSet
+        ? selectFilebaseFifoCandidates(contents, currentTotalBytes, requiredBytes, limitBytes, isKuboPrioritizePinned, kuboPinnedSet, getStoredIpfsCid)
+        : { candidates, freedBytes };
+      const finalCandidates = prioritized.candidates;
+      const finalFreedBytes = prioritized.freedBytes;
   
-      if (candidates.length === 0) return;
+      if (finalCandidates.length === 0) return;
   
       // 🛡️ 安全実行順序:
       // 1. Kubo自動Pin有効時: Filebaseから削除する「前」に、まずKuboへPin留めを成功させる！
@@ -90,13 +123,14 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       const filesToUnpin = [];
       const kvUpdates = [];
   
-      for (const targetKey of candidates) {
+      for (const targetKey of finalCandidates) {
         let cid = null;
         let meta = {};
         let kuboStatus = "not_pinned";
   
         // 🚀 [INV-CORE-005] 手元台帳から既存メタデータを取得（ループ内 fetchKvRecord 通信連打を完全排除）
-        const cachedItem = (getManagedContents() || []).find(i => (i.rawKey || i.Key) === targetKey);
+        const matchingItems = managedList.filter(i => (i.rawKey || i.Key) === targetKey || i.s3Key === targetKey || i.metadata?.s3Key === targetKey);
+        const cachedItem = matchingItems[0];
         if (cachedItem) {
           cid = cachedItem.cid || cachedItem.contentCid || cachedItem.metadata?.cid || null;
           meta = cachedItem.metadata || cachedItem || {};
@@ -105,6 +139,16 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
   
         if (!cid) {
           cid = getStoredIpfsCid(targetKey);
+        }
+
+        if (skipMediaPin && isStreamMediaItem(targetKey, matchingItems) && matchingItems.length > 0 && deleteKvCid) {
+          try {
+            await releaseStreamMediaViaFifo("filebase", meta?.s3Key || targetKey, matchingItems, cid);
+            safeConsole.log(`🪐 Filebase FIFO: 動画・音声のためKuboへPinせずLinkごと削除しました: ${targetKey}`);
+          } catch (mediaErr) {
+            safeConsole.warn(`Filebase FIFO media release failed on ${targetKey}:`, mediaErr);
+          }
+          continue;
         }
   
         const isAlreadyKuboPinned = cid && kuboPinnedSet && kuboPinnedSet.has(cid);
@@ -144,7 +188,7 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       }
   
       if (filesToUnpin.length > 0) {
-        safeConsole.log(`🪐 Filebase FIFO 自動アンピン実行: ${filesToUnpin.join(", ")} (${formatBytes(freedBytes)} 解放)`);
+        safeConsole.log(`🪐 Filebase FIFO 自動アンピン実行: ${filesToUnpin.join(", ")} (${formatBytes(finalFreedBytes)} 解放)`);
         for (const update of kvUpdates) {
           try {
             const objectRef = await getObjectRefForUi("filebase", update.meta?.s3Key || update.key, update.cid);
@@ -186,66 +230,90 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
       let totalBytes = contents.reduce((sum, item) => sum + (item.Size || 0), 0);
       if (totalBytes + requiredBytes <= limitBytes * 0.85) return;
   
-      // 🏠 Kubo 自動 Pin が有効な場合の接続確認＆フェイルセーフ
-      const isKuboAutoPinR2 = getSetting("kuboAutoPinR2") !== "false";
-      if (isKuboAutoPinR2) {
-        const kuboStatus = await checkKuboOnline(1500);
-        if (!kuboStatus.online) {
-          safeConsole.warn("⚠️ 自宅 Kubo がオフラインのため、R2 FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
-          return;
-        }
-      }
-  
       const itemsToDelete = selectR2FifoCandidates(contents, totalBytes, requiredBytes, limitBytes);
       if (itemsToDelete.length === 0) return;
 
-      // Kubo 自動 Pin がオフの場合、解放候補があっても保全先が無いため
-      // 解放しない (保全なし解放をしない設計)。以前は無言で全件 skip され
-      // 「FIFO が効かない理由が分からない」状態だったため、明示的に警告する。
-      if (!isKuboAutoPinR2) {
-        safeConsole.warn(`⚠️ R2 FIFO: 容量解放の候補が ${itemsToDelete.length} 件ありますが、Kubo 自動 Pin (kuboAutoPinR2) がオフのため解放を保留しました。Kubo 保全なしでは解放しません。解放するには Kubo 自動 Pin を有効にしてください。`);
-        return;
-      }
-  
       // 🚀 [INV-CORE-005] 手元台帳キャッシュから参照（kv.list 全件走査ゼロ化）
       const kvFiles = (getManagedContents() && getManagedContents().length > 0)
         ? getManagedContents()
         : (loadLedgerFromLocalStorage("r2") || []);
-      const preservedInKuboKeys = new Set();
-  
-      // 🏠 Kubo への自動実体保存（Pin留め）
-      if (isKuboAutoPinR2) {
-        for (const item of itemsToDelete) {
-          try {
-            const res = await s3.send(new GetObjectCommand({ Bucket: bucketName, Key: item.Key }));
-            const bytes = await res.Body.transformToByteArray();
-            const blob = new Blob([bytes]);
-            const expectedCid = await calculateFilebaseCid(bytes);
-            const objectRef = await getObjectRefForUi("r2", item.Key, expectedCid);
-            await kuboPlacementApplication.acquire({
-              objectRef,
-              cid: expectedCid,
-              performAcquire: () => addFileToKubo(blob, item.Key),
-            });
-            storeIpfsCid(item.Key, expectedCid);
-            storeR2Hash(item.Key, expectedCid);
-            preservedInKuboKeys.add(item.Key);
-          } catch (pinErr) {
-            safeConsole.warn(`Kubo auto-pin for R2 FIFO failed on ${item.Key}:`, pinErr);
-          }
+
+      const isKuboAutoPinR2 = getSetting("kuboAutoPinR2") !== "false";
+      const skipMediaPin = getSetting("kuboSkipMediaPin") !== "false";
+
+      const mediaItems = [];
+      const preserveItems = [];
+      for (const item of itemsToDelete) {
+        const linkedItems = kvFiles.filter(kv => (kv.metadata?.s3Key || kv.metadata?.k_s3 || kv.s3Key || kv.Key) === item.Key);
+        if (skipMediaPin && isStreamMediaItem(item.Key, linkedItems) && linkedItems.length > 0 && deleteKvCid) {
+          mediaItems.push({ item, linkedItems });
+        } else {
+          preserveItems.push({ item, linkedItems });
         }
       }
-  
+
+      let mediaReleasedCount = 0;
+      for (const { item, linkedItems } of mediaItems) {
+        try {
+          await releaseStreamMediaViaFifo("r2", item.Key, linkedItems, null);
+          deleteR2Hash(item.Key);
+          mediaReleasedCount += 1;
+        } catch (mediaErr) {
+          safeConsole.warn(`R2 FIFO media release failed on ${item.Key}:`, mediaErr);
+        }
+      }
+
+      if (preserveItems.length === 0) {
+        if (mediaReleasedCount > 0) {
+          safeConsole.log(`⚡ R2 FIFO: 動画・音声 ${mediaReleasedCount} 件をKuboへPinせずLinkごと削除して容量解放しました`);
+        }
+        return;
+      }
+
+      // Kubo 自動 Pin がオフの場合、保全先が無いため解放を保留して明示的に警告する。
+      if (!isKuboAutoPinR2) {
+        safeConsole.warn(`⚠️ R2 FIFO: 容量解放の候補が ${preserveItems.length} 件ありますが、Kubo 自動 Pin (kuboAutoPinR2) がオフのため解放を保留しました。Kubo 保全なしでは解放しません。解放するには Kubo 自動 Pin を有効にしてください。`);
+        return;
+      }
+
+      const kuboStatus = await checkKuboOnline(1500);
+      if (!kuboStatus.online) {
+        safeConsole.warn("⚠️ 自宅 Kubo がオフラインのため、R2 FIFO 自動容量解放をスキップしました（ファイル消失防止フェイルセーフ）。");
+        return;
+      }
+
+      const preservedInKuboKeys = new Set();
+
+      // 🏠 Kubo への自動実体保存（Pin留め）
+      for (const { item } of preserveItems) {
+        try {
+          const res = await s3.send(new GetObjectCommand({ Bucket: bucketName, Key: item.Key }));
+          const bytes = await res.Body.transformToByteArray();
+          const blob = new Blob([bytes]);
+          const expectedCid = await calculateFilebaseCid(bytes);
+          const objectRef = await getObjectRefForUi("r2", item.Key, expectedCid);
+          await kuboPlacementApplication.acquire({
+            objectRef,
+            cid: expectedCid,
+            performAcquire: () => addFileToKubo(blob, item.Key),
+          });
+          storeIpfsCid(item.Key, expectedCid);
+          storeR2Hash(item.Key, expectedCid);
+          preservedInKuboKeys.add(item.Key);
+        } catch (pinErr) {
+          safeConsole.warn(`Kubo auto-pin for R2 FIFO failed on ${item.Key}:`, pinErr);
+        }
+      }
+
       let releasedCount = 0;
-      for (const item of itemsToDelete) {
+      for (const { item, linkedItems } of preserveItems) {
         if (!preservedInKuboKeys.has(item.Key)) continue;
-        const linkedKv = kvFiles.find(kv => (kv.metadata?.s3Key || kv.metadata?.k_s3 || kv.s3Key || kv.Key) === item.Key);
-        if (!linkedKv) continue;
+        if (linkedItems.length === 0) continue;
         await requestAuthorizedRelease(await getObjectRefForUi("r2", item.Key, null), "fifo", "r2");
         deleteR2Hash(item.Key);
         releasedCount += 1;
       }
-      safeConsole.log(`⚡ R2 FIFO authority release: ${releasedCount}件 (Kubo保全確認: ${preservedInKuboKeys.size}件)`);
+      safeConsole.log(`⚡ R2 FIFO authority release: ${releasedCount}件 (Kubo保全確認: ${preservedInKuboKeys.size}件, 動画/音声削除: ${mediaReleasedCount}件)`);
     } catch (err) {
       safeConsole.warn("R2 FIFO ensureStorageCapacity error:", err);
     }

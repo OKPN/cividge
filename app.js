@@ -143,6 +143,7 @@ const kuboRpcUrl = document.querySelector("#kuboRpcUrl");
 const kuboAutoPinR2Check = document.querySelector("#kuboAutoPinR2Check");
 const kuboAutoPinCheck = document.querySelector("#kuboAutoPinCheck");
 const kuboPrioritizePinned = document.querySelector("#kuboPrioritizePinned");
+const kuboSkipMediaPinCheck = document.querySelector("#kuboSkipMediaPinCheck");
 const kuboTestButton = document.querySelector("#kuboTestButton");
 const kuboWebUiLink = document.querySelector("#kuboWebUiLink");
 const kuboStatusIndicator = document.querySelector("#kuboStatusIndicator");
@@ -2147,6 +2148,8 @@ function loadSettings() {
   if (kuboAutoPinCheck) kuboAutoPinCheck.checked = savedKuboAutoPin !== "false"; // デフォルトでON
   const savedKuboPrioritizePinned = localStorage.getItem("kuboPrioritizePinned");
   if (kuboPrioritizePinned) kuboPrioritizePinned.checked = savedKuboPrioritizePinned !== "false"; // デフォルトでON
+  const savedKuboSkipMediaPin = localStorage.getItem("kuboSkipMediaPin");
+  if (kuboSkipMediaPinCheck) kuboSkipMediaPinCheck.checked = savedKuboSkipMediaPin !== "false"; // デフォルトでON
 
   // 🛡️ KV台帳・管理者トークン設定ロード
   const savedKvUrl = localStorage.getItem("kvWorkerUrl") || "";
@@ -2527,6 +2530,9 @@ function saveR2SettingsAuto() {
   if (kuboPrioritizePinned) {
     localStorage.setItem("kuboPrioritizePinned", kuboPrioritizePinned.checked ? "true" : "false");
   }
+  if (kuboSkipMediaPinCheck) {
+    localStorage.setItem("kuboSkipMediaPin", kuboSkipMediaPinCheck.checked ? "true" : "false");
+  }
 
   // 🛡️ KV台帳Worker URL & APIトークン自動保存
   safeSaveField(kvWorkerUrl, "kvWorkerUrl");
@@ -2601,6 +2607,7 @@ kuboRpcUrl?.addEventListener("input", saveR2SettingsAuto);
 kuboAutoPinR2Check?.addEventListener("change", saveR2SettingsAuto);
 kuboAutoPinCheck?.addEventListener("change", saveR2SettingsAuto);
 kuboPrioritizePinned?.addEventListener("change", saveR2SettingsAuto);
+kuboSkipMediaPinCheck?.addEventListener("change", saveR2SettingsAuto);
 
 kvWorkerUrl?.addEventListener("input", saveR2SettingsAuto);
 adminApiToken?.addEventListener("input", saveR2SettingsAuto);
@@ -2996,6 +3003,7 @@ cfClearButton?.addEventListener("click", () => {
   localStorage.removeItem("kuboAutoPinR2");
   localStorage.removeItem("kuboAutoPin");
   localStorage.removeItem("kuboPrioritizePinned");
+  localStorage.removeItem("kuboSkipMediaPin");
   localStorage.removeItem("kvWorkerUrl");
   localStorage.removeItem("adminApiToken");
 
@@ -3012,6 +3020,7 @@ cfClearButton?.addEventListener("click", () => {
   if (kuboAutoPinR2Check) kuboAutoPinR2Check.checked = true;
   if (kuboAutoPinCheck) kuboAutoPinCheck.checked = true;
   if (kuboPrioritizePinned) kuboPrioritizePinned.checked = true;
+  if (kuboSkipMediaPinCheck) kuboSkipMediaPinCheck.checked = true;
   if (kuboStatusIndicator) kuboStatusIndicator.textContent = "⚪ 未確認";
   renderGatewaySettings();
 
@@ -4520,7 +4529,7 @@ const { ensureStorageCapacityFilebase, ensureStorageCapacityR2 } = createStorage
   getSetting: key => localStorage.getItem(key),
   checkKuboOnline, getAppLanguage, getKuboPinnedCids, formatBytes, getStoredIpfsCid,
   getManagedContents: () => managedController.getContents(), getObjectRefForUi,
-  activeKuboPins, ensureAuthoritativeKuboPin, requestAuthorizedRelease,
+  activeKuboPins, ensureAuthoritativeKuboPin, requestAuthorizedRelease, deleteKvCid,
   loadLedgerFromLocalStorage, calculateFilebaseCid, kuboPlacementApplication,
   addFileToKubo, storeIpfsCid, storeR2Hash, deleteR2Hash,
 });
