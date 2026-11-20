@@ -4,7 +4,7 @@
 
 It converts media locally in the browser, uploads directly to your own Cloudflare R2 or Filebase bucket, and places a small Cloudflare edge control plane in front of the object. There is no central Cividge upload server.
 
-![Cividge architecture](docs/assets/cividge-architecture.png)
+![Cividge architecture](docs/assets/cividge-architecture.jpg)
 
 ## Why Cividge
 
@@ -273,6 +273,26 @@ Install and start Kubo, then normally set its RPC URL to `http://127.0.0.1:5001`
 - Check Kubo's storage path and available space. Keep important data in another backup or pinning service.
 - Do not expose the Kubo API through `0.0.0.0:5001`, router port forwarding, or a public reverse proxy.
 - For remote use, prefer a Tailnet-only HTTPS endpoint such as Tailscale Serve instead of opening ports to the internet.
+
+### Optional: dedicated Kubo gateway via Cloudflare Tunnel (`KUBO_GATEWAY_URL`)
+
+By default, the delivery Worker retrieves Kubo-preserved files through public IPFS gateways, which can incur cold-start NAT traversal timeouts or rate limits. If you want fast, direct retrieval from your home node without opening router ports, you can loosely attach a **read-only** Cloudflare Tunnel in front of Kubo's local Gateway port:
+
+1. **Restrict Kubo Gateway to local content only (`NoFetch`)** so the node never acts as an open proxy for third-party CIDs:
+   ```bash
+   ipfs config --json Gateway.NoFetch true
+   ```
+   Restart your Kubo daemon after changing this setting.
+2. **Add a Tunnel Public Hostname**: In Cloudflare Zero Trust (`Networks` -> `Tunnels`), add a Public Hostname (for example `kubo-gw.your-domain.example`) pointing to `HTTP` -> `127.0.0.1:8180` (matching your Kubo `Addresses.Gateway` port). Keep the management RPC port (`5001`) private on localhost or Tailscale—never expose RPC through the public tunnel.
+3. **Exempt `/ipfs/` in WAF allowlists (if applicable)**: If your domain uses a WAF rule blocking non-media extensions, add an exception for the tunnel gateway path while keeping scan protection active:
+   ```text
+   and not (http.host eq "kubo-gw.your-domain.example" and starts_with(http.request.uri.path, "/ipfs/"))
+   ```
+4. **Set `KUBO_GATEWAY_URL` on the Worker**: Add the gateway URL (including `/ipfs`, without a trailing slash) to your Worker's environment variables:
+   ```toml
+   KUBO_GATEWAY_URL = "https://kubo-gw.your-domain.example/ipfs"
+   ```
+   The Worker automatically prioritizes this dedicated gateway before falling back to public IPFS gateways.
 
 ## Delivery, expiry, and deletion behavior
 
