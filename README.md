@@ -294,6 +294,21 @@ By default, the delivery Worker retrieves Kubo-preserved files through public IP
    ```
    The Worker automatically prioritizes this dedicated gateway before falling back to public IPFS gateways.
 
+#### Advanced privacy (optional): prevent home IP / PeerID exposure via IPFS P2P
+
+If you have enabled and verified the Cloudflare Tunnel above, you can optionally stop Kubo from announcing CIDs to the public DHT and accepting inbound P2P/hole-punch connections—preventing your home IP address and PeerID from being exposed on the public IPFS network while still allowing outbound block fetching:
+
+```bash
+ipfs config --json Addresses.Swarm '[]'
+ipfs config --json Swarm.RelayClient.Enabled false
+ipfs config --json Swarm.DisableNatPortMap true
+ipfs config Routing.Type dhtclient
+ipfs config Provide.Strategy ''
+# Restart Kubo after applying
+```
+
+> **IMPORTANT:** Only apply these settings after confirming your Cloudflare Tunnel (`KUBO_GATEWAY_URL`) is working, and **never disable the Cloudflare Tunnel while these settings are active**. Because your Kubo node no longer advertises CIDs to public gateways, disabling the tunnel will make Kubo-only files unreachable.
+
 ## Delivery, expiry, and deletion behavior
 
 - Public links use `delivery-domain/file-name`, not CID URLs.
