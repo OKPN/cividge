@@ -41,7 +41,7 @@
               <button type="button" class="status-pill" id="statusPillKv" title="KV 配信・管理 Worker"><span class="status-dot"></span>KV</button>
               <button type="button" class="status-pill" id="statusPillR2" title="Cloudflare R2"><span class="status-dot"></span>R2</button>
               <button type="button" class="status-pill" id="statusPillFilebase" title="Filebase (IPFS)"><span class="status-dot"></span>Filebase</button>
-              <button type="button" class="status-pill" id="statusPillKubo" title="自宅 Kubo"><span class="status-dot"></span>Kubo</button>
+              <button type="button" class="status-pill" id="statusPillKubo" title="Kubo"><span class="status-dot"></span>Kubo</button>
             </div>
             <button class="ghost-button settings-drawer-trigger" id="openSettingsDrawerButton" type="button" title="KV / R2 / Filebase / Kubo / スマホ共有 / 外部投稿設定を開く">
               <span>⚙️</span> <span data-i18n="openSettingsDrawer">接続・連携設定</span>
@@ -412,9 +412,9 @@
                   </details>
 
                   <details class="settings-accordion cf-settings-accordion" id="kuboSettingsAccordion">
-                    <summary data-i18n="kuboAccordionTitle">🏠 自宅 Kubo (IPFSノード永続保存)</summary>
+                    <summary data-i18n="kuboAccordionTitle">🪐 Kubo (IPFSノード)</summary>
                     <div id="kuboSettingsContent" class="settings-content" style="padding: 12px 0 4px; display: flex; flex-direction: column; gap: 12px;">
-                      <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="kuboAccordionDesc">自宅 PC / サーバーの Kubo ノードと連携し、R2 や Filebase の容量解放時にファイルを自動保全します。</p>
+                      <p style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45;" data-i18n="kuboAccordionDesc">PC / サーバーの Kubo ノードと連携し、R2 や Filebase の容量解放時にファイルを自動保全します。</p>
                     </div>
                   </details>
 
@@ -576,7 +576,7 @@
                     <!-- 🏠 自宅 Kubo (IPFSノード永続保存) セクション -->
                     <div id="kuboSettingsGroup" style="border-top: 1px solid var(--border); padding-top: 12px;">
                       <div style="font-size: 13px; font-weight: bold; color: #a78bfa; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
-                        <span data-i18n="kuboTitle">🏠 自宅 Kubo (IPFS長期保存 Provider)</span>
+                        <span data-i18n="kuboTitle">🪐 Kubo (IPFS Provider)</span>
                         <div style="display: flex; gap: 6px; align-items: center;">
                           <button class="ghost-button" id="kuboTestButton" type="button" style="font-size: 10.5px; padding: 2px 8px; height: 24px; color: #a78bfa; border-color: rgba(167, 139, 250, 0.4);" title="Kubo RPCへの接続を確認します" data-i18n="kuboTest">🔌 接続テスト</button>
                           <a id="kuboWebUiLink" href="http://localhost:5001/webui" target="_blank" rel="noopener noreferrer" style="font-size: 11px; color: #94a3b8; text-decoration: none;">WebUI ↗</a>
