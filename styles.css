@@ -1774,6 +1774,54 @@ input[type="range"] {
   }
 }
 
+/* スマホ幅では実行バーをグリッド化し、保存先/配信ドメイン → ZIP → ダウンロード/アップロードの順に整列させる */
+@media (max-width: 640px) {
+  .execution-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: stretch;
+    gap: 10px 12px;
+    padding: 12px;
+  }
+  .execution-local,
+  .execution-cloud {
+    display: contents;
+  }
+  .execution-cloud .upload-destination-fields {
+    order: 1;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .execution-cloud .upload-destination-fields > .field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .execution-cloud .upload-destination-fields select {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+  .execution-local .check-label-row {
+    order: 2;
+    grid-column: 1 / -1;
+  }
+  .execution-local .primary-button {
+    order: 3;
+  }
+  .execution-cloud .upload-primary-cta {
+    order: 4;
+  }
+  .execution-local .primary-button,
+  .execution-cloud .upload-primary-cta {
+    width: 100%;
+    min-height: 44px;
+    padding: 0 10px;
+  }
+}
+
 /* Top-right slide-over drawer for connection/integration accordions */
 .settings-drawer-backdrop {
   position: fixed;
