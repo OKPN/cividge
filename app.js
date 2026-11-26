@@ -1908,7 +1908,9 @@ function createCivitaiStatsHtml(stats) {
 
       const isVideo = item.type === "video";
       const cachedInspection = getCachedCivitaiInspection(item.id);
-      const directUrl = cachedInspection?.url || projectCivitaiDirectUrl(item.url, cachedInspection?.ext || "");
+      const directUrl = safeHttpUrl(cachedInspection?.url || projectCivitaiDirectUrl(item.url, cachedInspection?.ext || ""));
+      if (!directUrl) return;
+      const safeItemUrl = safeHttpUrl(item.url) || directUrl;
       const civitaiPostPageUrl = `https://civitai.com/images/${encodeURIComponent(String(item.id))}`;
 
       let thumbHtml = "";
@@ -1918,7 +1920,7 @@ function createCivitaiStatsHtml(stats) {
           <div class="civitai-video-play-indicator">▶</div>
         `;
       } else {
-        const previewSrc = item.url.includes("/original=true/") ? item.url.replace("/original=true/", "/width=450/") : directUrl;
+        const previewSrc = safeItemUrl.includes("/original=true/") ? safeItemUrl.replace("/original=true/", "/width=450/") : directUrl;
         thumbHtml = `<img alt="" src="${escapeHtml(previewSrc)}" loading="lazy">`;
       }
 
