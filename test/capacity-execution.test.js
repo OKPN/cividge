@@ -61,7 +61,7 @@ test("R2 FIFO skips Kubo pin for video/audio by default and deletes link + objec
     getAppLanguage: () => "ja", getKuboPinnedCids: async () => new Set(),
     formatBytes: value => String(value), getStoredIpfsCid: () => null,
     getManagedContents: () => [
-      { rawKey: "media.example:clip.mp4", Key: "clip.mp4", s3Key: "objects/QmVideo1", policyRevision: 2 },
+      { rawKey: "media.example:clip.mp4", Key: "clip.mp4", s3Key: "objects/QmVideo1", metadata: { g: 2 } },
     ],
     getObjectRefForUi: async () => "sha256:video1",
     activeKuboPins: new Set(), ensureAuthoritativeKuboPin: async () => { kuboPins.push("fb"); },

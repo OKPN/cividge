@@ -30,7 +30,7 @@ export function createStorageCapacityExecution({ getSetting, checkKuboOnline, ge
     for (const item of linkedItems) {
       const linkKey = item?.rawKey || item?.Key;
       if (!linkKey) continue;
-      await deleteKvCid(linkKey, item.policyRevision ?? item.generation ?? null);
+      await deleteKvCid(linkKey, item.metadata?.g);
     }
     await requestAuthorizedRelease(objectRef, "fifo");
     return true;
