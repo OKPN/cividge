@@ -447,24 +447,6 @@ function storeIpfsCid(key, cid) {
   } catch (e) {}
 }
 
-function blobToBase64(blobOrBytes) {
-  return new Promise((resolve) => {
-    if (!blobOrBytes) return resolve(null);
-    try {
-      const blob = blobOrBytes instanceof Blob ? blobOrBytes : new Blob([blobOrBytes]);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const res = reader.result;
-        resolve(typeof res === "string" ? res.split(",")[1] : null);
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    } catch (e) {
-      resolve(null);
-    }
-  });
-}
-
 // 🪐 画像・サムネイルが 404 / 読み込み失敗した際、S3 から直接 Blob を取得して確実に即座表示する共通フォールバック
 async function loadFallbackImageFromS3(imgElement, key, s3Key = null, provider = "filebase") {
   if (!imgElement || (!key && !s3Key)) return;
@@ -1046,22 +1028,6 @@ async function fetchKvFiles() {
 
 function normalizeDeliveryProvider(provider) {
   return provider === "filebase" ? "filebase" : "r2";
-}
-
-async function fetchKvRecord(key) {
-  if (!key || !hasAdminAccess()) return null;
-  const token = getAdminApiToken();
-  const endpoint = getKvApiEndpoint();
-  const sep = endpoint.includes("?") ? "&" : "?";
-  try {
-    const res = await fetch(`${endpoint}${sep}key=${encodeURIComponent(key)}`, {
-      headers: { "Authorization": `Bearer ${token}` },
-    });
-    return res.ok ? await res.json() : null;
-  } catch (e) {
-    safeConsole.warn("Failed to fetch KV record:", e);
-    return null;
-  }
 }
 
 function getR2DomainList(provider = managedController.getActiveProvider()) {
@@ -3545,14 +3511,6 @@ function setActiveStorageLimitGB(val) {
     localStorage.setItem("r2StorageLimit", String(mb));
     localStorage.setItem("storageLimit", String(mb)); // 後方互換
   }
-}
-
-function getActiveStorageLimit() {
-  return getActiveStorageLimitGB() * 1024;
-}
-
-function setActiveStorageLimit(val) {
-  setActiveStorageLimitGB(Math.round(Number(val) / 1024));
 }
 
 function syncStorageLimitControl() {
@@ -7205,12 +7163,6 @@ function getPublicUrl(key) {
   return domain ? `${domain.replace(/\/$/, "")}/${encodeURIComponent(key)}` : key;
 }
 
-function getDevUrl(key) {
-  const list = getR2DomainList();
-  const dev = list.find(d => d.includes(".r2.dev"));
-  return dev ? `${dev.replace(/\/$/, "")}/${encodeURIComponent(key)}` : getPublicUrl(key);
-}
-
 // パレット描画
 function renderUrlPalette() {
   if (!paletteList) return;
@@ -7553,88 +7505,6 @@ function showCustomAlert(message, title = "お知らせ") {
     };
 
     okBtn.addEventListener("click", onOk);
-    modal.addEventListener("click", onBackdrop);
-  });
-}
-
-/**
- * 🌐 配信ドメイン エイリアス作成ダイアログ
- * @param {string} currentKey - 対象ファイル名
- * @param {string} currentDomain - 現在選択されているドメイン
- * @param {string[]} domainList - 利用可能なドメイン一覧
- * @returns {Promise<{ filename: string, targetDomain: string } | null>}
- */
-function showDomainAliasDialog(currentKey, currentDomain, domainList) {
-  return new Promise((resolve) => {
-    const modal = document.getElementById("aliasCreateModal");
-    const filenameInput = document.getElementById("aliasTargetFilenameInput");
-    const domainSelect = document.getElementById("aliasTargetDomainSelect");
-    const ttlSelect = document.getElementById("aliasTargetTtlSelect");
-    const submitBtn = document.getElementById("submitAliasBtn");
-    const cancelBtn = document.getElementById("cancelAliasBtn");
-
-    if (!modal || !filenameInput || !domainSelect || !submitBtn || !cancelBtn) {
-      // フォールバック
-      const newDomain = prompt("追加する配信ドメインを入力してください:", domainList[0] || "");
-      if (!newDomain) return resolve(null);
-      return resolve({ filename: currentKey, targetDomain: newDomain, ttl: 0 });
-    }
-
-    // 同一ファイル名をそのまま固定表示
-    filenameInput.value = currentKey;
-
-    // ドメイン候補オプション生成（現在と異なるドメインを優先選択）
-    domainSelect.innerHTML = "";
-    let firstOtherDomain = null;
-    domainList.forEach(domain => {
-      let icon = "🌐 ";
-      if (domain.includes(".pages.dev")) icon = "⚡ ";
-      else if (domain.includes(".r2.dev")) icon = "📦 ";
-      let clean = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
-      const isCurrent = currentDomain && domain.toLowerCase() === currentDomain.toLowerCase();
-      if (!isCurrent && !firstOtherDomain) firstOtherDomain = domain;
-      const opt = document.createElement("option");
-      opt.value = domain;
-      opt.textContent = `${icon}${clean}${isCurrent ? " (現在のドメイン)" : ""}`;
-      domainSelect.appendChild(opt);
-    });
-
-    if (firstOtherDomain) {
-      domainSelect.value = firstOtherDomain;
-    }
-
-    if (ttlSelect) {
-      ttlSelect.value = "0"; // デフォルトは無期限
-    }
-
-    modal.style.display = "grid";
-
-    const cleanup = (result) => {
-      modal.style.display = "none";
-      submitBtn.removeEventListener("click", onSubmit);
-      cancelBtn.removeEventListener("click", onCancel);
-      modal.removeEventListener("click", onBackdrop);
-      resolve(result);
-    };
-
-    const onSubmit = () => {
-      const filename = filenameInput.value.trim() || currentKey;
-      const targetDomain = domainSelect.value.trim();
-      const ttl = ttlSelect ? Number(ttlSelect.value || 0) : 0;
-      if (!targetDomain) {
-        alert("⚠️ 配信ドメインを選択してください。");
-        return;
-      }
-      cleanup({ filename, targetDomain, ttl });
-    };
-
-    const onCancel = () => cleanup(null);
-    const onBackdrop = (e) => {
-      if (e.target === modal) cleanup(null);
-    };
-
-    submitBtn.addEventListener("click", onSubmit);
-    cancelBtn.addEventListener("click", onCancel);
     modal.addEventListener("click", onBackdrop);
   });
 }
